@@ -1,0 +1,1054 @@
+package com.example.ui.screens
+
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.Sort
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.example.R
+import com.example.ads.OptionalAdManager
+import com.example.data.local.MediaEntity
+import com.example.data.local.PlaybackHistoryEntity
+import com.example.data.local.PlaylistWithCount
+import com.example.data.preferences.SortOption
+import com.example.data.preferences.UserPreferencesState
+import com.example.ui.components.MediaItemCard
+import com.example.ui.components.formatDurationMillis
+import com.example.viewmodel.LibrarySubTab
+
+@Composable
+fun SearchAndActionHeader(
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    currentSort: SortOption,
+    onSortChange: (SortOption) -> Unit,
+    onPickSafFileClick: () -> Unit,
+    onRescanClick: () -> Unit,
+    onOpenEqualizerClick: () -> Unit,
+    onOpenStudioClick: () -> Unit
+) {
+    var sortMenuExpanded by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = onSearchQueryChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("library_search_input"),
+            placeholder = { Text("Search songs, videos, artists, folders...") },
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = "Search")
+            },
+            trailingIcon = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { onSearchQueryChange("") },
+                            modifier = Modifier.testTag("clear_search_button")
+                        ) {
+                            Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                        }
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { sortMenuExpanded = true },
+                            modifier = Modifier.testTag("sort_menu_button")
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort library")
+                        }
+                        DropdownMenu(
+                            expanded = sortMenuExpanded,
+                            onDismissRequest = { sortMenuExpanded = false }
+                        ) {
+                            SortOption.entries.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option.label) },
+                                    onClick = {
+                                        onSortChange(option)
+                                        sortMenuExpanded = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(16.dp)
+        )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            item {
+                AssistChip(
+                    onClick = onPickSafFileClick,
+                    label = { Text("Open File (SAF)") },
+                    leadingIcon = {
+                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("saf_open_file_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onOpenStudioClick,
+                    label = { Text("Media Studio & Converter") },
+                    leadingIcon = {
+                        Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("open_studio_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onOpenEqualizerClick,
+                    label = { Text("Equalizer DSP") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("open_equalizer_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onRescanClick,
+                    label = { Text("Rescan") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("rescan_library_chip")
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun HomeDashboardScreen(
+    allMedia: List<MediaEntity>,
+    audioMedia: List<MediaEntity>,
+    videoMedia: List<MediaEntity>,
+    recentHistory: List<PlaybackHistoryEntity>,
+    favoriteUris: Set<String>,
+    currentlyPlayingUri: String?,
+    hasMediaPermission: Boolean,
+    permissionPermanentlyDenied: Boolean,
+    userPreferences: UserPreferencesState,
+    onRequestPermissionClick: () -> Unit,
+    onPickSafFileClick: () -> Unit,
+    onGenerateSamplesClick: () -> Unit,
+    onPlayMedia: (MediaEntity, List<MediaEntity>) -> Unit,
+    onToggleFavorite: (MediaEntity) -> Unit,
+    onAddToPlaylistRequest: (MediaEntity) -> Unit,
+    onOpenStudioForMedia: (MediaEntity?) -> Unit,
+    onOpenEqualizer: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("home_dashboard_list"),
+        contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // Hero Studio Banner
+        item {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("hero_studio_banner_card"),
+                shape = RoundedCornerShape(22.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(176.dp)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_hero_studio_banner),
+                        contentDescription = "PulsePlay Acoustic Studio Banner",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(18.dp),
+                        verticalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Security,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "100% OFFLINE • ZERO NETWORK",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
+
+                        Column {
+                            Text(
+                                text = "PulsePlay Studio",
+                                style = MaterialTheme.typography.headlineMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "${audioMedia.size} Audio Tracks • ${videoMedia.size} Videos • Media3 + MediaCodec Engine",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Contextual Permission Banner if device MediaStore permission is not yet granted
+        if (!hasMediaPermission) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("permission_context_card")
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Shared Device MediaStore Access",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (permissionPermanentlyDenied) {
+                                "Media permission was denied. You can still play built-in Studio Samples or open any file without permissions using Storage Access Framework (SAF)."
+                            } else {
+                                "Grant read-only audio/video permission to automatically index your device's shared Music & Movies folders, or use SAF File Picker for single-file zero-permission playback."
+                            },
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!permissionPermanentlyDenied) {
+                                Button(
+                                    onClick = onRequestPermissionClick,
+                                    modifier = Modifier.testTag("grant_media_permission_button")
+                                ) {
+                                    Text("Grant Media Access")
+                                }
+                            }
+                            OutlinedButton(
+                                onClick = onPickSafFileClick,
+                                modifier = Modifier.testTag("saf_picker_banner_button")
+                            ) {
+                                Text("Open File (SAF)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 14 Optional Local Sponsor Slot (Only rendered if explicitly enabled AND consented in Settings)
+        if (OptionalAdManager.canShowOptionalTestBanner(
+                moduleEnabledInSettings = userPreferences.optionalAdsModuleEnabled,
+                explicitUserConsentGranted = userPreferences.optionalAdsConsentGranted
+            )
+        ) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("optional_local_ad_slot")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "TEST AD SLOT (OFFLINE LOCAL SANDBOX)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = "Zero network calls • Zero tracking IDs • Disabled by default",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Quick Studio & Hardware DSP Cards
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onOpenStudioForMedia(null) }
+                        .testTag("quick_action_studio_card"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCut,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Media Editor",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Trim, Rotate, Extract Audio & Convert",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Card(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { onOpenEqualizer() }
+                        .testTag("quick_action_eq_card"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(14.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.Equalizer,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Equalizer DSP",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Multi-band EQ & Bass Boost",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
+        // Recently Played Section
+        if (recentHistory.isNotEmpty()) {
+            item {
+                Text(
+                    text = "Recently Played",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(recentHistory.take(8), key = { it.uriString }) { hist ->
+                        val matchingMedia = allMedia.find { it.uriString == hist.uriString }
+                        Card(
+                            modifier = Modifier
+                                .width(190.dp)
+                                .clickable(enabled = matchingMedia != null) {
+                                    matchingMedia?.let { onPlayMedia(it, allMedia) }
+                                },
+                            shape = RoundedCornerShape(14.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            )
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.History,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "Resume @ ${formatDurationMillis(hist.lastPositionMs)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = hist.titleSnapshot,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "Played ${hist.playCount}x",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // All Discovered & Studio Media Section
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Studio & Device Media (${allMedia.size})",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+                TextButton(
+                    onClick = onGenerateSamplesClick,
+                    modifier = Modifier.testTag("regenerate_samples_button")
+                ) {
+                    Text("Verify Samples")
+                }
+            }
+        }
+
+        if (allMedia.isEmpty()) {
+            item {
+                EmptyLibraryPlaceholder(
+                    title = "No Media Indexed Yet",
+                    subtitle = "Tap 'Verify Samples' to synthesize legal WAV/M4A/MP4 test media or open any local file via SAF.",
+                    onActionClick = onGenerateSamplesClick,
+                    actionLabel = "Generate Legal Studio Samples"
+                )
+            }
+        } else {
+            items(allMedia, key = { it.uriString }) { media ->
+                MediaItemCard(
+                    media = media,
+                    isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                    isFavorite = favoriteUris.contains(media.uriString),
+                    onPlayClick = { onPlayMedia(media, allMedia) },
+                    onFavoriteToggle = { onToggleFavorite(media) },
+                    onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                    onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun MediaCatalogScreen(
+    title: String,
+    subtitle: String,
+    mediaList: List<MediaEntity>,
+    favoriteUris: Set<String>,
+    currentlyPlayingUri: String?,
+    emptyTitle: String,
+    emptySubtitle: String,
+    onPlayMedia: (MediaEntity, List<MediaEntity>) -> Unit,
+    onToggleFavorite: (MediaEntity) -> Unit,
+    onAddToPlaylistRequest: (MediaEntity) -> Unit,
+    onOpenStudioForMedia: (MediaEntity) -> Unit,
+    onPickSafFileClick: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("media_catalog_list"),
+        contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        if (mediaList.isEmpty()) {
+            item {
+                EmptyLibraryPlaceholder(
+                    title = emptyTitle,
+                    subtitle = emptySubtitle,
+                    onActionClick = onPickSafFileClick,
+                    actionLabel = "Open Local File (SAF)"
+                )
+            }
+        } else {
+            items(mediaList, key = { it.uriString }) { item ->
+                MediaItemCard(
+                    media = item,
+                    isCurrentlyPlaying = currentlyPlayingUri == item.uriString,
+                    isFavorite = favoriteUris.contains(item.uriString),
+                    onPlayClick = { onPlayMedia(item, mediaList) },
+                    onFavoriteToggle = { onToggleFavorite(item) },
+                    onAddToPlaylistClick = { onAddToPlaylistRequest(item) },
+                    onOpenInStudioClick = { onOpenStudioForMedia(item) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun LibraryAndFoldersScreen(
+    selectedSubTab: LibrarySubTab,
+    onSelectSubTab: (LibrarySubTab) -> Unit,
+    allMedia: List<MediaEntity>,
+    selectedFolder: String?,
+    onSelectFolder: (String?) -> Unit,
+    playlists: List<PlaylistWithCount>,
+    selectedPlaylistId: Long?,
+    playlistItems: List<MediaEntity>,
+    onSelectPlaylist: (Long?) -> Unit,
+    onCreatePlaylist: (String, String) -> Unit,
+    onDeletePlaylist: (Long) -> Unit,
+    favoriteMedia: List<MediaEntity>,
+    favoriteUris: Set<String>,
+    historyItems: List<PlaybackHistoryEntity>,
+    currentlyPlayingUri: String?,
+    onPlayMedia: (MediaEntity, List<MediaEntity>) -> Unit,
+    onToggleFavorite: (MediaEntity) -> Unit,
+    onAddToPlaylistRequest: (MediaEntity) -> Unit,
+    onOpenStudioForMedia: (MediaEntity) -> Unit,
+    onClearHistoryOnly: () -> Unit
+) {
+    var showCreatePlaylistDialog by remember { mutableStateOf(false) }
+    var newPlaylistName by remember { mutableStateOf("") }
+    var newPlaylistDesc by remember { mutableStateOf("") }
+
+    if (showCreatePlaylistDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreatePlaylistDialog = false },
+            title = { Text("New Local Playlist") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = newPlaylistName,
+                        onValueChange = { newPlaylistName = it },
+                        label = { Text("Playlist Name") },
+                        singleLine = true,
+                        modifier = Modifier.testTag("new_playlist_name_input")
+                    )
+                    OutlinedTextField(
+                        value = newPlaylistDesc,
+                        onValueChange = { newPlaylistDesc = it },
+                        label = { Text("Description (Optional)") },
+                        singleLine = true
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newPlaylistName.isNotBlank()) {
+                            onCreatePlaylist(newPlaylistName, newPlaylistDesc)
+                            newPlaylistName = ""
+                            newPlaylistDesc = ""
+                            showCreatePlaylistDialog = false
+                        }
+                    },
+                    modifier = Modifier.testTag("confirm_create_playlist_button")
+                ) {
+                    Text("Create")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreatePlaylistDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Sub-navigation chips: Folders, Playlists, Favorites, History
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(LibrarySubTab.entries) { tab ->
+                FilterChip(
+                    selected = selectedSubTab == tab,
+                    onClick = {
+                        onSelectSubTab(tab)
+                        onSelectFolder(null)
+                        onSelectPlaylist(null)
+                    },
+                    label = { Text(tab.name.lowercase().replaceFirstChar { it.uppercase() }) },
+                    modifier = Modifier.testTag("library_subtab_${tab.name.lowercase()}")
+                )
+            }
+        }
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            when (selectedSubTab) {
+                LibrarySubTab.FOLDERS -> {
+                    val groupedByFolder = allMedia.groupBy { it.folderName }
+                    if (selectedFolder == null) {
+                        item {
+                            Text(
+                                text = "Local Media Folders (${groupedByFolder.size})",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        items(groupedByFolder.entries.toList(), key = { it.key }) { (folderName, itemsInFolder) ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectFolder(folderName) }
+                                    .testTag("folder_card_$folderName"),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Folder,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = folderName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "${itemsInFolder.size} media items",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        val folderItems = groupedByFolder[selectedFolder].orEmpty()
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Folder: $selectedFolder",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(onClick = { onSelectFolder(null) }) {
+                                    Text("All Folders")
+                                }
+                            }
+                        }
+                        items(folderItems, key = { it.uriString }) { media ->
+                            MediaItemCard(
+                                media = media,
+                                isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                isFavorite = favoriteUris.contains(media.uriString),
+                                onPlayClick = { onPlayMedia(media, folderItems) },
+                                onFavoriteToggle = { onToggleFavorite(media) },
+                                onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                            )
+                        }
+                    }
+                }
+
+                LibrarySubTab.PLAYLISTS -> {
+                    if (selectedPlaylistId == null) {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "User Playlists (${playlists.size})",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Button(
+                                    onClick = { showCreatePlaylistDialog = true },
+                                    modifier = Modifier.testTag("create_playlist_button")
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("New Playlist")
+                                }
+                            }
+                        }
+
+                        if (playlists.isEmpty()) {
+                            item {
+                                EmptyLibraryPlaceholder(
+                                    title = "No Playlists Created",
+                                    subtitle = "Create custom local playlists stored in Room SQLite with zero cloud sync.",
+                                    onActionClick = { showCreatePlaylistDialog = true },
+                                    actionLabel = "Create First Playlist"
+                                )
+                            }
+                        } else {
+                            items(playlists, key = { it.playlistId }) { pl ->
+                                Card(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSelectPlaylist(pl.playlistId) },
+                                    shape = RoundedCornerShape(16.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(16.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.secondary,
+                                            modifier = Modifier.size(32.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = pl.name,
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                            Text(
+                                                text = "${pl.itemCount} tracks • ${pl.description.ifBlank { "Local Playlist" }}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = { onDeletePlaylist(pl.playlistId) },
+                                            modifier = Modifier.minimumInteractiveComponentSize()
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.DeleteOutline,
+                                                contentDescription = "Delete playlist"
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Playlist Tracks (${playlistItems.size})",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(onClick = { onSelectPlaylist(null) }) {
+                                    Text("Back to Playlists")
+                                }
+                            }
+                        }
+                        items(playlistItems, key = { it.uriString }) { media ->
+                            MediaItemCard(
+                                media = media,
+                                isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                isFavorite = favoriteUris.contains(media.uriString),
+                                onPlayClick = { onPlayMedia(media, playlistItems) },
+                                onFavoriteToggle = { onToggleFavorite(media) },
+                                onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                            )
+                        }
+                    }
+                }
+
+                LibrarySubTab.FAVORITES -> {
+                    item {
+                        Text(
+                            text = "Favorite Media (${favoriteMedia.size})",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (favoriteMedia.isEmpty()) {
+                        item {
+                            EmptyLibraryPlaceholder(
+                                title = "No Favorites Yet",
+                                subtitle = "Tap the heart icon on any audio or video track to bookmark it locally.",
+                                onActionClick = {},
+                                actionLabel = null
+                            )
+                        }
+                    } else {
+                        items(favoriteMedia, key = { it.uriString }) { media ->
+                            MediaItemCard(
+                                media = media,
+                                isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                isFavorite = true,
+                                onPlayClick = { onPlayMedia(media, favoriteMedia) },
+                                onFavoriteToggle = { onToggleFavorite(media) },
+                                onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                            )
+                        }
+                    }
+                }
+
+                LibrarySubTab.HISTORY -> {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Playback History (${historyItems.size})",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "Clearing history removes database records only; never deletes media files.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (historyItems.isNotEmpty()) {
+                                OutlinedButton(
+                                    onClick = onClearHistoryOnly,
+                                    modifier = Modifier.testTag("clear_history_subtab_button")
+                                ) {
+                                    Text("Clear History")
+                                }
+                            }
+                        }
+                    }
+                    items(historyItems, key = { it.uriString }) { hist ->
+                        val matching = allMedia.find { it.uriString == hist.uriString }
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = matching != null) {
+                                    matching?.let { onPlayMedia(it, allMedia) }
+                                },
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.History,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = hist.titleSnapshot,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Last position: ${formatDurationMillis(hist.lastPositionMs)} / ${formatDurationMillis(hist.durationMs)} • Played ${hist.playCount}x",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun EmptyLibraryPlaceholder(
+    title: String,
+    subtitle: String,
+    onActionClick: () -> Unit,
+    actionLabel: String?
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 16.dp),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                imageVector = Icons.Default.AudioFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(44.dp)
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (actionLabel != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(onClick = onActionClick) {
+                    Text(actionLabel)
+                }
+            }
+        }
+    }
+}

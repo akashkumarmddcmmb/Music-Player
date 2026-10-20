@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer glowing acoustic ring -->
+    <path
+        android:fillColor="#22FF9F1C"
+        android:pathData="M54,26A28,28 0 1,1 54,82A28,28 0 1,1 54,26z" />
+    <!-- Acoustic Pulse Bars on Left -->
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M34,45L38,45L38,63L34,63z" />
+    <path
+        android:fillColor="#00E5FF"
+        android:pathData="M41,37L45,37L45,71L41,71z" />
+    <!-- Central Studio Play Prism -->
+    <path
+        android:fillColor="#FF9F1C"
+        android:pathData="M49,35L74,54L49,73z" />
+    <!-- Inner Highlight Facet -->
+    <path
+        android:fillColor="#FFD166"
+        android:pathData="M49,35L74,54L49,54z" />
+</vector>

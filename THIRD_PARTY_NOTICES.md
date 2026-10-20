@@ -1,0 +1,190 @@
+# Third-Party Open Source Software Notices & License Audit (PulsePlay)
+
+This document records the copyright owners, versions, licenses, redistribution rights, notice obligations, and native-binary evaluations for all third-party libraries and bundled fonts used in the **PulsePlay** Android application (`com.aistudio.pulseplay.mpxvqr`).
+
+PulsePlay is an original Android application codebase written in Kotlin using Jetpack Compose and AndroidX Media3. No source code, assets, logos, screenshots, or UI designs from PLAYit or any proprietary media player are included.
+
+---
+
+## 1. Summary Dependency & License Audit Table
+
+| Component / Artifact | Version | Owner / Project | License | Native Binaries (`.so`) | Redistribution & Notice Obligations |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `androidx.media3:media3-exoplayer` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None (Pure Java/Kotlin; uses Android OS MediaCodec) | Include Apache-2.0 license text & notice |
+| `androidx.media3:media3-session` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `androidx.media3:media3-ui` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `androidx.media3:media3-common` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `androidx.room:room-runtime` & `room-ktx` | `2.7.0` | Google LLC / Android Open Source Project | Apache License 2.0 | None (Uses platform SQLite) | Include Apache-2.0 license text & notice |
+| `androidx.datastore:datastore-preferences` | `1.1.7` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `androidx.compose:compose-bom` (UI, Material3, Icons) | `2024.09.00` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `androidx.lifecycle:*` & `androidx.activity:activity-compose` | `2.8.7` / `1.10.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `androidx.navigation:navigation-compose` | `2.8.9` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-android` | `1.10.2` | JetBrains s.r.o. | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| `io.coil-kt:coil-compose` | `2.7.0` | Coil Contributors (Instacart) | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
+| **Space Grotesk** (`res/font/space_grotesk.ttf`) | `v22` | Florian Karsten | SIL Open Font License 1.1 | N/A (Static Font) | Retain OFL-1.1 copyright & license notice |
+| **Plus Jakarta Sans** (`res/font/plus_jakarta_sans.ttf`) | `v12` | Gumpita Rahayu / Tokotype | SIL Open Font License 1.1 | N/A (Static Font) | Retain OFL-1.1 copyright & license notice |
+| **JetBrains Mono** (`res/font/jetbrains_mono.ttf`) | `v24` | JetBrains s.r.o. | SIL Open Font License 1.1 | N/A (Static Font) | Retain OFL-1.1 copyright & license notice |
+
+---
+
+## 2. Copyleft & Native Binary Risk Statement
+
+- **Zero GPL / LGPL / Proprietary Native Binaries:** PulsePlay does **not** bundle FFmpeg (`libffmpeg.so`), libVLC, or any GPL/LGPL native libraries. All audio/video decoding, encoding, trimming, and container muxing rely exclusively on Android platform `MediaExtractor`, `MediaCodec`, `MediaMuxer`, and standard RIFF WAVE PCM synthesis.
+- **Source-Code Offer Requirements:** Because all code dependencies are licensed under the permissive **Apache License 2.0** and bundled fonts are under **SIL Open Font License 1.1**, there are no copyleft source-code disclosure obligations.
+
+---
+
+## 3. Apache License, Version 2.0
+
+```text
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      copyright notice that is included in or attached to the work
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      copyright license to reproduce, prepare Derivative Works of,
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+      (c) You must retain, in the Source form of any Derivative Works
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file.
+
+   5. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE.
+
+   6. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work.
+```
+
+---
+
+## 4. SIL Open Font License, Version 1.1 (OFL-1.1)
+
+Applies to bundled font assets (`space_grotesk.ttf`, `plus_jakarta_sans.ttf`, `jetbrains_mono.ttf`):
+
+```text
+Copyright (c) 2018-2024 Florian Karsten (Space Grotesk)
+Copyright (c) 2020-2024 Tokotype (Plus Jakarta Sans)
+Copyright (c) 2020-2024 JetBrains s.r.o. (JetBrains Mono)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and community initiatives, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license.
+```

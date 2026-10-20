@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <path android:pathData="M0,0h320v180h-320z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="320"
+                android:endY="180"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#0D1117" />
+                <item android:offset="0.5" android:color="#152238" />
+                <item android:offset="1.0" android:color="#1E293B" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    <!-- Acoustic Wave Ribbons -->
+    <path
+        android:pathData="M0,130 C80,90 140,160 220,110 C270,80 300,120 320,95 L320,180 L0,180 Z"
+        android:fillColor="#1AFF9F1C" />
+    <path
+        android:pathData="M0,150 C90,120 160,170 240,125 C280,100 305,135 320,115 L320,180 L0,180 Z"
+        android:fillColor="#2400E5FF" />
+    <!-- Studio Equalizer Bars Accent -->
+    <path android:fillColor="#4400E5FF" android:pathData="M240,42h6v48h-6z" />
+    <path android:fillColor="#6600E5FF" android:pathData="M252,28h6v62h-6z" />
+    <path android:fillColor="#88FF9F1C" android:pathData="M264,50h6v40h-6z" />
+    <path android:fillColor="#CCFF9F1C" android:pathData="M276,20h6v70h-6z" />
+    <path android:fillColor="#88FFD166" android:pathData="M288,36h6v54h-6z" />
+</vector>

@@ -1,0 +1,6 @@
+{
+  "name": "PulsePlay",
+  "description": "Original privacy-first Android audio & video player, equalizer, subtitle manager, and real local media processing studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

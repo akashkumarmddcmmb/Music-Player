@@ -4,7 +4,6 @@ import android.content.Context
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.net.Uri
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
@@ -19,7 +18,7 @@ import kotlin.math.sin
 
 /**
  * Generates real, valid, playable audio (.wav, .m4a) and video (.mp4 with H.264/AVC + AAC)
- * sample fixtures directly on the device using Android MediaCodec, MediaMuxer, and PCM synthesis.
+ * sample fixtures directly on the device using Android MediaCodec, IsoMp4Muxer, and PCM synthesis.
  *
  * This guarantees that users and automated tests in fresh emulators without pre-loaded SD card
  * files can immediately test real audio playback, video playback, subtitle rendering,
@@ -87,7 +86,7 @@ class SampleMediaGenerator(private val context: Context) {
             )
         )
 
-        // 3. Generate AAC M4A Audio Track 3 using hardware/platform MediaCodec + MediaMuxer
+        // 3. Generate AAC M4A Audio Track 3 using hardware/platform MediaCodec + IsoMp4Muxer
         val m4aFile = File(sampleDir, "Pulse_Midnight_Synth.m4a")
         if (!m4aFile.exists() || m4aFile.length() < 512L) {
             runCatching {
@@ -267,9 +266,10 @@ class SampleMediaGenerator(private val context: Context) {
         }
 
         var encoder: MediaCodec? = null
-        var muxer: MediaMuxer? = null
+        var muxer: IsoMp4Muxer? = null
         var muxerStarted = false
         var samplesWritten = 0
+        var lastPtsUs = -1L
 
         try {
             encoder = MediaCodec.createEncoderByType(mime)
@@ -283,6 +283,7 @@ class SampleMediaGenerator(private val context: Context) {
             var outputFormat: MediaFormat? = null
             var trackIndex = -1
             val bufferInfo = MediaCodec.BufferInfo()
+            val muxBufferInfo = MediaCodec.BufferInfo()
             var emptyPolls = 0
 
             while (!outputDone && emptyPolls < 200) {
@@ -328,24 +329,29 @@ class SampleMediaGenerator(private val context: Context) {
                         emptyPolls = 0
                         val outBuf = encoder.getOutputBuffer(outIndex)
                         val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                         if (outBuf != null && bufferInfo.size > 0 && !isCodecConfig) {
                             if (!muxerStarted) {
                                 val fmt = outputFormat ?: encoder.outputFormat
-                                muxer = MediaMuxer(
-                                    outputFile.absolutePath,
-                                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
-                                )
+                                muxer = IsoMp4Muxer(outputFile, majorBrand = "M4A ")
                                 trackIndex = muxer!!.addTrack(fmt)
                                 muxer!!.start()
                                 muxerStarted = true
                             }
+                            val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
+                            val safePtsUs = if (rawPtsUs <= lastPtsUs) lastPtsUs + 100L else rawPtsUs
+                            lastPtsUs = safePtsUs
+
+                            val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
+                            muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
+
                             outBuf.position(bufferInfo.offset)
                             outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                            muxer?.writeSampleData(trackIndex, outBuf, bufferInfo)
+                            muxer?.writeSampleData(trackIndex, outBuf, muxBufferInfo)
                             samplesWritten++
                         }
                         encoder.releaseOutputBuffer(outIndex, false)
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        if (isEos) {
                             outputDone = true
                         }
                     }
@@ -378,6 +384,8 @@ class SampleMediaGenerator(private val context: Context) {
         val frameRate = 15
         val totalFrames = frameRate * durationSeconds
         val videoMime = MediaFormat.MIMETYPE_VIDEO_AVC
+        val audioMime = MediaFormat.MIMETYPE_AUDIO_AAC
+        val sampleRate = 44100
 
         @Suppress("DEPRECATION")
         val videoFormat = MediaFormat.createVideoFormat(videoMime, width, height).apply {
@@ -390,24 +398,44 @@ class SampleMediaGenerator(private val context: Context) {
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
+        val audioFormat = MediaFormat.createAudioFormat(audioMime, sampleRate, 2).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, 128_000)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
+        }
+
         var videoEncoder: MediaCodec? = null
-        var muxer: MediaMuxer? = null
+        var audioEncoder: MediaCodec? = null
+        var muxer: IsoMp4Muxer? = null
         var muxerStarted = false
         var samplesWritten = 0
+        var lastVideoPtsUs = -1L
+        var lastAudioPtsUs = -1L
 
         try {
             videoEncoder = MediaCodec.createEncoderByType(videoMime)
             videoEncoder.configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             videoEncoder.start()
 
+            audioEncoder = MediaCodec.createEncoderByType(audioMime)
+            audioEncoder.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            audioEncoder.start()
+
+            muxer = IsoMp4Muxer(outputFile, majorBrand = "mp42")
+            val videoTrackIndex = muxer.addTrack(videoFormat)
+            val audioTrackIndex = muxer.addTrack(audioFormat)
+            muxer.start()
+            muxerStarted = true
+
             val frameSize = width * height * 3 / 2
             val yuvFrame = ByteArray(frameSize)
             val bufferInfo = MediaCodec.BufferInfo()
+            val muxBufferInfo = MediaCodec.BufferInfo()
+
+            // 1. Encode Video Track
             var submittedFrames = 0
             var inputDone = false
             var outputDone = false
-            var outputFormat: MediaFormat? = null
-            var videoTrackIndex = -1
             var emptyPolls = 0
 
             while (!outputDone && emptyPolls < 200) {
@@ -452,31 +480,28 @@ class SampleMediaGenerator(private val context: Context) {
                 val outIdx = videoEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        outputFormat = videoEncoder.outputFormat
                         emptyPolls = 0
                     }
                     outIdx >= 0 -> {
                         emptyPolls = 0
                         val outBuf = videoEncoder.getOutputBuffer(outIdx)
                         val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                         if (outBuf != null && bufferInfo.size > 0 && !isCodecConfig) {
-                            if (!muxerStarted) {
-                                val fmt = outputFormat ?: videoEncoder.outputFormat
-                                muxer = MediaMuxer(
-                                    outputFile.absolutePath,
-                                    MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
-                                )
-                                videoTrackIndex = muxer!!.addTrack(fmt)
-                                muxer!!.start()
-                                muxerStarted = true
-                            }
+                            val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
+                            val safePtsUs = if (rawPtsUs <= lastVideoPtsUs) lastVideoPtsUs + 100L else rawPtsUs
+                            lastVideoPtsUs = safePtsUs
+
+                            val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
+                            muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
+
                             outBuf.position(bufferInfo.offset)
                             outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                            muxer?.writeSampleData(videoTrackIndex, outBuf, bufferInfo)
+                            muxer.writeSampleData(videoTrackIndex, outBuf, muxBufferInfo)
                             samplesWritten++
                         }
                         videoEncoder.releaseOutputBuffer(outIdx, false)
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        if (isEos) {
                             outputDone = true
                         }
                     }
@@ -485,9 +510,85 @@ class SampleMediaGenerator(private val context: Context) {
                     }
                 }
             }
+
+            // 2. Encode Companion AAC Audio Track for Video
+            val totalAudioSamples = sampleRate * durationSeconds
+            var audioSubmitted = 0
+            var audioInputDone = false
+            var audioOutputDone = false
+            var audioEmptyPolls = 0
+
+            while (!audioOutputDone && audioEmptyPolls < 200) {
+                if (!audioInputDone) {
+                    val inIdx = audioEncoder.dequeueInputBuffer(10_000)
+                    if (inIdx >= 0) {
+                        val inBuf = audioEncoder.getInputBuffer(inIdx)!!
+                        inBuf.clear()
+                        if (audioSubmitted >= totalAudioSamples) {
+                            audioEncoder.queueInputBuffer(
+                                inIdx,
+                                0,
+                                0,
+                                (audioSubmitted * 1_000_000L) / sampleRate,
+                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                            )
+                            audioInputDone = true
+                        } else {
+                            val maxFrames = minOf(1024, totalAudioSamples - audioSubmitted, inBuf.remaining() / 4)
+                            for (i in 0 until maxFrames) {
+                                val t = (audioSubmitted + i).toDouble() / sampleRate.toDouble()
+                                val l = (sin(2.0 * PI * 392.0 * t) * 10000).toInt().toShort()
+                                val r = (sin(2.0 * PI * 493.88 * t) * 10000).toInt().toShort()
+                                inBuf.put((l.toInt() and 0xFF).toByte())
+                                inBuf.put(((l.toInt() shr 8) and 0xFF).toByte())
+                                inBuf.put((r.toInt() and 0xFF).toByte())
+                                inBuf.put(((r.toInt() shr 8) and 0xFF).toByte())
+                            }
+                            val ptsUs = (audioSubmitted * 1_000_000L) / sampleRate
+                            audioSubmitted += maxFrames
+                            audioEncoder.queueInputBuffer(inIdx, 0, maxFrames * 4, ptsUs, 0)
+                        }
+                    }
+                }
+
+                val outIdx = audioEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                when {
+                    outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        audioEmptyPolls = 0
+                    }
+                    outIdx >= 0 -> {
+                        audioEmptyPolls = 0
+                        val outBuf = audioEncoder.getOutputBuffer(outIdx)
+                        val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
+                        if (outBuf != null && bufferInfo.size > 0 && !isCodecConfig) {
+                            val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
+                            val safePtsUs = if (rawPtsUs <= lastAudioPtsUs) lastAudioPtsUs + 100L else rawPtsUs
+                            lastAudioPtsUs = safePtsUs
+
+                            val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
+                            muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
+
+                            outBuf.position(bufferInfo.offset)
+                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                            muxer.writeSampleData(audioTrackIndex, outBuf, muxBufferInfo)
+                            samplesWritten++
+                        }
+                        audioEncoder.releaseOutputBuffer(outIdx, false)
+                        if (isEos) {
+                            audioOutputDone = true
+                        }
+                    }
+                    else -> {
+                        audioEmptyPolls++
+                    }
+                }
+            }
         } finally {
             runCatching { videoEncoder?.stop() }
             runCatching { videoEncoder?.release() }
+            runCatching { audioEncoder?.stop() }
+            runCatching { audioEncoder?.release() }
             if (muxerStarted && samplesWritten > 0) {
                 runCatching { muxer?.stop() }
             }

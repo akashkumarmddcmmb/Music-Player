@@ -6,7 +6,6 @@ import android.media.MediaCodecInfo
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
-import android.media.MediaMuxer
 import android.net.Uri
 import android.os.StatFs
 import com.example.data.local.JobStatus
@@ -589,7 +588,7 @@ class MediaProcessorEngine(
         onProgress: suspend (Int) -> Unit
     ): Boolean {
         val extractor = MediaExtractor()
-        var muxer: MediaMuxer? = null
+        var muxer: IsoMp4Muxer? = null
         var muxerStarted = false
         var samplesWritten = 0
 
@@ -626,8 +625,38 @@ class MediaProcessorEngine(
                 extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
             }
 
+            // Pre-verify which selected tracks actually contain samples within [startUs, endUs]
+            val activeSourceTracks = mutableSetOf<Int>()
+            val probeBuffer = ByteBuffer.allocate(64 * 1024)
+            while (true) {
+                currentCoroutineContext().ensureActive()
+                val probeSize = extractor.readSampleData(probeBuffer, 0)
+                if (probeSize < 0) break
+                val probeTimeUs = extractor.sampleTime
+                if (endUs > startUs && probeTimeUs > endUs) break
+                val tIdx = extractor.sampleTrackIndex
+                if (selectedFormats.containsKey(tIdx) && probeTimeUs >= 0L && probeSize > 0) {
+                    activeSourceTracks.add(tIdx)
+                    if (activeSourceTracks.size == selectedFormats.size) break
+                }
+                extractor.advance()
+            }
+
+            val verifiedFormats = selectedFormats.filterKeys { it in activeSourceTracks }
+            if (verifiedFormats.isEmpty()) {
+                return false
+            }
+
+            // Reset extractor to start of trim window for actual muxing pass
+            if (startUs > 0L) {
+                extractor.seekTo(startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            } else {
+                extractor.seekTo(0L, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+            }
+
             val trackMap = mutableMapOf<Int, Int>()
             val tracksWithSamples = mutableSetOf<Int>()
+            val lastPtsByTrack = mutableMapOf<Int, Long>()
             val buffer = ByteBuffer.allocate(256 * 1024)
             val bufferInfo = MediaCodec.BufferInfo()
             val durationWindowUs = (endUs - startUs).coerceAtLeast(1_000L)
@@ -642,16 +671,14 @@ class MediaProcessorEngine(
                 if (endUs > startUs && sampleTimeUs > endUs) break
 
                 val srcTrackIndex = extractor.sampleTrackIndex
-                if (selectedFormats.containsKey(srcTrackIndex) && sampleTimeUs >= 0L && bufferInfo.size > 0) {
+                if (verifiedFormats.containsKey(srcTrackIndex) && sampleTimeUs >= 0L && bufferInfo.size > 0) {
                     if (!muxerStarted) {
-                        muxer = MediaMuxer(
-                            outputFile.absolutePath,
-                            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
-                        )
+                        val brand = if (includeVideo) "mp42" else "M4A "
+                        muxer = IsoMp4Muxer(outputFile, majorBrand = brand)
                         if (includeVideo && rotationDegrees in listOf(90, 180, 270)) {
                             muxer.setOrientationHint(rotationDegrees)
                         }
-                        selectedFormats.forEach { (srcIdx, fmt) ->
+                        verifiedFormats.forEach { (srcIdx, fmt) ->
                             trackMap[srcIdx] = muxer!!.addTrack(fmt)
                         }
                         muxer.start()
@@ -659,7 +686,12 @@ class MediaProcessorEngine(
                     }
                     val dstTrackIndex = trackMap[srcTrackIndex]
                     if (dstTrackIndex != null) {
-                        bufferInfo.presentationTimeUs = (sampleTimeUs - startUs).coerceAtLeast(0L)
+                        val rawPtsUs = (sampleTimeUs - startUs).coerceAtLeast(0L)
+                        val prevPtsUs = lastPtsByTrack[dstTrackIndex] ?: -1L
+                        val monotonicPtsUs = if (rawPtsUs <= prevPtsUs) prevPtsUs + 1L else rawPtsUs
+                        lastPtsByTrack[dstTrackIndex] = monotonicPtsUs
+
+                        bufferInfo.presentationTimeUs = monotonicPtsUs
                         bufferInfo.flags = extractor.sampleFlags
                         muxer?.writeSampleData(dstTrackIndex, buffer, bufferInfo)
                         tracksWithSamples.add(dstTrackIndex)
@@ -675,7 +707,7 @@ class MediaProcessorEngine(
                 extractor.advance()
             }
 
-            return samplesWritten > 0 && tracksWithSamples.size == trackMap.size
+            return samplesWritten > 0 && tracksWithSamples.size == trackMap.size && trackMap.isNotEmpty()
         } catch (ce: CancellationException) {
             throw ce
         } catch (_: Exception) {
@@ -702,6 +734,12 @@ class MediaProcessorEngine(
         endUs: Long,
         onProgress: suspend (Int) -> Unit
     ) {
+        if (sourceUri.scheme == "file" && sourceUri.path?.endsWith(".wav", ignoreCase = true) == true) {
+            val srcFile = File(sourceUri.path!!)
+            trimPcmWavFile(srcFile, outputFile, startUs / 1000L, endUs / 1000L, onProgress)
+            return
+        }
+
         val extractor = MediaExtractor()
         var decoder: MediaCodec? = null
 
@@ -875,7 +913,7 @@ class MediaProcessorEngine(
                 }
 
                 var encoder: MediaCodec? = null
-                var muxer: MediaMuxer? = null
+                var muxer: IsoMp4Muxer? = null
                 var muxerStarted = false
                 var samplesWritten = 0
 
@@ -936,10 +974,7 @@ class MediaProcessorEngine(
                                 if (outBuf != null && bufferInfo.size > 0 && !isCodecConfig) {
                                     if (!muxerStarted) {
                                         val fmt = outputFormat ?: encoder.outputFormat
-                                        muxer = MediaMuxer(
-                                            outputFile.absolutePath,
-                                            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
-                                        )
+                                        muxer = IsoMp4Muxer(outputFile, majorBrand = "M4A ")
                                         trackIdx = muxer!!.addTrack(fmt)
                                         muxer!!.start()
                                         muxerStarted = true
@@ -1007,6 +1042,32 @@ class MediaProcessorEngine(
         if (!tempFile.exists() || tempFile.length() <= 64L) {
             tempFile.delete()
             throw IllegalStateException("Validation failed: produced output file was empty or incomplete.")
+        }
+
+        // Container-level structural validation (Phase 11 Step 10)
+        if (extension.equals("wav", ignoreCase = true)) {
+            val header = ByteArray(12)
+            val readCount = runCatching {
+                tempFile.inputStream().use { it.read(header) }
+            }.getOrDefault(0)
+            val isRiffWave = readCount == 12 &&
+                String(header, 0, 4, Charsets.US_ASCII) == "RIFF" &&
+                String(header, 8, 4, Charsets.US_ASCII) == "WAVE"
+            if (!isRiffWave) {
+                tempFile.delete()
+                throw IllegalStateException("Validation failed: output WAV file lacks a valid RIFF/WAVE header.")
+            }
+        } else {
+            val header = ByteArray(12)
+            val readCount = runCatching {
+                tempFile.inputStream().use { it.read(header) }
+            }.getOrDefault(0)
+            val isIsoBmff = readCount >= 8 &&
+                String(header, 4, 4, Charsets.US_ASCII) == "ftyp"
+            if (!isIsoBmff) {
+                tempFile.delete()
+                throw IllegalStateException("Validation failed: output container (${extension.uppercase()}) lacks a valid ISO-BMFF ftyp box.")
+            }
         }
 
         // Never silently overwrite existing files (Phase 11 Step 11)

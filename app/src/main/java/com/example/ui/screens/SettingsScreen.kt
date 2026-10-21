@@ -168,13 +168,6 @@ fun ProfileAndSettingsScreen(
                     }
                     item {
                         LicenseEntryCard(
-                            name = "Coil Compose 2.7.0",
-                            owner = "Coil Contributors",
-                            license = "Apache License 2.0"
-                        )
-                    }
-                    item {
-                        LicenseEntryCard(
                             name = "Space Grotesk, Plus Jakarta Sans, JetBrains Mono Fonts",
                             owner = "Florian Karsten, Tokotype, JetBrains",
                             license = "SIL Open Font License 1.1 (OFL-1.1)"

@@ -856,7 +856,7 @@ fun NowPlayingOverlayScreen(
 }
 
 /**
- * Phase 10: Hardware Equalizer & Audio Effects Bottom Sheet with Device Capability Detection.
+ * Phase 10: Multiband Biquad Equalizer & Bass Boost DSP Bottom Sheet with live processing diagnostics.
  */
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -885,13 +885,23 @@ fun EqualizerBottomSheet(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Hardware Equalizer & Bass DSP",
+                        text = "Multiband Equalizer & Bass DSP",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
                         text = eqState.statusMessage,
                         style = MaterialTheme.typography.bodySmall,
+                        color = if (eqState.isEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.testTag("eq_status_message")
+                    )
+                    Text(
+                        text = "Engine: ${eqState.processingMode.label}",
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -917,7 +927,7 @@ fun EqualizerBottomSheet(
             // Frequency Band Sliders
             eqState.bands.forEach { band ->
                 val freqLabel = if (band.centerFreqHz >= 1000) {
-                    "${band.centerFreqHz / 1000} kHz"
+                    "%.1f kHz".format(band.centerFreqHz / 1000f).replace(".0 ", " ")
                 } else {
                     "${band.centerFreqHz} Hz"
                 }
@@ -938,7 +948,8 @@ fun EqualizerBottomSheet(
                         value = band.currentLevelMb.toFloat(),
                         onValueChange = { onBandLevelChange(band.bandIndex, it.toInt()) },
                         valueRange = band.minLevelMb.toFloat()..band.maxLevelMb.toFloat(),
-                        enabled = eqState.isEnabled
+                        enabled = eqState.isEnabled,
+                        modifier = Modifier.testTag("eq_band_slider_${band.bandIndex}")
                     )
                 }
             }
@@ -950,11 +961,7 @@ fun EqualizerBottomSheet(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = if (eqState.isBassBoostSupported) {
-                            "Hardware Bass Boost"
-                        } else {
-                            "Bass Boost (Saved Preference; Hardware DSP Inactive)"
-                        },
+                        text = "Bass Boost (85 Hz Low-Shelf DSP)",
                         style = MaterialTheme.typography.labelMedium
                     )
                     Text(
@@ -967,7 +974,8 @@ fun EqualizerBottomSheet(
                     value = eqState.bassBoostStrength.toFloat(),
                     onValueChange = { onBassBoostChange(it.toInt()) },
                     valueRange = 0f..1000f,
-                    enabled = eqState.isEnabled
+                    enabled = eqState.isEnabled,
+                    modifier = Modifier.testTag("eq_bass_boost_slider")
                 )
             }
 

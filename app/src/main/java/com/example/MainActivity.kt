@@ -3,8 +3,11 @@ package com.example
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -56,6 +59,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,7 +79,7 @@ import com.example.ui.screens.NowPlayingOverlayScreen
 import com.example.ui.screens.ProfileAndSettingsScreen
 import com.example.ui.screens.SearchAndActionHeader
 import com.example.ui.screens.StudioEditorOverlayScreen
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.PulsePlayTheme
 import com.example.viewmodel.PrimaryTab
 import com.example.viewmodel.PulsePlayViewModel
 
@@ -92,7 +96,7 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val prefs by viewModel.userPreferences.collectAsStateWithLifecycle()
-            MyApplicationTheme(
+            PulsePlayTheme(
                 themeMode = prefs.themeMode,
                 dynamicColor = prefs.dynamicColor
             ) {
@@ -201,33 +205,112 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val playlistDetailItems by (playlistDetailItemsFlow?.collectAsStateWithLifecycle(emptyList())
         ?: remember { mutableStateOf(emptyList()) })
 
-    // Runtime permission check on launch
-    LaunchedEffect(Unit) {
-        val requiredPerms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            listOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.READ_MEDIA_VIDEO)
+    var hasPromptedPermissionOnLaunch by rememberSaveable { mutableStateOf(false) }
+    var hasPromptedAllFilesOnLaunch by rememberSaveable { mutableStateOf(false) }
+
+    val checkAnyMediaOrAllFilesGranted = {
+        val allFilesGranted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+        val mediaPerms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.READ_MEDIA_VIDEO)
         } else {
-            listOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
-        val granted = requiredPerms.any {
+        val mediaGranted = mediaPerms.any {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
+        allFilesGranted || mediaGranted
+    }
+
+    val allFilesAccessLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        val granted = checkAnyMediaOrAllFilesGranted()
         viewModel.onPermissionResult(granted = granted)
+    }
+
+    val launchAllFilesAccessSettings = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            runCatching {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                    Uri.parse("package:${context.packageName}")
+                )
+                allFilesAccessLauncher.launch(intent)
+            }.onFailure {
+                runCatching {
+                    val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    allFilesAccessLauncher.launch(fallback)
+                }
+            }
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { resultMap ->
-        val anyGranted = resultMap.values.any { it }
+        val anyGranted = resultMap.values.any { it } || checkAnyMediaOrAllFilesGranted()
         viewModel.onPermissionResult(granted = anyGranted, permanentlyDenied = !anyGranted)
+        // After runtime popup (Notification + Audio/Video), prompt All Files Access if not yet granted
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            !Environment.isExternalStorageManager() &&
+            !hasPromptedAllFilesOnLaunch
+        ) {
+            hasPromptedAllFilesOnLaunch = true
+            launchAllFilesAccessSettings()
+        }
     }
 
     val requestMediaPermissions = {
         val perms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.READ_MEDIA_VIDEO)
+            arrayOf(
+                Manifest.permission.READ_MEDIA_AUDIO,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
         } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
         }
         permissionLauncher.launch(perms)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+            launchAllFilesAccessSettings()
+        }
+    }
+
+    // Directly request Notification, Media, and All Files Access permissions on launch if not yet granted
+    LaunchedEffect(Unit) {
+        val requiredRuntimePerms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.READ_MEDIA_AUDIO,
+                Manifest.permission.READ_MEDIA_VIDEO,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+        }
+        val allRuntimeGranted = requiredRuntimePerms.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        val mediaOrAllFilesGranted = checkAnyMediaOrAllFilesGranted()
+        viewModel.onPermissionResult(granted = mediaOrAllFilesGranted)
+
+        if (!allRuntimeGranted && !hasPromptedPermissionOnLaunch) {
+            hasPromptedPermissionOnLaunch = true
+            permissionLauncher.launch(requiredRuntimePerms)
+        } else if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            !Environment.isExternalStorageManager() &&
+            !hasPromptedAllFilesOnLaunch
+        ) {
+            hasPromptedAllFilesOnLaunch = true
+            launchAllFilesAccessSettings()
+        }
     }
 
     // SAF Media Picker Launcher

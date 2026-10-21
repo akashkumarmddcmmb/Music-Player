@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.example.data.local.FavoriteEntity
@@ -51,9 +53,13 @@ class MediaLibraryRepository(
             }.getOrDefault(emptyList())
             discovered.addAll(samples)
 
-            if (includeDeviceMediaStore) {
+            if (includeDeviceMediaStore || isAllFilesAccessGranted()) {
                 discovered.addAll(queryMediaStoreAudio())
                 discovered.addAll(queryMediaStoreVideo())
+                if (isAllFilesAccessGranted()) {
+                    val existingPaths = discovered.mapNotNull { Uri.parse(it.uriString).path }.toHashSet()
+                    discovered.addAll(scanExternalStorageDirectories(existingPaths))
+                }
             }
 
             if (discovered.isNotEmpty()) {
@@ -61,6 +67,68 @@ class MediaLibraryRepository(
             }
             discovered.size
         }
+
+    private fun isAllFilesAccessGranted(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
+    }
+
+    private fun scanExternalStorageDirectories(existingPaths: HashSet<String>): List<MediaEntity> {
+        val results = mutableListOf<MediaEntity>()
+        val rootDir = runCatching { Environment.getExternalStorageDirectory() }.getOrNull() ?: return results
+        if (!rootDir.exists() || !rootDir.canRead()) return results
+
+        val audioExts = setOf("mp3", "wav", "m4a", "aac", "flac", "ogg", "opus")
+        val videoExts = setOf("mp4", "mkv", "webm", "3gp", "mov", "avi")
+
+        runCatching {
+            rootDir.walkTopDown()
+                .onEnter { dir ->
+                    !dir.name.startsWith(".") &&
+                        !dir.absolutePath.contains("/Android/data") &&
+                        !dir.absolutePath.contains("/Android/obb")
+                }
+                .maxDepth(5)
+                .forEach { file ->
+                    if (results.size >= 300) return@forEach
+                    if (!file.isFile || file.length() < 4096L) return@forEach
+                    if (existingPaths.contains(file.absolutePath)) return@forEach
+                    val ext = file.extension.lowercase()
+                    val isAudio = ext in audioExts
+                    val isVideo = ext in videoExts
+                    if (!isAudio && !isVideo) return@forEach
+
+                    val mime = when (ext) {
+                        "mp3" -> "audio/mpeg"
+                        "wav" -> "audio/wav"
+                        "m4a", "aac" -> "audio/mp4"
+                        "flac" -> "audio/flac"
+                        "ogg", "opus" -> "audio/ogg"
+                        "mp4" -> "video/mp4"
+                        "mkv" -> "video/x-matroska"
+                        "webm" -> "video/webm"
+                        else -> if (isVideo) "video/*" else "audio/*"
+                    }
+                    results.add(
+                        MediaEntity(
+                            uriString = Uri.fromFile(file).toString(),
+                            mediaStoreId = null,
+                            title = file.nameWithoutExtension.ifBlank { file.name },
+                            artist = "Local Storage",
+                            album = file.parentFile?.name ?: "Internal Storage",
+                            folderName = file.parentFile?.name ?: "Internal Storage",
+                            durationMs = 0L,
+                            sizeBytes = file.length(),
+                            mimeType = mime,
+                            mediaType = if (isVideo) MediaType.VIDEO else MediaType.AUDIO,
+                            dateAddedEpochSec = file.lastModified() / 1000L,
+                            isAvailable = true,
+                            isGeneratedSample = false
+                        )
+                    )
+                }
+        }
+        return results
+    }
 
     private fun queryMediaStoreAudio(): List<MediaEntity> {
         val list = mutableListOf<MediaEntity>()

@@ -3,6 +3,7 @@ package com.example.viewmodel
 import android.app.Application
 import android.content.ComponentName
 import android.net.Uri
+import android.os.Bundle
 import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
@@ -14,11 +15,14 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
 import com.example.data.local.JobStatus
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
@@ -219,6 +223,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     // Single Managed Playback Engine (Phase 6 & 7 requirement: never create duplicate players)
     private var activePlayer: Player? = null
+    private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     private var fallbackLocalPlayer: ExoPlayer? = null
     private var progressPollingJob: Job? = null
     private var activeProcessingJob: Job? = null
@@ -230,7 +235,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             _playbackState.value = _playbackState.value.copy(isPlaying = isPlaying)
+            val player = activePlayer
+            equalizerController.updatePlaybackActive(
+                isPlaying || (player != null && player.playbackState == Player.STATE_READY && player.mediaItemCount > 0)
+            )
             if (isPlaying) {
+                if (player != null) {
+                    queryServiceAudioSessionIdIfController(player)
+                }
                 startProgressPolling()
             } else {
                 persistCurrentPlaybackPosition(force = true)
@@ -245,6 +257,27 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 durationMs = dur,
                 currentPositionMs = player.currentPosition.coerceAtLeast(0L)
             )
+            equalizerController.updatePlaybackActive(
+                player.isPlaying || (playbackState == Player.STATE_READY && player.mediaItemCount > 0)
+            )
+            queryServiceAudioSessionIdIfController(player)
+        }
+
+        @OptIn(UnstableApi::class)
+        override fun onAudioSessionIdChanged(audioSessionId: Int) {
+            if (audioSessionId > 0) {
+                viewModelScope.launch {
+                    val prefs = userPreferences.first()
+                    equalizerController.bindToAudioSession(
+                        audioSessionId = audioSessionId,
+                        enabled = prefs.equalizerEnabled,
+                        presetIndex = prefs.equalizerPresetIndex,
+                        bassStrength = prefs.bassBoostStrength,
+                        savedBandLevelsMb = prefs.customBandLevelsMb,
+                        isPlaybackActive = activePlayer?.isPlaying == true || (activePlayer?.mediaItemCount ?: 0) > 0
+                    )
+                }
+            }
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -281,7 +314,85 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             // Ensure legal sample fixtures exist and scan library
             refreshLibrary()
         }
+        viewModelScope.launch {
+            // Restore persisted Equalizer + Bass Boost settings immediately on startup
+            val initialPrefs = preferencesRepository.preferencesFlow.first()
+            equalizerController.bindToAudioSession(
+                audioSessionId = PulsePlaybackService.serviceAudioSessionId.value,
+                enabled = initialPrefs.equalizerEnabled,
+                presetIndex = initialPrefs.equalizerPresetIndex,
+                bassStrength = initialPrefs.bassBoostStrength,
+                savedBandLevelsMb = initialPrefs.customBandLevelsMb,
+                isPlaybackActive = PulsePlaybackService.serviceIsPlaying.value
+            )
+
+            // Continuously synchronize Equalizer DSP with PulsePlaybackService audioSessionId
+            PulsePlaybackService.serviceAudioSessionId.collect { serviceSessionId ->
+                val prefs = preferencesRepository.preferencesFlow.first()
+                val currentSession = equalizerController.state.value
+                val effectiveEnabled = currentSession.isEnabled || prefs.equalizerEnabled
+                val effectiveBands = if (currentSession.bands.any { it.currentLevelMb != 0 }) {
+                    currentSession.bands.map { it.currentLevelMb }
+                } else {
+                    prefs.customBandLevelsMb
+                }
+                val resolvedId = if (serviceSessionId > 0) {
+                    serviceSessionId
+                } else {
+                    resolveActiveAudioSessionId(activePlayer)
+                }
+                equalizerController.bindToAudioSession(
+                    audioSessionId = resolvedId,
+                    enabled = effectiveEnabled,
+                    presetIndex = prefs.equalizerPresetIndex,
+                    bassStrength = prefs.bassBoostStrength,
+                    savedBandLevelsMb = effectiveBands,
+                    isPlaybackActive = activePlayer?.isPlaying == true || PulsePlaybackService.serviceIsPlaying.value
+                )
+            }
+        }
         initializeSingleManagedPlayer()
+    }
+
+    @OptIn(UnstableApi::class)
+    private fun resolveActiveAudioSessionId(player: Player?): Int {
+        val serviceId = PulsePlaybackService.serviceAudioSessionId.value
+        if (serviceId > 0) return serviceId
+        if (player is ExoPlayer) {
+            return player.audioSessionId.coerceAtLeast(0)
+        }
+        return equalizerController.state.value.activeAudioSessionId.coerceAtLeast(0)
+    }
+
+    private fun queryServiceAudioSessionIdIfController(player: Player) {
+        if (player !is MediaController) return
+        val app = getApplication<Application>()
+        runCatching {
+            val cmd = SessionCommand(PulsePlaybackService.ACTION_GET_AUDIO_SESSION_ID, Bundle.EMPTY)
+            val future = player.sendCustomCommand(cmd, Bundle.EMPTY)
+            future.addListener(
+                {
+                    runCatching {
+                        val result = future.get()
+                        val sessionId = result.extras.getInt(PulsePlaybackService.EXTRA_AUDIO_SESSION_ID, 0)
+                        if (sessionId > 0 && equalizerController.state.value.activeAudioSessionId != sessionId) {
+                            viewModelScope.launch {
+                                val prefs = preferencesRepository.preferencesFlow.first()
+                                equalizerController.bindToAudioSession(
+                                    audioSessionId = sessionId,
+                                    enabled = prefs.equalizerEnabled,
+                                    presetIndex = prefs.equalizerPresetIndex,
+                                    bassStrength = prefs.bassBoostStrength,
+                                    savedBandLevelsMb = prefs.customBandLevelsMb,
+                                    isPlaybackActive = player.isPlaying || player.mediaItemCount > 0
+                                )
+                            }
+                        }
+                    }
+                },
+                ContextCompat.getMainExecutor(app)
+            )
+        }
     }
 
     @OptIn(UnstableApi::class)
@@ -293,11 +404,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 ComponentName(app, PulsePlaybackService::class.java)
             )
             val controllerFuture = MediaController.Builder(app, sessionToken).buildAsync()
+            mediaControllerFuture = controllerFuture
             controllerFuture.addListener(
                 {
                     runCatching {
                         val controller = controllerFuture.get()
-                        attachManagedPlayer(controller, audioSessionId = 0)
+                        val sessionId = PulsePlaybackService.serviceAudioSessionId.value
+                        attachManagedPlayer(controller, audioSessionId = sessionId)
+                        queryServiceAudioSessionIdIfController(controller)
                     }.onFailure {
                         ensureFallbackLocalExoPlayer()
                     }
@@ -318,33 +432,70 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private fun ensureFallbackLocalExoPlayer() {
         if (activePlayer != null) return
         val app = getApplication<Application>()
-        val audioAttributes = AudioAttributes.Builder()
-            .setUsage(C.USAGE_MEDIA)
-            .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-            .build()
-        val exo = ExoPlayer.Builder(app)
-            .setAudioAttributes(audioAttributes, true)
-            .setHandleAudioBecomingNoisy(true)
-            .build()
+        val exo = PulsePlaybackService.buildExoPlayerWithEqualizerDsp(
+            context = app,
+            audioProcessor = equalizerController.audioProcessor
+        )
         fallbackLocalPlayer = exo
         attachManagedPlayer(exo, audioSessionId = exo.audioSessionId)
     }
 
+    @OptIn(UnstableApi::class)
     private fun attachManagedPlayer(player: Player, audioSessionId: Int) {
+        val previousFallback = fallbackLocalPlayer
         activePlayer?.removeListener(playerListener)
+
+        // If transitioning from temporary fallbackLocalPlayer to service MediaController,
+        // hand off any active queue/playback state and immediately release fallbackLocalPlayer
+        if (previousFallback != null && previousFallback !== player) {
+            val hadItems = previousFallback.mediaItemCount > 0
+            val itemsToTransfer = mutableListOf<MediaItem>()
+            for (i in 0 until previousFallback.mediaItemCount) {
+                itemsToTransfer.add(previousFallback.getMediaItemAt(i))
+            }
+            val startIndex = previousFallback.currentMediaItemIndex.coerceAtLeast(0)
+            val startPos = previousFallback.currentPosition.coerceAtLeast(0L)
+            val wasPlaying = previousFallback.isPlaying || previousFallback.playWhenReady
+            val speed = previousFallback.playbackParameters.speed
+            val repeat = previousFallback.repeatMode
+            val shuffle = previousFallback.shuffleModeEnabled
+
+            previousFallback.stop()
+            previousFallback.release()
+            fallbackLocalPlayer = null
+
+            if (hadItems && player.mediaItemCount == 0) {
+                player.setMediaItems(itemsToTransfer, startIndex, startPos)
+                player.setPlaybackSpeed(speed)
+                player.repeatMode = repeat
+                player.shuffleModeEnabled = shuffle
+                player.prepare()
+                if (wasPlaying) {
+                    player.play()
+                }
+            }
+        }
+
         activePlayer = player
         player.addListener(playerListener)
 
         viewModelScope.launch {
-            val prefs = userPreferences.first()
+            val prefs = preferencesRepository.preferencesFlow.first()
             player.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
+            val resolvedSessionId = if (audioSessionId > 0) {
+                audioSessionId
+            } else {
+                resolveActiveAudioSessionId(player)
+            }
             equalizerController.bindToAudioSession(
-                audioSessionId = audioSessionId,
+                audioSessionId = resolvedSessionId,
                 enabled = prefs.equalizerEnabled,
                 presetIndex = prefs.equalizerPresetIndex,
                 bassStrength = prefs.bassBoostStrength,
-                savedBandLevelsMb = prefs.customBandLevelsMb
+                savedBandLevelsMb = prefs.customBandLevelsMb,
+                isPlaybackActive = player.isPlaying || player.mediaItemCount > 0
             )
+            queryServiceAudioSessionIdIfController(player)
         }
     }
 
@@ -484,17 +635,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             player.prepare()
             player.play()
 
-            // Re-bind equalizer if local ExoPlayer has an active session ID
-            val sessionId = (player as? ExoPlayer)?.audioSessionId ?: 0
-            if (sessionId > 0) {
-                equalizerController.bindToAudioSession(
-                    audioSessionId = sessionId,
-                    enabled = prefs.equalizerEnabled,
-                    presetIndex = prefs.equalizerPresetIndex,
-                    bassStrength = prefs.bassBoostStrength,
-                    savedBandLevelsMb = prefs.customBandLevelsMb
-                )
-            }
+            // Synchronize Equalizer DSP and resolve active audioSessionId without casting MediaController to ExoPlayer
+            val sessionId = resolveActiveAudioSessionId(player)
+            equalizerController.bindToAudioSession(
+                audioSessionId = sessionId,
+                enabled = prefs.equalizerEnabled,
+                presetIndex = prefs.equalizerPresetIndex,
+                bassStrength = prefs.bassBoostStrength,
+                savedBandLevelsMb = prefs.customBandLevelsMb,
+                isPlaybackActive = true
+            )
+            queryServiceAudioSessionIdIfController(player)
 
             autoLoadMatchingSampleSubtitles(media)
 
@@ -734,6 +885,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
         _playbackState.value = _playbackState.value.copy(availableAudioTracks = list)
+    }
+
+    fun selectAudioTrack(option: AudioTrackOption) {
+        val player = activePlayer ?: return
+        val group = player.currentTracks.groups.getOrNull(option.groupIndex) ?: return
+        if (option.trackIndex !in 0 until group.length) return
+        val override = TrackSelectionOverride(group.mediaTrackGroup, option.trackIndex)
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setOverrideForType(override)
+            .build()
     }
 
     private fun startProgressPolling() {
@@ -993,6 +1155,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun resetAllPreferences() {
         viewModelScope.launch {
             preferencesRepository.resetAllPreferences()
+            val resolvedId = resolveActiveAudioSessionId(activePlayer)
+            equalizerController.bindToAudioSession(
+                audioSessionId = resolvedId,
+                enabled = false,
+                presetIndex = 0,
+                bassStrength = 0,
+                savedBandLevelsMb = listOf(0, 0, 0, 0, 0),
+                isPlaybackActive = activePlayer?.isPlaying == true
+            )
             _statusBannerMessage.value = "All application preferences reset to defaults."
         }
     }
@@ -1026,6 +1197,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         activeProcessingJob?.cancel()
         equalizerController.releaseEffects()
         activePlayer?.removeListener(playerListener)
+        mediaControllerFuture?.let { MediaController.releaseFuture(it) }
+        mediaControllerFuture = null
         fallbackLocalPlayer?.release()
         fallbackLocalPlayer = null
         super.onCleared()

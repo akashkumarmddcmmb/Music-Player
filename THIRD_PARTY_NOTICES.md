@@ -1,40 +1,67 @@
-# Third-Party Open Source Software Notices & License Audit (PulsePlay)
+# Third-Party Open Source Software Notices, Provenance & License Audit (PulsePlay)
 
-This document records the copyright owners, versions, licenses, redistribution rights, notice obligations, and native-binary evaluations for all third-party libraries and bundled fonts used in the **PulsePlay** Android application (`com.aistudio.pulseplay.mpxvqr`).
+This document records the verified copyright owners, exact versions, official source repositories, licenses, redistribution rights, notice obligations, asset provenance, and native-binary evaluations for all third-party libraries, bundled fonts, and visual assets used in the **PulsePlay** Android application (`com.aistudio.pulseplay.mpxvqr`).
 
-PulsePlay is an original Android application codebase written in Kotlin using Jetpack Compose and AndroidX Media3. No source code, assets, logos, screenshots, or UI designs from PLAYit or any proprietary media player are included.
+PulsePlay is an original Android application codebase written in Kotlin using Jetpack Compose and AndroidX Media3. No source code, visual presentation, assets, logos, icons, artwork, text, branding, or distinctive UI from PLAYit or any other proprietary third-party media player are included.
 
 ---
 
-## 1. Summary Dependency & License Audit Table
+## 1. Runtime Dependency & License Inventory
 
-| Component / Artifact | Version | Owner / Project | License | Native Binaries (`.so`) | Redistribution & Notice Obligations |
+| Component / Maven Artifact | Version | Official Source / Owner | Verified License | Native Binaries (`.so`) | Redistribution & Notice Obligations |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `androidx.media3:media3-exoplayer` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None (Pure Java/Kotlin; uses Android OS MediaCodec) | Include Apache-2.0 license text & notice |
-| `androidx.media3:media3-session` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `androidx.media3:media3-ui` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `androidx.media3:media3-common` | `1.5.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `androidx.room:room-runtime` & `room-ktx` | `2.7.0` | Google LLC / Android Open Source Project | Apache License 2.0 | None (Uses platform SQLite) | Include Apache-2.0 license text & notice |
-| `androidx.datastore:datastore-preferences` | `1.1.7` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `androidx.compose:compose-bom` (UI, Material3, Icons) | `2024.09.00` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `androidx.lifecycle:*` & `androidx.activity:activity-compose` | `2.8.7` / `1.10.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `androidx.navigation:navigation-compose` | `2.8.9` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `org.jetbrains.kotlinx:kotlinx-coroutines-android` | `1.10.2` | JetBrains s.r.o. | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| `io.coil-kt:coil-compose` | `2.7.0` | Coil Contributors (Instacart) | Apache License 2.0 | None | Include Apache-2.0 license text & notice |
-| **Space Grotesk** (`res/font/space_grotesk.ttf`) | `v22` | Florian Karsten | SIL Open Font License 1.1 | N/A (Static Font) | Retain OFL-1.1 copyright & license notice |
-| **Plus Jakarta Sans** (`res/font/plus_jakarta_sans.ttf`) | `v12` | Gumpita Rahayu / Tokotype | SIL Open Font License 1.1 | N/A (Static Font) | Retain OFL-1.1 copyright & license notice |
-| **JetBrains Mono** (`res/font/jetbrains_mono.ttf`) | `v24` | JetBrains s.r.o. | SIL Open Font License 1.1 | N/A (Static Font) | Retain OFL-1.1 copyright & license notice |
+| `androidx.media3:media3-exoplayer` | `1.5.1` | Google LLC / Android Open Source Project (`androidx/media`) | Apache License 2.0 | None (Pure Java/Kotlin; uses Android OS `MediaCodec`) | Retain Apache-2.0 license text & notice |
+| `androidx.media3:media3-session` | `1.5.1` | Google LLC / Android Open Source Project (`androidx/media`) | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.media3:media3-ui` | `1.5.1` | Google LLC / Android Open Source Project (`androidx/media`) | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.media3:media3-common` | `1.5.1` | Google LLC / Android Open Source Project (`androidx/media`) | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `com.google.guava:listenablefuture` (transitive via `media3-session`) | `1.0` / `9999.0` | Google LLC (`google/guava`) | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.room:room-runtime`, `room-ktx`, `room-compiler` (KSP) | `2.7.0` | Google LLC / Android Open Source Project | Apache License 2.0 | None (Uses Android platform SQLite) | Retain Apache-2.0 license text & notice |
+| `androidx.datastore:datastore-preferences` | `1.1.7` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.compose:compose-bom` (`ui`, `ui-graphics`, `ui-tooling-preview`, `material3`, `material-icons-core`, `material-icons-extended`) | `2024.09.00` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.lifecycle:lifecycle-runtime-ktx`, `lifecycle-viewmodel-compose`, `lifecycle-runtime-compose` | `2.8.7` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.activity:activity-compose` | `1.10.1` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `androidx.core:core-ktx` | `1.18.0` | Google LLC / Android Open Source Project | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-android` & `kotlinx-coroutines-core` | `1.10.2` | JetBrains s.r.o. (`Kotlin/kotlinx.coroutines`) | Apache License 2.0 | None | Retain Apache-2.0 license text & notice |
 
 ---
 
-## 2. Copyleft & Native Binary Risk Statement
+## 2. Build Plugins & Test-Only Dependencies (Not Packaged in Release APK)
+
+| Component / Artifact | Version | Official Source / Owner | Verified License | Scope |
+| :--- | :--- | :--- | :--- | :--- |
+| `com.android.application` (AGP) | `9.1.1` | Google LLC / AOSP | Apache License 2.0 | Build Plugin |
+| `org.jetbrains.kotlin.plugin.compose` | `2.2.10` | JetBrains s.r.o. | Apache License 2.0 | Build Plugin |
+| `com.google.devtools.ksp` | `2.3.5` | Google LLC | Apache License 2.0 | Annotation/Symbol Processing |
+| `junit:junit` | `4.13.2` | JUnit Team (`junit-team/junit4`) | Eclipse Public License 1.0 (EPL-1.0) | `testImplementation` only |
+| `org.robolectric:robolectric` | `4.16.1` | Robolectric (`robolectric/robolectric`) | MIT License / Apache License 2.0 | `testImplementation` only |
+| `org.jetbrains.kotlinx:kotlinx-coroutines-test` | `1.10.2` | JetBrains s.r.o. | Apache License 2.0 | `testImplementation` only |
+| `androidx.test:core`, `runner`, `ext:junit`, `espresso-core` | `1.6.1` / `1.6.2` / `1.3.0` / `3.7.0` | Google LLC / AOSP | Apache License 2.0 | `testImplementation` / `androidTestImplementation` only |
+
+---
+
+## 3. Bundled Fonts & Visual Asset Provenance Inventory
+
+| Asset File | Type | Provenance / Author | License | Verification Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `app/src/main/res/font/space_grotesk.ttf` | TrueType Font (`v22`) | Florian Karsten (Google Fonts catalog) | SIL Open Font License 1.1 (OFL-1.1) | Installed locally via `font-util`; 100% offline |
+| `app/src/main/res/font/plus_jakarta_sans.ttf` | TrueType Font (`v12`) | Gumpita Rahayu / Tokotype (Google Fonts catalog) | SIL Open Font License 1.1 (OFL-1.1) | Installed locally via `font-util`; 100% offline |
+| `app/src/main/res/font/jetbrains_mono.ttf` | TrueType Font (`v24`) | JetBrains s.r.o. (Google Fonts catalog) | SIL Open Font License 1.1 (OFL-1.1) | Installed locally via `font-util`; 100% offline |
+| `app/src/main/res/drawable/ic_launcher_background.xml` | Android Vector Drawable | Original project asset authored for PulsePlay | Original Project Code | Linear gradient (`#0D1117` to `#1E293B`) + safe-zone ring |
+| `app/src/main/res/drawable/ic_launcher_foreground.xml` | Android Vector Drawable | Original project asset authored for PulsePlay | Original Project Code | Geometric acoustic bars (`#00E5FF`) + play prism (`#FF9F1C`) |
+| `app/src/main/res/drawable/ic_hero_studio_banner.xml` | Android Vector Drawable | Original project asset authored for PulsePlay | Original Project Code | Acoustic wave ribbons & equalizer bar accents |
+| `app/src/main/res/drawable/ic_default_media_art.xml` | Android Vector Drawable | Original project asset authored for PulsePlay | Original Project Code | Studio vinyl disc & amber play triangle |
+| `app/src/main/res/mipmap-*/ic_launcher.png` & `ic_launcher_round.png` | Raster PNG Icons (`mdpi`–`xxxhdpi`) | Original project assets generated deterministically via ImageMagick from PulsePlay vector geometry | Original Project Code | Replaced default template WebP icons |
+
+---
+
+## 4. Copyleft & Native Binary Risk Statement
 
 - **Zero GPL / LGPL / Proprietary Native Binaries:** PulsePlay does **not** bundle FFmpeg (`libffmpeg.so`), libVLC, or any GPL/LGPL native libraries. All audio/video decoding, encoding, trimming, and container muxing rely exclusively on Android platform `MediaExtractor`, `MediaCodec`, `MediaMuxer`, and standard RIFF WAVE PCM synthesis.
-- **Source-Code Offer Requirements:** Because all code dependencies are licensed under the permissive **Apache License 2.0** and bundled fonts are under **SIL Open Font License 1.1**, there are no copyleft source-code disclosure obligations.
+- **Source-Code Offer Requirements:** Because all runtime code dependencies are licensed under the permissive **Apache License 2.0** and bundled fonts are under **SIL Open Font License 1.1**, there are no copyleft source-code disclosure obligations for binary APK distribution.
 
 ---
 
-## 3. Apache License, Version 2.0
+## 5. Apache License, Version 2.0
 
 ```text
                                  Apache License
@@ -144,7 +171,7 @@ PulsePlay is an original Android application codebase written in Kotlin using Je
 
 ---
 
-## 4. SIL Open Font License, Version 1.1 (OFL-1.1)
+## 6. SIL Open Font License, Version 1.1 (OFL-1.1)
 
 Applies to bundled font assets (`space_grotesk.ttf`, `plus_jakarta_sans.ttf`, `jetbrains_mono.ttf`):
 

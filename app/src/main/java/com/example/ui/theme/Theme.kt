@@ -56,7 +56,7 @@ enum class AppThemeMode {
 }
 
 @Composable
-fun MyApplicationTheme(
+fun PulsePlayTheme(
     themeMode: AppThemeMode = AppThemeMode.DARK,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
@@ -79,6 +79,19 @@ fun MyApplicationTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        content = content
+    )
+}
+
+@Composable
+fun MyApplicationTheme(
+    themeMode: AppThemeMode = AppThemeMode.DARK,
+    dynamicColor: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    PulsePlayTheme(
+        themeMode = themeMode,
+        dynamicColor = dynamicColor,
         content = content
     )
 }

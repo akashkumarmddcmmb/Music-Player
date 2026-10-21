@@ -13,7 +13,6 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
@@ -33,13 +32,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
- * Managed Media3 [MediaSessionService] for background playback, notification controls,
+ * Authoritative Media3 [MediaSessionService] for background playback, notification controls,
  * lock-screen media controls, audio focus handling, headphone disconnection pause,
- * and real-time 5-band Biquad Equalizer + Bass Boost PCM processing.
+ * wake-lock management during screen-off playback, and real-time 5-band Biquad Equalizer + Bass Boost DSP.
  *
  * Exposes [serviceAudioSessionId] and supports [ACTION_GET_AUDIO_SESSION_ID] custom session
  * command so [com.example.viewmodel.PulsePlayViewModel] and [EqualizerController] always bind
@@ -51,6 +49,9 @@ class PulsePlaybackService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private var serviceExoPlayer: ExoPlayer? = null
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+
+    @Volatile
+    private var backgroundPlaybackAllowed: Boolean = true
 
     private val sessionListener = object : Player.Listener {
         override fun onAudioSessionIdChanged(audioSessionId: Int) {
@@ -84,24 +85,26 @@ class PulsePlaybackService : MediaSessionService() {
         exoPlayer.addListener(sessionListener)
         _serviceAudioSessionId.value = exoPlayer.audioSessionId
 
-        // Restore persisted Equalizer + Bass Boost settings immediately when service starts
+        // Continuously synchronize persisted Equalizer + Bass Boost & Background Playback preferences
         serviceScope.launch {
             runCatching {
-                val prefs = UserPreferencesRepository(applicationContext).preferencesFlow.first()
-                val resolvedBands = if (prefs.customBandLevelsMb.size == HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ.size) {
-                    prefs.customBandLevelsMb
-                } else {
-                    HardwareEqualizerState.presetCurveForIndex(prefs.equalizerPresetIndex)
-                }
-                EqualizerController.sharedAudioProcessor.updateDspConfig(
-                    EqualizerDspConfig(
-                        isEnabled = prefs.equalizerEnabled,
-                        bypassForHardwareEffect = false,
-                        bandLevelsMb = resolvedBands,
-                        bandFrequenciesHz = HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ,
-                        bassBoostStrength = prefs.bassBoostStrength
+                UserPreferencesRepository(applicationContext).preferencesFlow.collect { prefs ->
+                    backgroundPlaybackAllowed = prefs.backgroundPlaybackEnabled
+                    val resolvedBands = if (prefs.customBandLevelsMb.size == HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ.size) {
+                        prefs.customBandLevelsMb
+                    } else {
+                        HardwareEqualizerState.presetCurveForIndex(prefs.equalizerPresetIndex)
+                    }
+                    EqualizerController.sharedAudioProcessor.updateDspConfig(
+                        EqualizerDspConfig(
+                            isEnabled = prefs.equalizerEnabled,
+                            bypassForHardwareEffect = false,
+                            bandLevelsMb = resolvedBands,
+                            bandFrequenciesHz = HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ,
+                            bassBoostStrength = prefs.bassBoostStrength
+                        )
                     )
-                )
+                }
             }
         }
 
@@ -157,12 +160,22 @@ class PulsePlaybackService : MediaSessionService() {
             .build()
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        return START_STICKY
+    }
+
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
         return mediaSession
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
+        if (!backgroundPlaybackAllowed) {
+            player?.pause()
+            stopSelf()
+            return
+        }
         if (player == null || !player.playWhenReady || player.mediaItemCount == 0 ||
             player.playbackState == Player.STATE_ENDED
         ) {
@@ -195,9 +208,11 @@ class PulsePlaybackService : MediaSessionService() {
         val serviceIsPlaying: StateFlow<Boolean> = _serviceIsPlaying.asStateFlow()
 
         /**
-         * Builds an [ExoPlayer] instance wired with the given [PulseEqualizerAudioProcessor]
-         * inside its [DefaultAudioSink] so all decoded audio frames pass through the biquad EQ
-         * and Bass Boost DSP pipeline.
+         * Builds an [ExoPlayer] instance wired with:
+         * - [PulseEqualizerAudioProcessor] in its [DefaultAudioSink] for real-time 5-band biquad EQ & Bass Boost
+         * - [C.WAKE_MODE_LOCAL] so CPU wake lock is automatically held ONLY while actively playing/buffering
+         *   with the screen off and released immediately on pause/stop
+         * - [AudioAttributes] with `handleAudioFocus = true` and `setHandleAudioBecomingNoisy(true)`
          */
         @OptIn(UnstableApi::class)
         fun buildExoPlayerWithEqualizerDsp(
@@ -226,6 +241,7 @@ class PulsePlaybackService : MediaSessionService() {
             return ExoPlayer.Builder(context, renderersFactory)
                 .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
                 .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(C.WAKE_MODE_LOCAL)
                 .build()
         }
     }

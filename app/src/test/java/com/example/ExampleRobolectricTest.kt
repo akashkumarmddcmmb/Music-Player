@@ -1,11 +1,18 @@
 package com.example
 
+import android.app.Activity
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.net.Uri
+import android.view.WindowManager
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
 import androidx.media3.common.audio.AudioProcessor
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -20,6 +27,7 @@ import com.example.data.local.ProcessingJobEntity
 import com.example.data.local.ProcessingOperationType
 import com.example.data.local.PulseDatabase
 import com.example.data.preferences.UserPreferencesRepository
+import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.BiquadCoefficients
 import com.example.media.BiquadFilterType
 import com.example.media.ConversionCapabilityRegistry
@@ -31,6 +39,7 @@ import com.example.media.HardwareEqualizerState
 import com.example.media.IsoMp4Muxer
 import com.example.media.MediaProcessorEngine
 import com.example.media.MultiBandBiquadFilterBank
+import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
 import com.example.media.PulseEqualizerAudioProcessor
 import com.example.media.SampleMediaGenerator
@@ -57,6 +66,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.robolectric.Robolectric
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
@@ -123,7 +133,7 @@ class ExampleRobolectricTest {
         assertTrue(vttResult is SubtitleLoadResult.Success)
         assertEquals(SubtitleFormat.WEBVTT, (vttResult as SubtitleLoadResult.Success).format)
 
-        // Verify invalid/corrupt subtitle rejection (Phase 9 requirement)
+        // Verify invalid/corrupt subtitle rejection
         val invalidResult = SubtitleParser.parseSubtitleContent("Not a valid subtitle file at all", "fake.srt")
         assertTrue(invalidResult is SubtitleLoadResult.Error)
     }
@@ -163,7 +173,7 @@ class ExampleRobolectricTest {
         assertEquals(1, plMedia.size)
         assertEquals("Studio Test Track", plMedia[0].title)
 
-        // History recording & non-destructive clearing (Phase 4 requirement: never deletes media file)
+        // History recording & non-destructive clearing (never deletes media file)
         dao.upsertHistory(
             PlaybackHistoryEntity(
                 uriString = entity.uriString,
@@ -179,7 +189,7 @@ class ExampleRobolectricTest {
         assertNull(dao.getHistoryForUri(entity.uriString))
         assertTrue("Clearing history must never delete the underlying media file", sampleFile.exists())
 
-        // Interrupted processing job recovery on startup (Phase 16)
+        // Interrupted processing job recovery on startup
         dao.insertProcessingJob(
             ProcessingJobEntity(
                 operationType = ProcessingOperationType.AUDIO_TRIM,
@@ -332,7 +342,7 @@ class ExampleRobolectricTest {
     @Test
     fun `each equalizer frequency band and bass boost measurably alters target spectral energy without clipping`() {
         val sampleRate = 44100
-        val frameCount = 4410 // 100 ms of stereo audio (exact integer cycles for 60, 230, 910, 3600, 14000 Hz)
+        val frameCount = 4410
         val testFreqs = listOf(60.0, 230.0, 910.0, 3600.0, 14000.0)
         val baseSignal = synthesizeMultiTonePcm16Stereo(
             sampleRateHz = sampleRate,
@@ -345,11 +355,9 @@ class ExampleRobolectricTest {
             computeGoertzelMagnitudeLeftChannel(baseSignal, sampleRate, freq)
         }
 
-        // Verify boosting each individual band increases energy in its target frequency region
-        // and cutting that band decreases energy in its target frequency region
         for (bandIdx in 0 until 5) {
-            val boostLevels = MutableList(5) { 0 }.apply { this[bandIdx] = 1200 } // +12 dB
-            val cutLevels = MutableList(5) { 0 }.apply { this[bandIdx] = -1200 }  // -12 dB
+            val boostLevels = MutableList(5) { 0 }.apply { this[bandIdx] = 1200 }
+            val cutLevels = MutableList(5) { 0 }.apply { this[bandIdx] = -1200 }
 
             val boostBank = MultiBandBiquadFilterBank(sampleRate, 2).apply {
                 updateConfig(EqualizerDspConfig(isEnabled = true, bandLevelsMb = boostLevels))
@@ -375,7 +383,6 @@ class ExampleRobolectricTest {
             )
         }
 
-        // Verify Bass Boost (strength = 1000) measurably increases 60 Hz low-frequency energy while keeping 3600 Hz nearly unchanged
         val bassBank = MultiBandBiquadFilterBank(sampleRate, 2).apply {
             updateConfig(
                 EqualizerDspConfig(
@@ -398,7 +405,6 @@ class ExampleRobolectricTest {
             highMidRatio in 0.85..1.15
         )
 
-        // Verify soft-knee limiter prevents wrap-around or clipping under extreme boost (+15 dB all bands + 1000 Bass Boost)
         val hotSignal = synthesizeMultiTonePcm16Stereo(
             sampleRateHz = sampleRate,
             frameCount = 2048,
@@ -416,7 +422,6 @@ class ExampleRobolectricTest {
         }
         val limitedOut = extremeBank.processPcm16Array(hotSignal)
         assertTrue(limitedOut.all { it in Short.MIN_VALUE..Short.MAX_VALUE })
-        // Soft limiter caps below hard full-scale 32767
         assertTrue("Soft limiter must prevent hard digital saturation at 32767", limitedOut.all { abs(it.toInt()) < 32767 })
     }
 
@@ -429,11 +434,9 @@ class ExampleRobolectricTest {
 
         val eqController = EqualizerController(audioProcessor = processor)
 
-        // 1. Initially disabled
         assertEquals(EqualizerDiagnosticState.EQUALIZER_DISABLED, eqController.state.value.diagnosticState)
         assertEquals(EqualizerProcessingMode.BYPASSED, eqController.state.value.processingMode)
 
-        // 2. Bind to sessionId == 0 with enabled = true -> active software DSP because processor stream is configured
         eqController.bindToAudioSession(
             audioSessionId = 0,
             enabled = true,
@@ -451,7 +454,6 @@ class ExampleRobolectricTest {
             eqState.bands.map { it.currentLevelMb }
         )
 
-        // 3. Verify all built-in presets produce distinct real filter curves and modify audio differently
         val testInput = synthesizeMultiTonePcm16Stereo(
             sampleRateHz = 44100,
             frameCount = 2048,
@@ -459,19 +461,18 @@ class ExampleRobolectricTest {
             amplitude = 0.20
         )
         eqController.setBassBoost(0)
-        eqController.applyPreset(0) // Flat
+        eqController.applyPreset(0)
         val flatPcm = runThroughAudioProcessor(processor, testInput)
 
-        eqController.applyPreset(1) // Bass & Warmth
+        eqController.applyPreset(1)
         val bassWarmthPcm = runThroughAudioProcessor(processor, testInput)
 
-        eqController.applyPreset(2) // Vocal Clarity
+        eqController.applyPreset(2)
         val vocalClarityPcm = runThroughAudioProcessor(processor, testInput)
 
         assertFalse("Bass & Warmth preset must alter PCM output vs Flat", flatPcm.contentEquals(bassWarmthPcm))
         assertFalse("Vocal Clarity preset must alter PCM output vs Bass & Warmth", bassWarmthPcm.contentEquals(vocalClarityPcm))
 
-        // 4. Enable/disable toggle bypasses and restores processing
         eqController.setEnabled(false)
         assertEquals(EqualizerDiagnosticState.EQUALIZER_DISABLED, eqController.state.value.diagnosticState)
         val disabledPcm = runThroughAudioProcessor(processor, testInput)
@@ -481,7 +482,6 @@ class ExampleRobolectricTest {
         val reenabledPcm = runThroughAudioProcessor(processor, testInput)
         assertFalse("Re-enabled EQ must restore filtering", flatPcm.contentEquals(reenabledPcm))
 
-        // 5. Unsupported hardware effect fallback verification
         eqController.setPreferHardwareEffect(true)
         eqController.bindToAudioSession(
             audioSessionId = 42,
@@ -496,7 +496,6 @@ class ExampleRobolectricTest {
         assertEquals(EqualizerProcessingMode.SOFTWARE_BIQUAD_DSP, eqState.processingMode)
         assertEquals(EqualizerDiagnosticState.HARDWARE_UNSUPPORTED_SOFTWARE_ACTIVE, eqState.diagnosticState)
 
-        // 6. Session transition & preferences persistence
         val prefsRepo = UserPreferencesRepository(context)
         val customCurve = listOf(450, 250, -150, 300, 550)
         eqController.setPreferHardwareEffect(false)
@@ -516,7 +515,6 @@ class ExampleRobolectricTest {
         assertEquals(650, savedPrefs.bassBoostStrength)
         assertEquals(customCurve, savedPrefs.customBandLevelsMb)
 
-        // Simulate player recreation and new audio session binding
         val restoredController = EqualizerController(audioProcessor = processor)
         restoredController.bindToAudioSession(
             audioSessionId = 99,
@@ -530,7 +528,6 @@ class ExampleRobolectricTest {
         assertEquals(customCurve, restoredController.state.value.bands.map { it.currentLevelMb })
         assertEquals(650, restoredController.state.value.bassBoostStrength)
 
-        // Verify ExoPlayer builder with custom AudioSink & PulseEqualizerAudioProcessor constructs cleanly
         val exoPlayer = PulsePlaybackService.buildExoPlayerWithEqualizerDsp(context, processor)
         assertNotNull(exoPlayer)
         exoPlayer.release()
@@ -540,13 +537,251 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `fallback to authoritative MediaSessionService player handoff transfers queue position speed repeat shuffle and releases fallback without overlap`() {
+        val processor = PulseEqualizerAudioProcessor()
+        val fallbackPlayer = PulsePlaybackService.buildExoPlayerWithEqualizerDsp(context, processor)
+        val servicePlayer = PulsePlaybackService.buildExoPlayerWithEqualizerDsp(context, processor)
+
+        val track1 = MediaItem.Builder()
+            .setMediaId("file:///track1.wav")
+            .setUri(Uri.parse("file:///track1.wav"))
+            .setMediaMetadata(MediaMetadata.Builder().setTitle("Track One").build())
+            .build()
+        val track2 = MediaItem.Builder()
+            .setMediaId("file:///track2.wav")
+            .setUri(Uri.parse("file:///track2.wav"))
+            .setMediaMetadata(MediaMetadata.Builder().setTitle("Track Two").build())
+            .build()
+
+        // Configure fallback player as if user started playback before MediaController finished connecting
+        fallbackPlayer.setMediaItems(listOf(track1, track2), 1, 1850L)
+        fallbackPlayer.playbackParameters = PlaybackParameters(1.5f)
+        fallbackPlayer.repeatMode = Player.REPEAT_MODE_ALL
+        fallbackPlayer.shuffleModeEnabled = true
+        fallbackPlayer.volume = 0.8f
+        fallbackPlayer.playWhenReady = true
+
+        // Perform handoff to authoritative servicePlayer
+        val snapshot = PlayerHandoffAndVideoPolicy.handoffFallbackToAuthoritativePlayer(
+            outgoingFallback = fallbackPlayer,
+            incomingTarget = servicePlayer
+        )
+
+        assertTrue("Handoff must report items transferred from fallback", snapshot.hadActiveItems)
+        assertEquals(2, snapshot.mediaItems.size)
+        assertEquals(1, snapshot.currentIndex)
+        assertEquals(1850L, snapshot.positionMs)
+        assertEquals(1.5f, snapshot.playbackSpeed, 0.01f)
+        assertEquals(Player.REPEAT_MODE_ALL, snapshot.repeatMode)
+        assertTrue(snapshot.shuffleEnabled)
+        assertTrue(snapshot.playWhenReady)
+
+        // Verify outgoing fallback player was stopped and cleared so two players NEVER play simultaneously
+        assertFalse("Outgoing fallback player must have playWhenReady=false", fallbackPlayer.playWhenReady)
+        assertEquals("Outgoing fallback player queue must be cleared", 0, fallbackPlayer.mediaItemCount)
+
+        // Verify authoritative servicePlayer received the full queue and playback state
+        assertEquals(2, servicePlayer.mediaItemCount)
+        assertEquals(1, servicePlayer.currentMediaItemIndex)
+        assertEquals("file:///track2.wav", servicePlayer.currentMediaItem?.mediaId)
+        assertEquals(1.5f, servicePlayer.playbackParameters.speed, 0.01f)
+        assertEquals(Player.REPEAT_MODE_ALL, servicePlayer.repeatMode)
+        assertTrue(servicePlayer.shuffleModeEnabled)
+        assertTrue(servicePlayer.playWhenReady)
+
+        // Also verify reconnection scenario: new UI controller connects when fallback is null/empty and service is already playing
+        val reconnectSnapshot = PlayerHandoffAndVideoPolicy.handoffFallbackToAuthoritativePlayer(
+            outgoingFallback = null,
+            incomingTarget = servicePlayer
+        )
+        assertTrue(reconnectSnapshot.hadActiveItems)
+        assertEquals(2, reconnectSnapshot.mediaItems.size)
+        assertEquals(1, reconnectSnapshot.currentIndex)
+        assertEquals(1.5f, reconnectSnapshot.playbackSpeed, 0.01f)
+
+        servicePlayer.release()
+    }
+
+    @Test
+    fun `video screen-on policy sets and clears FLAG_KEEP_SCREEN_ON across playing paused error audio and background states`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val window = activity.window
+
+        // 1. Active video playback while visible and resumed -> keep screen on = true
+        val activeVideoAwake = PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            mediaType = MediaType.VIDEO,
+            isPlaying = true,
+            hasPlaybackError = false,
+            keepScreenOnPreferenceEnabled = true
+        )
+        assertTrue(activeVideoAwake)
+        PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(window, activeVideoAwake)
+        assertTrue(
+            "FLAG_KEEP_SCREEN_ON must be set during active video playback",
+            (window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
+        )
+
+        // 2. Video paused -> immediately clear FLAG_KEEP_SCREEN_ON
+        val pausedVideoAwake = PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            mediaType = MediaType.VIDEO,
+            isPlaying = false,
+            hasPlaybackError = false,
+            keepScreenOnPreferenceEnabled = true
+        )
+        assertFalse(pausedVideoAwake)
+        PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(window, pausedVideoAwake)
+        assertEquals(
+            "FLAG_KEEP_SCREEN_ON must be cleared when video is paused",
+            0,
+            window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        )
+
+        // 3. Audio-only playback -> never keep screen on
+        assertFalse(
+            PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+                isActivityResumed = true,
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.AUDIO,
+                isPlaying = true,
+                hasPlaybackError = false,
+                keepScreenOnPreferenceEnabled = true
+            )
+        )
+
+        // 4. Video error -> clear screen-on flag
+        assertFalse(
+            PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+                isActivityResumed = true,
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.VIDEO,
+                isPlaying = true,
+                hasPlaybackError = true,
+                keepScreenOnPreferenceEnabled = true
+            )
+        )
+
+        // 5. Video overlay collapsed/dismissed or Activity paused -> clear screen-on flag
+        assertFalse(
+            PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+                isActivityResumed = true,
+                isNowPlayingOverlayVisible = false,
+                mediaType = MediaType.VIDEO,
+                isPlaying = true,
+                hasPlaybackError = false,
+                keepScreenOnPreferenceEnabled = true
+            )
+        )
+        assertFalse(
+            PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+                isActivityResumed = false,
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.VIDEO,
+                isPlaying = true,
+                hasPlaybackError = false,
+                keepScreenOnPreferenceEnabled = true
+            )
+        )
+    }
+
+    @Test
+    fun `video orientation policy and 0-90-180-270 frame transform compute accurate orientation and aspect scaling`() = runBlocking {
+        // 1. Display orientation resolution
+        assertEquals(
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+            PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
+                isNowPlayingOverlayVisible = false,
+                mediaType = MediaType.VIDEO,
+                isFullscreenVideo = false,
+                orientationPreference = VideoOrientationPreference.LANDSCAPE
+            )
+        )
+        assertEquals(
+            ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
+            PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.AUDIO,
+                isFullscreenVideo = false,
+                orientationPreference = VideoOrientationPreference.LANDSCAPE
+            )
+        )
+        assertEquals(
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE,
+            PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.VIDEO,
+                isFullscreenVideo = true,
+                orientationPreference = VideoOrientationPreference.AUTO
+            )
+        )
+        assertEquals(
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+            PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.VIDEO,
+                isFullscreenVideo = false,
+                orientationPreference = VideoOrientationPreference.PORTRAIT
+            )
+        )
+        assertEquals(
+            ActivityInfo.SCREEN_ORIENTATION_USER,
+            PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
+                isNowPlayingOverlayVisible = true,
+                mediaType = MediaType.VIDEO,
+                isFullscreenVideo = false,
+                orientationPreference = VideoOrientationPreference.AUTO
+            )
+        )
+
+        // 2. Frame rotation normalization & aspect-ratio-compensated scaling (0°, 90°, 180°, 270°, 360°)
+        val t0 = PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(0, 1600, 900)
+        assertEquals(0, t0.rotationDegrees)
+        assertEquals(1f, t0.scaleX, 0.001f)
+        assertEquals(1f, t0.scaleY, 0.001f)
+
+        val t180 = PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(180, 1600, 900)
+        assertEquals(180, t180.rotationDegrees)
+        assertEquals(1f, t180.scaleX, 0.001f)
+
+        val t90 = PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(90, 1600, 900)
+        assertEquals(90, t90.rotationDegrees)
+        // In a 1600x900 container, a 90° rotated frame scales by 900/1600 = 0.5625 so it fits inside without clipping
+        assertEquals(900f / 1600f, t90.scaleX, 0.001f)
+        assertEquals(900f / 1600f, t90.scaleY, 0.001f)
+
+        val t270 = PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(270, 1600, 900)
+        assertEquals(270, t270.rotationDegrees)
+        assertEquals(900f / 1600f, t270.scaleX, 0.001f)
+
+        val t360 = PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(360, 1600, 900)
+        assertEquals(0, t360.rotationDegrees)
+        assertEquals(1f, t360.scaleX, 0.001f)
+
+        // 3. Verify UserPreferencesRepository persists new video & audio preferences
+        val prefsRepo = UserPreferencesRepository(context)
+        prefsRepo.setKeepScreenOnDuringVideo(false)
+        prefsRepo.setBackgroundPlaybackEnabled(true)
+        prefsRepo.setVideoGestureControlsEnabled(false)
+        prefsRepo.setVideoOrientationPreference(VideoOrientationPreference.LANDSCAPE)
+        prefsRepo.setAudioBalance(-0.35f)
+
+        val state = prefsRepo.preferencesFlow.first()
+        assertFalse(state.keepScreenOnDuringVideo)
+        assertTrue(state.backgroundPlaybackEnabled)
+        assertFalse(state.videoGestureControlsEnabled)
+        assertEquals(VideoOrientationPreference.LANDSCAPE, state.videoOrientationPreference)
+        assertEquals(-0.35f, state.audioBalance, 0.01f)
+    }
+
+    @Test
     fun `conversion registry and privacy defaults and IsoMp4Muxer behave deterministically`() {
-        // Conversion capability registry
         val profiles = ConversionCapabilityRegistry.getSupportedProfiles()
         assertTrue(profiles.isNotEmpty())
         assertTrue(profiles.any { it.id == "WAV_PCM_16BIT" && it.isHardwareSupportedOnDevice })
 
-        // Optional Advertising disabled by default (Phase 14)
         assertFalse(
             OptionalAdManager.canShowOptionalTestBanner(
                 moduleEnabledInSettings = false,
@@ -555,7 +790,6 @@ class ExampleRobolectricTest {
         )
         assertEquals("None (Zero Third-Party Ad SDK Bundled)", OptionalAdManager.auditReport.sdkBundled)
 
-        // Verify no INTERNET permission in package info (Phase 13)
         val pkgInfo = context.packageManager.getPackageInfo(
             context.packageName,
             PackageManager.GET_PERMISSIONS
@@ -566,7 +800,6 @@ class ExampleRobolectricTest {
             requestedPerms.contains(android.Manifest.permission.INTERNET)
         )
 
-        // Verify IsoMp4Muxer writes valid ftyp/mdat/moov MP4 container without native MPEG4Writer
         val testMp4 = File(context.cacheDir, "iso_mux_test.mp4")
         val muxer = IsoMp4Muxer(testMp4, majorBrand = "mp42")
         muxer.setOrientationHint(90)
@@ -640,10 +873,6 @@ class ExampleRobolectricTest {
         return outShorts
     }
 
-    /**
-     * Computes the Goertzel spectral magnitude of the left channel at [targetFreqHz],
-     * skipping the first 256 frames to allow biquad IIR transient settling.
-     */
     private fun computeGoertzelMagnitudeLeftChannel(
         interleavedStereo: ShortArray,
         sampleRateHz: Int,

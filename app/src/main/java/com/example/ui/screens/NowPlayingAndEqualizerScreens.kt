@@ -2,17 +2,22 @@ package com.example.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,11 +28,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -36,25 +43,32 @@ import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.ScreenLockLandscape
+import androidx.compose.material.icons.filled.ScreenLockPortrait
 import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -64,10 +78,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -77,9 +91,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -94,11 +112,15 @@ import androidx.media3.ui.PlayerView
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
 import com.example.data.preferences.UserPreferencesState
+import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.HardwareEqualizerState
+import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.ui.components.formatDurationMillis
 import com.example.viewmodel.PlaybackUiState
 import com.example.viewmodel.RepeatModeState
 import com.example.viewmodel.VideoAspectMode
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.sin
 
 @OptIn(UnstableApi::class)
@@ -119,6 +141,10 @@ fun NowPlayingOverlayScreen(
     onCycleAspectMode: () -> Unit,
     onRotateVideo90: () -> Unit,
     onToggleFullscreen: (Boolean) -> Unit,
+    onToggleControlsLock: (Boolean) -> Unit = {},
+    onSelectVideoOrientation: (VideoOrientationPreference) -> Unit = {},
+    onToggleKeepScreenOn: (Boolean) -> Unit = {},
+    onToggleVideoGestureControls: (Boolean) -> Unit = {},
     onBrightnessGestureDelta: (Float) -> Unit,
     onVolumeGestureDelta: (Float) -> Unit,
     onPickSubtitleFileClick: () -> Unit,
@@ -133,16 +159,26 @@ fun NowPlayingOverlayScreen(
     onRetryPlayback: () -> Unit
 ) {
     BackHandler {
-        if (playbackState.isFullscreenVideo) {
-            onToggleFullscreen(false)
-        } else {
-            onCollapse()
+        when {
+            playbackState.isVideoControlsLocked -> onToggleControlsLock(false)
+            playbackState.isFullscreenVideo -> onToggleFullscreen(false)
+            else -> onCollapse()
         }
     }
 
     val currentMedia = playbackState.currentMedia
     var showSubtitleSettings by remember { mutableStateOf(false) }
-    var showSpeedPicker by remember { mutableStateOf(false) }
+    var showVideoSettingsSheet by remember { mutableStateOf(false) }
+    var fullscreenControlsVisible by remember { mutableStateOf(true) }
+
+    val shouldKeepVideoAwake = PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+        isActivityResumed = true,
+        isNowPlayingOverlayVisible = true,
+        mediaType = currentMedia?.mediaType,
+        isPlaying = playbackState.isPlaying,
+        hasPlaybackError = playbackState.playbackError != null,
+        keepScreenOnPreferenceEnabled = userPreferences.keepScreenOnDuringVideo
+    )
 
     Surface(
         modifier = Modifier
@@ -161,484 +197,1127 @@ fun NowPlayingOverlayScreen(
             return@Surface
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 48.dp, start = 16.dp, end = 16.dp, top = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            // Top Bar
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val isLandscapeViewport = maxWidth > maxHeight
+            val isImmersiveVideoCanvas = currentMedia.mediaType == MediaType.VIDEO &&
+                (playbackState.isFullscreenVideo || isLandscapeViewport)
+
+            if (isImmersiveVideoCanvas) {
+                // Fullscreen / Landscape Cinema Mode: Video fills screen with proper aspect ratio & frame rotation,
+                // while controls and subtitles remain unrotated and properly aligned.
+                ImmersiveVideoCinemaLayout(
+                    currentMedia = currentMedia,
+                    playbackState = playbackState,
+                    userPreferences = userPreferences,
+                    isFavorite = isFavorite,
+                    playerInstance = playerInstance,
+                    shouldKeepVideoAwake = shouldKeepVideoAwake,
+                    controlsVisible = fullscreenControlsVisible,
+                    showVideoSettings = showVideoSettingsSheet,
+                    showSubtitleSettings = showSubtitleSettings,
+                    onToggleControlsVisible = { fullscreenControlsVisible = !fullscreenControlsVisible },
+                    onToggleVideoSettings = { showVideoSettingsSheet = !showVideoSettingsSheet },
+                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                    onCollapse = {
+                        if (playbackState.isFullscreenVideo) {
+                            onToggleFullscreen(false)
+                        } else {
+                            onCollapse()
+                        }
+                    },
+                    onPlayPause = onPlayPause,
+                    onSeekTo = onSeekTo,
+                    onPrevious = onPrevious,
+                    onNext = onNext,
+                    onSetPlaybackSpeed = onSetPlaybackSpeed,
+                    onCycleAspectMode = onCycleAspectMode,
+                    onRotateVideo90 = onRotateVideo90,
+                    onToggleFullscreen = onToggleFullscreen,
+                    onToggleControlsLock = onToggleControlsLock,
+                    onSelectVideoOrientation = onSelectVideoOrientation,
+                    onToggleKeepScreenOn = onToggleKeepScreenOn,
+                    onToggleVideoGestureControls = onToggleVideoGestureControls,
+                    onBrightnessGestureDelta = onBrightnessGestureDelta,
+                    onVolumeGestureDelta = onVolumeGestureDelta,
+                    onPickSubtitleFileClick = onPickSubtitleFileClick,
+                    onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                    onSetSubtitleFontScale = onSetSubtitleFontScale,
+                    onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                    onToggleFavorite = onToggleFavorite,
+                    onOpenEqualizer = onOpenEqualizer,
+                    onOpenStudio = onOpenStudio,
+                    onRetryPlayback = onRetryPlayback
+                )
+            } else {
+                // Standard Portrait Studio Deck (Music & Portrait Video)
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 48.dp, start = 16.dp, end = 16.dp, top = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    IconButton(
-                        onClick = onCollapse,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("collapse_now_playing_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.KeyboardArrowDown,
-                            contentDescription = "Collapse player"
-                        )
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = if (currentMedia.mediaType == MediaType.VIDEO) "VIDEO CINEMA ENGINE" else "AUDIO STUDIO DECK",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = currentMedia.folderName,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Row {
-                        IconButton(
-                            onClick = onOpenEqualizer,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("now_playing_eq_button")
+                    // Top Bar
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Equalizer,
-                                contentDescription = "Open Equalizer",
-                                tint = MaterialTheme.colorScheme.secondary
+                            IconButton(
+                                onClick = onCollapse,
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("collapse_now_playing_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Collapse player"
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = if (currentMedia.mediaType == MediaType.VIDEO) "VIDEO CINEMA ENGINE" else "NOW PLAYING",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = currentMedia.folderName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Row {
+                                if (currentMedia.mediaType == MediaType.VIDEO) {
+                                    IconButton(
+                                        onClick = { showVideoSettingsSheet = !showVideoSettingsSheet },
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("now_playing_video_settings_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Settings,
+                                            contentDescription = "Video Settings",
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = onOpenEqualizer,
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("now_playing_eq_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Equalizer,
+                                        contentDescription = "Open Equalizer",
+                                        tint = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                IconButton(
+                                    onClick = onOpenStudio,
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("now_playing_studio_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCut,
+                                        contentDescription = "Open Media Editor",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Playback Error Banner with Retry
+                    if (playbackState.playbackError != null) {
+                        item {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                ),
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("playback_error_card")
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp)) {
+                                    Text(
+                                        text = playbackState.playbackError,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Button(
+                                        onClick = onRetryPlayback,
+                                        modifier = Modifier.testTag("retry_playback_button")
+                                    ) {
+                                        Text("Retry Playback")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Video Surface or Acoustic Studio Visualizer
+                    item {
+                        if (currentMedia.mediaType == MediaType.VIDEO) {
+                            PortraitVideoSurfaceSection(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                playerInstance = playerInstance,
+                                shouldKeepVideoAwake = shouldKeepVideoAwake,
+                                showSubtitleSettings = showSubtitleSettings,
+                                showVideoSettingsSheet = showVideoSettingsSheet,
+                                onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                                onToggleVideoSettings = { showVideoSettingsSheet = !showVideoSettingsSheet },
+                                onCycleAspectMode = onCycleAspectMode,
+                                onRotateVideo90 = onRotateVideo90,
+                                onToggleFullscreen = onToggleFullscreen,
+                                onToggleControlsLock = onToggleControlsLock,
+                                onSelectVideoOrientation = onSelectVideoOrientation,
+                                onBrightnessGestureDelta = onBrightnessGestureDelta,
+                                onVolumeGestureDelta = onVolumeGestureDelta
+                            )
+                        } else {
+                            StudioCircularAudioArtworkAndWaveform(
+                                currentMedia = currentMedia,
+                                playbackState = playbackState
                             )
                         }
-                        IconButton(
-                            onClick = onOpenStudio,
-                            modifier = Modifier
-                                .minimumInteractiveComponentSize()
-                                .testTag("now_playing_studio_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ContentCut,
-                                contentDescription = "Open Media Editor",
-                                tint = MaterialTheme.colorScheme.primary
+                    }
+
+                    // Video Settings Panel (Speed, Subtitles, Audio Track, Screen Rotation, Keep Screen On, Gestures)
+                    if (currentMedia.mediaType == MediaType.VIDEO && showVideoSettingsSheet) {
+                        item {
+                            VideoPlayerSettingsCard(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                onSetPlaybackSpeed = onSetPlaybackSpeed,
+                                onSelectVideoOrientation = onSelectVideoOrientation,
+                                onRotateVideo90 = onRotateVideo90,
+                                onCycleAspectMode = onCycleAspectMode,
+                                onToggleKeepScreenOn = onToggleKeepScreenOn,
+                                onToggleVideoGestureControls = onToggleVideoGestureControls,
+                                onToggleControlsLock = onToggleControlsLock,
+                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                                onPickSubtitleFileClick = onPickSubtitleFileClick,
+                                onOpenEqualizer = onOpenEqualizer
                             )
+                        }
+                    }
+
+                    // Subtitle Controls Panel (SRT / WebVTT)
+                    if (showSubtitleSettings || playbackState.subtitleError != null) {
+                        item {
+                            SubtitleSettingsCard(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                                onSetSubtitleFontScale = onSetSubtitleFontScale,
+                                onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                                onPickSubtitleFileClick = onPickSubtitleFileClick
+                            )
+                        }
+                    }
+
+                    // Track Metadata & Favorite Toggle
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = currentMedia.title,
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${currentMedia.artist} • ${currentMedia.album}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(
+                                onClick = onToggleFavorite,
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("now_playing_favorite_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = "Toggle Favorite",
+                                    tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Seek Bar & Timestamps
+                    item {
+                        val duration = playbackState.durationMs.coerceAtLeast(1L)
+                        val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Slider(
+                                value = pos.toFloat(),
+                                onValueChange = {
+                                    if (!playbackState.isVideoControlsLocked) {
+                                        onSeekTo(it.toLong())
+                                    }
+                                },
+                                enabled = !playbackState.isVideoControlsLocked,
+                                valueRange = 0f..duration.toFloat(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("now_playing_seek_slider")
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = formatDurationMillis(pos),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = formatDurationMillis(duration),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // Primary Transport Controls: Shuffle, Previous, Play/Pause, Next, Repeat
+                    item {
+                        if (playbackState.isVideoControlsLocked) {
+                            OutlinedButton(
+                                onClick = { onToggleControlsLock(false) },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("video_unlock_button")
+                            ) {
+                                Icon(Icons.Default.LockOpen, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Controls Locked • Tap to Unlock")
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(
+                                    onClick = onToggleShuffle,
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("transport_shuffle_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Shuffle,
+                                        contentDescription = "Shuffle",
+                                        tint = if (playbackState.shuffleEnabled) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onPrevious,
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .testTag("transport_previous_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipPrevious,
+                                        contentDescription = "Previous",
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+
+                                FilledIconButton(
+                                    onClick = onPlayPause,
+                                    modifier = Modifier
+                                        .size(68.dp)
+                                        .testTag("transport_play_pause_button"),
+                                    shape = CircleShape
+                                ) {
+                                    Icon(
+                                        imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                                        modifier = Modifier.size(36.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onNext,
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .testTag("transport_next_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SkipNext,
+                                        contentDescription = "Next",
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+
+                                IconButton(
+                                    onClick = onCycleRepeat,
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("transport_repeat_button")
+                                ) {
+                                    Icon(
+                                        imageVector = when (playbackState.repeatMode) {
+                                            RepeatModeState.ONE -> Icons.Default.RepeatOne
+                                            else -> Icons.Default.Repeat
+                                        },
+                                        contentDescription = "Repeat mode: ${playbackState.repeatMode}",
+                                        tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Playback Speed Selector Strip
+                    item {
+                        val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+                        Column {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Speed,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Playback Speed (${playbackState.playbackSpeed}x)",
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(speeds) { spd ->
+                                    FilterChip(
+                                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                                        onClick = { onSetPlaybackSpeed(spd) },
+                                        label = { Text("${spd}x") },
+                                        modifier = Modifier.testTag("speed_chip_${spd}")
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Active Playback Queue Management
+                    item {
+                        Text(
+                            text = "Up Next • Active Queue (${playbackState.queue.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    itemsIndexed(
+                        playbackState.queue,
+                        key = { idx, item -> "${idx}_${item.uriString}" }
+                    ) { idx, item ->
+                        val isCurrent = idx == playbackState.currentQueueIndex
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onSelectQueueItem(item) },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isCurrent) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface
+                                }
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${idx + 1}.",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${item.artist} • ${formatDurationMillis(item.durationMs)}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (playbackState.queue.size > 1) {
+                                    IconButton(
+                                        onClick = { onRemoveQueueItem(idx) },
+                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = "Remove from queue"
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+}
 
-            // Playback Error Banner with Retry (Phase 6 & 7)
-            if (playbackState.playbackError != null) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("playback_error_card")
+@OptIn(UnstableApi::class)
+@Composable
+private fun PortraitVideoSurfaceSection(
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    playerInstance: Player?,
+    shouldKeepVideoAwake: Boolean,
+    showSubtitleSettings: Boolean,
+    showVideoSettingsSheet: Boolean,
+    onToggleSubtitleSettings: () -> Unit,
+    onToggleVideoSettings: () -> Unit,
+    onCycleAspectMode: () -> Unit,
+    onRotateVideo90: () -> Unit,
+    onToggleFullscreen: (Boolean) -> Unit,
+    onToggleControlsLock: (Boolean) -> Unit,
+    onSelectVideoOrientation: (VideoOrientationPreference) -> Unit,
+    onBrightnessGestureDelta: (Float) -> Unit,
+    onVolumeGestureDelta: (Float) -> Unit
+) {
+    var containerWidthPx by remember { mutableIntStateOf(640) }
+    var containerHeightPx by remember { mutableIntStateOf(360) }
+
+    val frameTransform = remember(playbackState.videoRotationDegrees, containerWidthPx, containerHeightPx) {
+        PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(
+            rotationDegrees = playbackState.videoRotationDegrees,
+            containerWidthPx = containerWidthPx,
+            containerHeightPx = containerHeightPx
+        )
+    }
+
+    val aspectRatioModifier = when (playbackState.videoAspectMode) {
+        VideoAspectMode.SIXTEEN_NINE -> Modifier.aspectRatio(16f / 9f)
+        VideoAspectMode.FOUR_THREE -> Modifier.aspectRatio(4f / 3f)
+        else -> Modifier.aspectRatio(16f / 9f)
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(aspectRatioModifier)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color.Black)
+                .onSizeChanged { sz ->
+                    containerWidthPx = sz.width.coerceAtLeast(1)
+                    containerHeightPx = sz.height.coerceAtLeast(1)
+                }
+                .pointerInput(userPreferences.videoGestureControlsEnabled, playbackState.isVideoControlsLocked) {
+                    if (userPreferences.videoGestureControlsEnabled && !playbackState.isVideoControlsLocked) {
+                        detectVerticalDragGestures { change, dragAmount ->
+                            val widthPx = size.width.coerceAtLeast(1)
+                            val delta = -dragAmount / 500f
+                            if (change.position.x < widthPx / 2f) {
+                                onBrightnessGestureDelta(delta)
+                            } else {
+                                onVolumeGestureDelta(delta)
+                            }
+                        }
+                    }
+                }
+                .testTag("video_surface_container")
+        ) {
+            if (playerInstance != null) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = false
+                            player = playerInstance
+                            keepScreenOn = shouldKeepVideoAwake
+                            resizeMode = when (playbackState.videoAspectMode) {
+                                VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            }
+                        }
+                    },
+                    update = { view ->
+                        if (view.player !== playerInstance) {
+                            view.player = playerInstance
+                        }
+                        view.keepScreenOn = shouldKeepVideoAwake
+                        view.resizeMode = when (playbackState.videoAspectMode) {
+                            VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            rotationZ = frameTransform.rotationDegrees.toFloat()
+                            scaleX = frameTransform.scaleX
+                            scaleY = frameTransform.scaleY
+                        }
+                )
+            }
+
+            // Brightness overlay for left-side vertical gesture
+            val darknessAlpha = (1f - playbackState.brightnessGestureLevel).coerceIn(0f, 0.75f)
+            if (darknessAlpha > 0.05f) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = darknessAlpha))
+                )
+            }
+
+            // Live Subtitle Overlay (never rotated with video frame!)
+            if (userPreferences.subtitlesEnabledByDefault && !playbackState.activeSubtitleText.isNullOrBlank()) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.78f),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(14.dp)
+                        .testTag("active_subtitle_overlay")
+                ) {
+                    Text(
+                        text = playbackState.activeSubtitleText,
+                        color = Color.White,
+                        fontSize = (15f * userPreferences.subtitleFontScale).sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+
+            // Gesture telemetry & Screen-On status badges
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.Black.copy(alpha = 0.6f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
+                        Icon(
+                            Icons.Default.WbSunny,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${(playbackState.brightnessGestureLevel * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White
+                        )
+                    }
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Color.Black.copy(alpha = 0.6f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.VolumeUp,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = "${(playbackState.volumeGestureLevel * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Video Controls Strip: Aspect Ratio, Frame Rotate, Orientation Mode, Fullscreen, Subtitles, Lock, Settings
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            item {
+                AssistChip(
+                    onClick = { onToggleFullscreen(!playbackState.isFullscreenVideo) },
+                    label = { Text(if (playbackState.isFullscreenVideo) "Exit Fullscreen" else "Fullscreen") },
+                    leadingIcon = {
+                        Icon(
+                            if (playbackState.isFullscreenVideo) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("video_fullscreen_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = {
+                        val nextPref = when (userPreferences.videoOrientationPreference) {
+                            VideoOrientationPreference.AUTO -> VideoOrientationPreference.LANDSCAPE
+                            VideoOrientationPreference.LANDSCAPE -> VideoOrientationPreference.PORTRAIT
+                            VideoOrientationPreference.PORTRAIT -> VideoOrientationPreference.AUTO
+                        }
+                        onSelectVideoOrientation(nextPref)
+                    },
+                    label = { Text(userPreferences.videoOrientationPreference.label) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = when (userPreferences.videoOrientationPreference) {
+                                VideoOrientationPreference.LANDSCAPE -> Icons.Default.ScreenLockLandscape
+                                VideoOrientationPreference.PORTRAIT -> Icons.Default.ScreenLockPortrait
+                                VideoOrientationPreference.AUTO -> Icons.Default.ScreenRotation
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("video_orientation_mode_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onRotateVideo90,
+                    label = { Text("Rotate (${playbackState.videoRotationDegrees}°)") },
+                    leadingIcon = {
+                        Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("video_rotate_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onCycleAspectMode,
+                    label = { Text(playbackState.videoAspectMode.label) },
+                    leadingIcon = {
+                        Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("video_aspect_ratio_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onToggleSubtitleSettings,
+                    label = {
+                        Text(playbackState.loadedSubtitleFormat?.name ?: "Subtitles")
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.Subtitles, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("video_subtitles_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = { onToggleControlsLock(!playbackState.isVideoControlsLocked) },
+                    label = { Text(if (playbackState.isVideoControlsLocked) "Locked" else "Lock") },
+                    leadingIcon = {
+                        Icon(
+                            if (playbackState.isVideoControlsLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("video_lock_chip")
+                )
+            }
+            item {
+                AssistChip(
+                    onClick = onToggleVideoSettings,
+                    label = { Text("Video Settings") },
+                    leadingIcon = {
+                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(18.dp))
+                    },
+                    modifier = Modifier.testTag("video_settings_chip")
+                )
+            }
+        }
+    }
+}
+
+@OptIn(UnstableApi::class)
+@Composable
+private fun ImmersiveVideoCinemaLayout(
+    currentMedia: MediaEntity,
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    isFavorite: Boolean,
+    playerInstance: Player?,
+    shouldKeepVideoAwake: Boolean,
+    controlsVisible: Boolean,
+    showVideoSettings: Boolean,
+    showSubtitleSettings: Boolean,
+    onToggleControlsVisible: () -> Unit,
+    onToggleVideoSettings: () -> Unit,
+    onToggleSubtitleSettings: () -> Unit,
+    onCollapse: () -> Unit,
+    onPlayPause: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onCycleAspectMode: () -> Unit,
+    onRotateVideo90: () -> Unit,
+    onToggleFullscreen: (Boolean) -> Unit,
+    onToggleControlsLock: (Boolean) -> Unit,
+    onSelectVideoOrientation: (VideoOrientationPreference) -> Unit,
+    onToggleKeepScreenOn: (Boolean) -> Unit,
+    onToggleVideoGestureControls: (Boolean) -> Unit,
+    onBrightnessGestureDelta: (Float) -> Unit,
+    onVolumeGestureDelta: (Float) -> Unit,
+    onPickSubtitleFileClick: () -> Unit,
+    onToggleSubtitlesEnabled: (Boolean) -> Unit,
+    onSetSubtitleFontScale: (Float) -> Unit,
+    onSetSubtitleOffsetMs: (Long) -> Unit,
+    onToggleFavorite: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onOpenStudio: () -> Unit,
+    onRetryPlayback: () -> Unit
+) {
+    var containerWidthPx by remember { mutableIntStateOf(1280) }
+    var containerHeightPx by remember { mutableIntStateOf(720) }
+
+    val frameTransform = remember(playbackState.videoRotationDegrees, containerWidthPx, containerHeightPx) {
+        PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(
+            rotationDegrees = playbackState.videoRotationDegrees,
+            containerWidthPx = containerWidthPx,
+            containerHeightPx = containerHeightPx
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .onSizeChanged { sz ->
+                containerWidthPx = sz.width.coerceAtLeast(1)
+                containerHeightPx = sz.height.coerceAtLeast(1)
+            }
+            .pointerInput(userPreferences.videoGestureControlsEnabled, playbackState.isVideoControlsLocked) {
+                detectTapGestures(
+                    onTap = { onToggleControlsVisible() },
+                    onDoubleTap = {
+                        if (!playbackState.isVideoControlsLocked) {
+                            onPlayPause()
+                        }
+                    }
+                )
+            }
+            .pointerInput(userPreferences.videoGestureControlsEnabled, playbackState.isVideoControlsLocked) {
+                if (userPreferences.videoGestureControlsEnabled && !playbackState.isVideoControlsLocked) {
+                    detectVerticalDragGestures { change, dragAmount ->
+                        val widthPx = size.width.coerceAtLeast(1)
+                        val delta = -dragAmount / 500f
+                        if (change.position.x < widthPx / 2f) {
+                            onBrightnessGestureDelta(delta)
+                        } else {
+                            onVolumeGestureDelta(delta)
+                        }
+                    }
+                }
+            }
+            .testTag("video_surface_container")
+    ) {
+        if (playerInstance != null) {
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        useController = false
+                        player = playerInstance
+                        keepScreenOn = shouldKeepVideoAwake
+                        resizeMode = when (playbackState.videoAspectMode) {
+                            VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        }
+                    }
+                },
+                update = { view ->
+                    if (view.player !== playerInstance) {
+                        view.player = playerInstance
+                    }
+                    view.keepScreenOn = shouldKeepVideoAwake
+                    view.resizeMode = when (playbackState.videoAspectMode) {
+                        VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        rotationZ = frameTransform.rotationDegrees.toFloat()
+                        scaleX = frameTransform.scaleX
+                        scaleY = frameTransform.scaleY
+                    }
+            )
+        }
+
+        // Brightness gesture overlay
+        val darknessAlpha = (1f - playbackState.brightnessGestureLevel).coerceIn(0f, 0.75f)
+        if (darknessAlpha > 0.05f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = darknessAlpha))
+            )
+        }
+
+        // Subtitle overlay (always upright and centered near bottom)
+        if (userPreferences.subtitlesEnabledByDefault && !playbackState.activeSubtitleText.isNullOrBlank()) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.78f),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = if (controlsVisible) 110.dp else 24.dp, start = 24.dp, end = 24.dp)
+                    .testTag("active_subtitle_overlay")
+            ) {
+                Text(
+                    text = playbackState.activeSubtitleText,
+                    color = Color.White,
+                    fontSize = (16f * userPreferences.subtitleFontScale).sp,
+                    fontWeight = FontWeight.Medium,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                )
+            }
+        }
+
+        // If Controls are Locked, only show minimal unlock pill
+        if (playbackState.isVideoControlsLocked) {
+            AnimatedVisibility(
+                visible = controlsVisible,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 20.dp)
+            ) {
+                Button(
+                    onClick = { onToggleControlsLock(false) },
+                    modifier = Modifier.testTag("video_unlock_button")
+                ) {
+                    Icon(Icons.Default.LockOpen, contentDescription = "Unlock video controls")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Unlock Video Controls")
+                }
+            }
+            return@Box
+        }
+
+        // Fullscreen / Landscape Translucent HUD Overlay
+        AnimatedVisibility(
+            visible = controlsVisible,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.Black.copy(alpha = 0.75f),
+                                Color.Transparent,
+                                Color.Black.copy(alpha = 0.85f)
+                            )
+                        )
+                    )
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                // Top Bar
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.TopCenter),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = onCollapse,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("collapse_now_playing_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = "Collapse or exit fullscreen",
+                                tint = Color.White
+                            )
+                        }
+                        Column {
+                            Text(
+                                text = currentMedia.title,
+                                style = MaterialTheme.typography.titleMedium,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${currentMedia.artist} • ${userPreferences.videoOrientationPreference.label}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = onToggleFavorite) {
+                            Icon(
+                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = "Favorite",
+                                tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else Color.White
+                            )
+                        }
+                        IconButton(
+                            onClick = onOpenEqualizer,
+                            modifier = Modifier.testTag("now_playing_eq_button")
+                        ) {
+                            Icon(Icons.Default.Equalizer, contentDescription = "Equalizer", tint = Color.White)
+                        }
+                        IconButton(
+                            onClick = onOpenStudio,
+                            modifier = Modifier.testTag("now_playing_studio_button")
+                        ) {
+                            Icon(Icons.Default.ContentCut, contentDescription = "Media Editor", tint = Color.White)
+                        }
+                        IconButton(
+                            onClick = onToggleVideoSettings,
+                            modifier = Modifier.testTag("now_playing_video_settings_button")
+                        ) {
+                            Icon(Icons.Default.Settings, contentDescription = "Video Settings", tint = Color.White)
+                        }
+                    }
+                }
+
+                // Center Transport Controls
+                Row(
+                    modifier = Modifier.align(Alignment.Center),
+                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onPrevious,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                            .testTag("transport_previous_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipPrevious,
+                            contentDescription = "Previous",
+                            tint = Color.White,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+
+                    FilledIconButton(
+                        onClick = onPlayPause,
+                        modifier = Modifier
+                            .size(72.dp)
+                            .testTag("transport_play_pause_button"),
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                            modifier = Modifier.size(38.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onNext,
+                        modifier = Modifier
+                            .size(56.dp)
+                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                            .testTag("transport_next_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = "Next",
+                            tint = Color.White,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                }
+
+                // Bottom Bar: Seekbar + Orientation/Rotate/Subtitles/Fullscreen Chips
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .align(Alignment.BottomCenter)
+                ) {
+                    if (playbackState.playbackError != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
                             Text(
                                 text = playbackState.playbackError,
+                                color = MaterialTheme.colorScheme.error,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
+                                modifier = Modifier.weight(1f)
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
                             Button(
                                 onClick = onRetryPlayback,
                                 modifier = Modifier.testTag("retry_playback_button")
                             ) {
-                                Text("Retry Playback")
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Video Surface or Acoustic Studio Visualizer
-            item {
-                if (currentMedia.mediaType == MediaType.VIDEO) {
-                    val aspectRatioModifier = when (playbackState.videoAspectMode) {
-                        VideoAspectMode.SIXTEEN_NINE -> Modifier.aspectRatio(16f / 9f)
-                        VideoAspectMode.FOUR_THREE -> Modifier.aspectRatio(4f / 3f)
-                        else -> Modifier.height(if (playbackState.isFullscreenVideo) 420.dp else 240.dp)
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .then(aspectRatioModifier)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(Color.Black)
-                            .pointerInput(Unit) {
-                                detectVerticalDragGestures { change, dragAmount ->
-                                    val widthPx = size.width.coerceAtLeast(1)
-                                    val delta = -dragAmount / 500f
-                                    if (change.position.x < widthPx / 2f) {
-                                        onBrightnessGestureDelta(delta)
-                                    } else {
-                                        onVolumeGestureDelta(delta)
-                                    }
-                                }
-                            }
-                            .testTag("video_surface_container")
-                    ) {
-                        if (playerInstance != null) {
-                            AndroidView(
-                                factory = { ctx ->
-                                    PlayerView(ctx).apply {
-                                        useController = false
-                                        player = playerInstance
-                                        resizeMode = when (playbackState.videoAspectMode) {
-                                            VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                        }
-                                    }
-                                },
-                                update = { view ->
-                                    if (view.player !== playerInstance) {
-                                        view.player = playerInstance
-                                    }
-                                    view.resizeMode = when (playbackState.videoAspectMode) {
-                                        VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .graphicsLayer {
-                                        rotationZ = playbackState.videoRotationDegrees.toFloat()
-                                    }
-                            )
-                        }
-
-                        // Brightness overlay simulation for left-side vertical gesture
-                        val darknessAlpha = (1f - playbackState.brightnessGestureLevel).coerceIn(0f, 0.75f)
-                        if (darknessAlpha > 0.05f) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .background(Color.Black.copy(alpha = darknessAlpha))
-                            )
-                        }
-
-                        // Live Subtitle Overlay (Phase 9: SRT / WebVTT with font scale & offset)
-                        if (userPreferences.subtitlesEnabledByDefault && !playbackState.activeSubtitleText.isNullOrBlank()) {
-                            Surface(
-                                color = Color.Black.copy(alpha = 0.75f),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier
-                                    .align(Alignment.BottomCenter)
-                                    .padding(14.dp)
-                                    .testTag("active_subtitle_overlay")
-                            ) {
-                                Text(
-                                    text = playbackState.activeSubtitleText,
-                                    color = Color.White,
-                                    fontSize = (15f * userPreferences.subtitleFontScale).sp,
-                                    fontWeight = FontWeight.Medium,
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
-                            }
-                        }
-
-                        // Gesture telemetry badges (Brightness & Volume)
-                        Row(
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(10.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color.Black.copy(alpha = 0.6f)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.WbSunny,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "${(playbackState.brightnessGestureLevel * 100).toInt()}%",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.White
-                                    )
-                                }
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color.Black.copy(alpha = 0.6f)
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.VolumeUp,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "${(playbackState.volumeGestureLevel * 100).toInt()}%",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = Color.White
-                                    )
-                                }
+                                Text("Retry")
                             }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Video Controls Strip: Aspect Ratio, Rotate, Fullscreen, Subtitles
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        item {
-                            AssistChip(
-                                onClick = onCycleAspectMode,
-                                label = { Text(playbackState.videoAspectMode.label) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(18.dp))
-                                },
-                                modifier = Modifier.testTag("video_aspect_ratio_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = onRotateVideo90,
-                                label = { Text("Rotate (${playbackState.videoRotationDegrees}°)") },
-                                leadingIcon = {
-                                    Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(18.dp))
-                                },
-                                modifier = Modifier.testTag("video_rotate_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = { showSubtitleSettings = !showSubtitleSettings },
-                                label = {
-                                    Text(
-                                        playbackState.loadedSubtitleFormat?.name
-                                            ?: "Subtitles"
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Subtitles, contentDescription = null, modifier = Modifier.size(18.dp))
-                                },
-                                modifier = Modifier.testTag("video_subtitles_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = { onToggleFullscreen(!playbackState.isFullscreenVideo) },
-                                label = { Text(if (playbackState.isFullscreenVideo) "Exit Fullscreen" else "Fullscreen") },
-                                leadingIcon = {
-                                    Icon(
-                                        if (playbackState.isFullscreenVideo) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                modifier = Modifier.testTag("video_fullscreen_chip")
-                            )
-                        }
-                    }
-                } else {
-                    // Acoustic Studio Waveform Canvas for Audio Playback
-                    val primaryColor = MaterialTheme.colorScheme.primary
-                    val secondaryColor = MaterialTheme.colorScheme.secondary
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(210.dp)
-                            .testTag("audio_visualizer_card"),
-                        shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(20.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Canvas(modifier = Modifier.fillMaxSize()) {
-                                val barCount = 32
-                                val totalWidth = size.width
-                                val totalHeight = size.height
-                                val barWidth = (totalWidth / (barCount * 1.8f)).coerceAtLeast(4f)
-                                val spacing = (totalWidth - (barWidth * barCount)) / (barCount - 1).coerceAtLeast(1)
-                                val phase = (playbackState.currentPositionMs / 180.0)
-
-                                for (i in 0 until barCount) {
-                                    val wave = if (playbackState.isPlaying) {
-                                        0.25f + 0.7f * kotlin.math.abs(sin(phase + i * 0.45)).toFloat()
-                                    } else {
-                                        0.2f + 0.3f * kotlin.math.abs(sin(i * 0.5)).toFloat()
-                                    }
-                                    val barHeight = (totalHeight * wave).coerceAtLeast(12f)
-                                    val x = i * (barWidth + spacing)
-                                    val y = (totalHeight - barHeight) / 2f
-                                    drawRoundRect(
-                                        color = if (i % 3 == 0) secondaryColor else primaryColor,
-                                        topLeft = Offset(x, y),
-                                        size = Size(barWidth, barHeight),
-                                        cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Subtitle Controls Panel (Phase 9)
-            if (showSubtitleSettings || playbackState.subtitleError != null) {
-                item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("subtitle_settings_panel"),
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
-                    ) {
-                        Column(modifier = Modifier.padding(14.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Subtitle Engine (SRT & WebVTT Verified)",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Switch(
-                                    checked = userPreferences.subtitlesEnabledByDefault,
-                                    onCheckedChange = onToggleSubtitlesEnabled,
-                                    modifier = Modifier.testTag("subtitle_enable_switch")
-                                )
-                            }
-
-                            Text(
-                                text = playbackState.loadedSubtitleName?.let {
-                                    "Loaded: $it (${playbackState.loadedSubtitleFormat}) • ${playbackState.loadedSubtitleCues.size} cues"
-                                } ?: "No subtitle track loaded",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-
-                            if (playbackState.subtitleError != null) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = playbackState.subtitleError,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.error
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                text = "Font Scale: ${(userPreferences.subtitleFontScale * 100).toInt()}%",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                            Slider(
-                                value = userPreferences.subtitleFontScale,
-                                onValueChange = onSetSubtitleFontScale,
-                                valueRange = 0.7f..1.8f
-                            )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Sync Offset: ${userPreferences.subtitleSyncOffsetMs} ms",
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    OutlinedButton(
-                                        onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs - 250L) }
-                                    ) { Text("-250ms") }
-                                    OutlinedButton(
-                                        onClick = { onSetSubtitleOffsetMs(0L) }
-                                    ) { Text("0ms") }
-                                    OutlinedButton(
-                                        onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs + 250L) }
-                                    ) { Text("+250ms") }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = onPickSubtitleFileClick,
-                                modifier = Modifier.testTag("load_external_subtitle_button")
-                            ) {
-                                Icon(Icons.Default.ClosedCaption, contentDescription = null)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Load Local .SRT / .VTT File (SAF)")
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Track Metadata & Favorite Toggle
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = currentMedia.title,
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = "${currentMedia.artist} • ${currentMedia.album}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(
-                        onClick = onToggleFavorite,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("now_playing_favorite_button")
-                    ) {
-                        Icon(
-                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                            contentDescription = "Toggle Favorite",
-                            tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            // Seek Bar & Timestamps
-            item {
-                val duration = playbackState.durationMs.coerceAtLeast(1L)
-                val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
-                Column(modifier = Modifier.fillMaxWidth()) {
+                    val duration = playbackState.durationMs.coerceAtLeast(1L)
+                    val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
                     Slider(
                         value = pos.toFloat(),
                         onValueChange = { onSeekTo(it.toLong()) },
@@ -654,199 +1333,164 @@ fun NowPlayingOverlayScreen(
                         Text(
                             text = formatDurationMillis(pos),
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
+                            color = Color.White
                         )
                         Text(
                             text = formatDurationMillis(duration),
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            // Primary Transport Controls: Shuffle, Previous, Play/Pause, Next, Repeat
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = onToggleShuffle,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("transport_shuffle_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = if (playbackState.shuffleEnabled) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
+                            color = Color.White.copy(alpha = 0.8f)
                         )
                     }
 
-                    IconButton(
-                        onClick = onPrevious,
-                        modifier = Modifier
-                            .size(52.dp)
-                            .testTag("transport_previous_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SkipPrevious,
-                            contentDescription = "Previous",
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-
-                    FilledIconButton(
-                        onClick = onPlayPause,
-                        modifier = Modifier
-                            .size(68.dp)
-                            .testTag("transport_play_pause_button"),
-                        shape = CircleShape
-                    ) {
-                        Icon(
-                            imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
-                            modifier = Modifier.size(36.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onNext,
-                        modifier = Modifier
-                            .size(52.dp)
-                            .testTag("transport_next_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SkipNext,
-                            contentDescription = "Next",
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onCycleRepeat,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("transport_repeat_button")
-                    ) {
-                        Icon(
-                            imageVector = when (playbackState.repeatMode) {
-                                RepeatModeState.ONE -> Icons.Default.RepeatOne
-                                else -> Icons.Default.Repeat
-                            },
-                            contentDescription = "Repeat mode: ${playbackState.repeatMode}",
-                            tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                }
-            }
-
-            // Playback Speed Selector Strip
-            item {
-                val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
-                Column {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Speed,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "Playback Speed (${playbackState.playbackSpeed}x)",
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                    }
                     Spacer(modifier = Modifier.height(6.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(speeds) { spd ->
-                            FilterChip(
-                                selected = kotlin.math.abs(playbackState.playbackSpeed - spd) < 0.05f,
-                                onClick = { onSetPlaybackSpeed(spd) },
-                                label = { Text("${spd}x") },
-                                modifier = Modifier.testTag("speed_chip_${spd}")
-                            )
-                        }
-                    }
-                }
-            }
 
-            // Active Playback Queue Management (Phase 6)
-            item {
-                Text(
-                    text = "Active Playback Queue (${playbackState.queue.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            itemsIndexed(
-                playbackState.queue,
-                key = { idx, item -> "${idx}_${item.uriString}" }
-            ) { idx, item ->
-                val isCurrent = idx == playbackState.currentQueueIndex
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectQueueItem(item) },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isCurrent) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        }
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = "${idx + 1}.",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = formatDurationMillis(item.durationMs),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                        item {
+                            AssistChip(
+                                onClick = { onToggleFullscreen(!playbackState.isFullscreenVideo) },
+                                label = {
+                                    Text(
+                                        if (playbackState.isFullscreenVideo) "Exit Fullscreen" else "Fullscreen",
+                                        color = Color.White
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        if (playbackState.isFullscreenVideo) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_fullscreen_chip")
                             )
                         }
-                        if (playbackState.queue.size > 1) {
-                            IconButton(
-                                onClick = { onRemoveQueueItem(idx) },
-                                modifier = Modifier.minimumInteractiveComponentSize()
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = "Remove from queue"
-                                )
-                            }
+                        item {
+                            AssistChip(
+                                onClick = {
+                                    val nextPref = when (userPreferences.videoOrientationPreference) {
+                                        VideoOrientationPreference.AUTO -> VideoOrientationPreference.LANDSCAPE
+                                        VideoOrientationPreference.LANDSCAPE -> VideoOrientationPreference.PORTRAIT
+                                        VideoOrientationPreference.PORTRAIT -> VideoOrientationPreference.AUTO
+                                    }
+                                    onSelectVideoOrientation(nextPref)
+                                },
+                                label = { Text(userPreferences.videoOrientationPreference.label, color = Color.White) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.ScreenRotation,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_orientation_mode_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = onRotateVideo90,
+                                label = { Text("Rotate (${playbackState.videoRotationDegrees}°)", color = Color.White) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.ScreenRotation,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_rotate_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = onCycleAspectMode,
+                                label = { Text(playbackState.videoAspectMode.label, color = Color.White) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.AspectRatio,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_aspect_ratio_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = onToggleSubtitleSettings,
+                                label = {
+                                    Text(
+                                        playbackState.loadedSubtitleFormat?.name ?: "Subtitles",
+                                        color = Color.White
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Subtitles,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_subtitles_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = { onToggleControlsLock(true) },
+                                label = { Text("Lock", color = Color.White) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Lock,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_lock_chip")
+                            )
+                        }
+                    }
+                }
+
+                // Floating Video Settings / Subtitle Drawer in Fullscreen
+                if (showVideoSettings || showSubtitleSettings) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .width(340.dp)
+                            .fillMaxHeight(0.82f)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        if (showVideoSettings) {
+                            VideoPlayerSettingsCard(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                onSetPlaybackSpeed = onSetPlaybackSpeed,
+                                onSelectVideoOrientation = onSelectVideoOrientation,
+                                onRotateVideo90 = onRotateVideo90,
+                                onCycleAspectMode = onCycleAspectMode,
+                                onToggleKeepScreenOn = onToggleKeepScreenOn,
+                                onToggleVideoGestureControls = onToggleVideoGestureControls,
+                                onToggleControlsLock = onToggleControlsLock,
+                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                                onPickSubtitleFileClick = onPickSubtitleFileClick,
+                                onOpenEqualizer = onOpenEqualizer
+                            )
+                        } else if (showSubtitleSettings) {
+                            SubtitleSettingsCard(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                                onSetSubtitleFontScale = onSetSubtitleFontScale,
+                                onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                                onPickSubtitleFileClick = onPickSubtitleFileClick
+                            )
                         }
                     }
                 }
@@ -856,17 +1500,416 @@ fun NowPlayingOverlayScreen(
 }
 
 /**
- * Phase 10: Multiband Biquad Equalizer & Bass Boost DSP Bottom Sheet with live processing diagnostics.
+ * Original PulsePlay Circular Studio Artwork & Live Acoustic Waveform centerpiece.
+ */
+@Composable
+private fun StudioCircularAudioArtworkAndWaveform(
+    currentMedia: MediaEntity,
+    playbackState: PlaybackUiState
+) {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.secondary
+    val tertiaryColor = MaterialTheme.colorScheme.tertiary
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("audio_visualizer_card"),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 22.dp, horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            // Circular Neon Acoustic Ring + Studio Disc
+            Box(
+                modifier = Modifier.size(188.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val strokeWidth = 6.dp.toPx()
+                    val radius = (size.minDimension - strokeWidth * 2) / 2f
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val progress = if (playbackState.durationMs > 0L) {
+                        (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
+                    } else 0f
+
+                    // Outer studio ring
+                    drawCircle(
+                        color = primaryColor.copy(alpha = 0.22f),
+                        radius = radius,
+                        center = center,
+                        style = Stroke(width = strokeWidth)
+                    )
+
+                    // Active playback arc
+                    drawArc(
+                        brush = Brush.sweepGradient(
+                            listOf(primaryColor, secondaryColor, tertiaryColor, primaryColor)
+                        ),
+                        startAngle = -90f,
+                        sweepAngle = 360f * progress.coerceAtLeast(0.04f),
+                        useCenter = false,
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(144.dp)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    primaryColor.copy(alpha = 0.38f),
+                                    secondaryColor.copy(alpha = 0.18f),
+                                    MaterialTheme.colorScheme.surface
+                                )
+                            )
+                        )
+                        .border(1.dp, secondaryColor.copy(alpha = 0.4f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            imageVector = if (playbackState.isPlaying) Icons.Default.GraphicEq else Icons.Default.MusicNote,
+                            contentDescription = null,
+                            tint = secondaryColor,
+                            modifier = Modifier.size(44.dp)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = currentMedia.mimeType.substringAfterLast('/').uppercase(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
+
+            // Horizontal Studio Waveform Bar
+            Canvas(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+            ) {
+                val barCount = 36
+                val totalWidth = size.width
+                val totalHeight = size.height
+                val barWidth = (totalWidth / (barCount * 1.75f)).coerceAtLeast(3.5f)
+                val spacing = (totalWidth - (barWidth * barCount)) / (barCount - 1).coerceAtLeast(1)
+                val phase = (playbackState.currentPositionMs / 160.0)
+                val progressIndex = if (playbackState.durationMs > 0L) {
+                    ((playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()) * barCount).toInt()
+                } else 0
+
+                for (i in 0 until barCount) {
+                    val wave = if (playbackState.isPlaying) {
+                        0.22f + 0.72f * abs(sin(phase + i * 0.42) * cos(phase * 0.5 + i * 0.18)).toFloat()
+                    } else {
+                        0.18f + 0.32f * abs(sin(i * 0.48)).toFloat()
+                    }
+                    val barHeight = (totalHeight * wave).coerceAtLeast(8f)
+                    val x = i * (barWidth + spacing)
+                    val y = (totalHeight - barHeight) / 2f
+                    val barColor = when {
+                        i <= progressIndex -> secondaryColor
+                        i % 3 == 0 -> primaryColor.copy(alpha = 0.65f)
+                        else -> primaryColor.copy(alpha = 0.35f)
+                    }
+                    drawRoundRect(
+                        color = barColor,
+                        topLeft = Offset(x, y),
+                        size = Size(barWidth, barHeight),
+                        cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VideoPlayerSettingsCard(
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onSelectVideoOrientation: (VideoOrientationPreference) -> Unit,
+    onRotateVideo90: () -> Unit,
+    onCycleAspectMode: () -> Unit,
+    onToggleKeepScreenOn: (Boolean) -> Unit,
+    onToggleVideoGestureControls: (Boolean) -> Unit,
+    onToggleControlsLock: (Boolean) -> Unit,
+    onToggleSubtitlesEnabled: (Boolean) -> Unit,
+    onPickSubtitleFileClick: () -> Unit,
+    onOpenEqualizer: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("video_settings_panel"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Video Settings & Orientation",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+
+            // 1. Screen Rotation Mode (Auto / Landscape / Portrait)
+            Text(
+                text = "Screen Rotation Mode",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(VideoOrientationPreference.entries) { pref ->
+                    FilterChip(
+                        selected = userPreferences.videoOrientationPreference == pref,
+                        onClick = { onSelectVideoOrientation(pref) },
+                        label = { Text(pref.label) },
+                        modifier = Modifier.testTag("video_orientation_pref_${pref.name.lowercase()}")
+                    )
+                }
+            }
+
+            // 2. Frame Orientation & Aspect Ratio
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onRotateVideo90,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Frame: ${playbackState.videoRotationDegrees}°")
+                }
+                OutlinedButton(
+                    onClick = onCycleAspectMode,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(playbackState.videoAspectMode.label)
+                }
+            }
+
+            // 3. Playback Speed
+            Text(
+                text = "Playback Speed (${playbackState.playbackSpeed}x)",
+                style = MaterialTheme.typography.labelMedium
+            )
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)) { spd ->
+                    FilterChip(
+                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                        onClick = { onSetPlaybackSpeed(spd) },
+                        label = { Text("${spd}x") }
+                    )
+                }
+            }
+
+            // 4. Keep Screen On During Video toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Keep Screen On During Video", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Prevents screen timeout while video is actively playing",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = userPreferences.keepScreenOnDuringVideo,
+                    onCheckedChange = onToggleKeepScreenOn,
+                    modifier = Modifier.testTag("video_keep_screen_on_switch")
+                )
+            }
+
+            // 5. Gesture Controls toggle
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Brightness & Volume Swipe Gestures", style = MaterialTheme.typography.bodyMedium)
+                Switch(
+                    checked = userPreferences.videoGestureControlsEnabled,
+                    onCheckedChange = onToggleVideoGestureControls,
+                    modifier = Modifier.testTag("video_gesture_controls_switch")
+                )
+            }
+
+            // 6. Subtitles & Audio Track DSP shortcuts
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onPickSubtitleFileClick,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Subtitles (${if (userPreferences.subtitlesEnabledByDefault) "On" else "Off"})")
+                }
+                OutlinedButton(
+                    onClick = onOpenEqualizer,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Audio Track EQ")
+                }
+            }
+
+            // 7. Lock Controls button
+            OutlinedButton(
+                onClick = { onToggleControlsLock(!playbackState.isVideoControlsLocked) },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Lock Video Touch Controls")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubtitleSettingsCard(
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    onToggleSubtitlesEnabled: (Boolean) -> Unit,
+    onSetSubtitleFontScale: (Float) -> Unit,
+    onSetSubtitleOffsetMs: (Long) -> Unit,
+    onPickSubtitleFileClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("subtitle_settings_panel"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Subtitle Engine (SRT & WebVTT Verified)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Switch(
+                    checked = userPreferences.subtitlesEnabledByDefault,
+                    onCheckedChange = onToggleSubtitlesEnabled,
+                    modifier = Modifier.testTag("subtitle_enable_switch")
+                )
+            }
+
+            Text(
+                text = playbackState.loadedSubtitleName?.let {
+                    "Loaded: $it (${playbackState.loadedSubtitleFormat}) • ${playbackState.loadedSubtitleCues.size} cues"
+                } ?: "No subtitle track loaded",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (playbackState.subtitleError != null) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = playbackState.subtitleError,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = "Font Scale: ${(userPreferences.subtitleFontScale * 100).toInt()}%",
+                style = MaterialTheme.typography.labelMedium
+            )
+            Slider(
+                value = userPreferences.subtitleFontScale,
+                onValueChange = onSetSubtitleFontScale,
+                valueRange = 0.7f..1.8f
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Sync Offset: ${userPreferences.subtitleSyncOffsetMs} ms",
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(
+                        onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs - 250L) }
+                    ) { Text("-250ms") }
+                    OutlinedButton(
+                        onClick = { onSetSubtitleOffsetMs(0L) }
+                    ) { Text("0ms") }
+                    OutlinedButton(
+                        onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs + 250L) }
+                    ) { Text("+250ms") }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = onPickSubtitleFileClick,
+                modifier = Modifier.testTag("load_external_subtitle_button")
+            ) {
+                Icon(Icons.Default.ClosedCaption, contentDescription = null)
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Load Local .SRT / .VTT File (SAF)")
+            }
+        }
+    }
+}
+
+/**
+ * Multiband Biquad Equalizer, Bass Boost & Channel Balance DSP Bottom Sheet.
  */
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EqualizerBottomSheet(
     eqState: HardwareEqualizerState,
+    audioBalance: Float = 0.0f,
     onDismiss: () -> Unit,
     onSetEnabled: (Boolean) -> Unit,
     onSelectPreset: (Int) -> Unit,
     onBandLevelChange: (Int, Int) -> Unit,
-    onBassBoostChange: (Int) -> Unit
+    onBassBoostChange: (Int) -> Unit,
+    onAudioBalanceChange: (Float) -> Unit = {}
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -875,6 +1918,7 @@ fun EqualizerBottomSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -910,6 +1954,61 @@ fun EqualizerBottomSheet(
                     onCheckedChange = onSetEnabled,
                     modifier = Modifier.testTag("equalizer_enable_switch")
                 )
+            }
+
+            // Visual 5-Band Spectrum Response Curve Card (inspired by PulsePlay Equalizer concept)
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(92.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+                )
+            ) {
+                val primary = MaterialTheme.colorScheme.primary
+                val secondary = MaterialTheme.colorScheme.secondary
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val bands = eqState.bands
+                        if (bands.isEmpty()) return@Canvas
+                        val midY = size.height / 2f
+                        drawLine(
+                            color = Color.White.copy(alpha = 0.15f),
+                            start = Offset(0f, midY),
+                            end = Offset(size.width, midY),
+                            strokeWidth = 2f
+                        )
+                        val stepX = if (bands.size > 1) size.width / (bands.size - 1) else size.width
+                        var prevPoint: Offset? = null
+                        bands.forEachIndexed { idx, b ->
+                            val norm = (b.currentLevelMb.toFloat() / b.maxLevelMb.coerceAtLeast(100).toFloat())
+                                .coerceIn(-1f, 1f)
+                            val x = idx * stepX
+                            val y = midY - (norm * (size.height * 0.4f))
+                            val pt = Offset(x, y)
+                            prevPoint?.let { prev ->
+                                drawLine(
+                                    brush = Brush.horizontalGradient(listOf(primary, secondary)),
+                                    start = prev,
+                                    end = pt,
+                                    strokeWidth = 6f,
+                                    cap = StrokeCap.Round
+                                )
+                            }
+                            drawCircle(
+                                color = if (eqState.isEnabled) secondary else Color.Gray,
+                                radius = 9f,
+                                center = pt
+                            )
+                            prevPoint = pt
+                        }
+                    }
+                }
             }
 
             // Presets Row
@@ -976,6 +2075,35 @@ fun EqualizerBottomSheet(
                     valueRange = 0f..1000f,
                     enabled = eqState.isEnabled,
                     modifier = Modifier.testTag("eq_bass_boost_slider")
+                )
+            }
+
+            // Left / Right Stereo Balance Slider
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Stereo Balance (L / R)",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    val balanceText = when {
+                        abs(audioBalance) < 0.05f -> "Center"
+                        audioBalance < 0f -> "L ${(abs(audioBalance) * 100).toInt()}%"
+                        else -> "R ${(audioBalance * 100).toInt()}%"
+                    }
+                    Text(
+                        text = balanceText,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Slider(
+                    value = audioBalance,
+                    onValueChange = onAudioBalanceChange,
+                    valueRange = -1.0f..1.0f,
+                    modifier = Modifier.testTag("eq_balance_slider")
                 )
             }
 

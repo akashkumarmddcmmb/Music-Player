@@ -25,12 +25,23 @@ enum class SortOption(val label: String) {
     SIZE_DESC("Largest Size")
 }
 
+enum class VideoOrientationPreference(val label: String) {
+    AUTO("Auto Rotate"),
+    LANDSCAPE("Landscape"),
+    PORTRAIT("Portrait")
+}
+
 data class UserPreferencesState(
     val themeMode: AppThemeMode = AppThemeMode.DARK,
     val dynamicColor: Boolean = false,
     val defaultPlaybackSpeed: Float = 1.0f,
     val resumePlaybackEnabled: Boolean = true,
     val recordPlaybackHistory: Boolean = true,
+    val keepScreenOnDuringVideo: Boolean = true,
+    val backgroundPlaybackEnabled: Boolean = true,
+    val videoGestureControlsEnabled: Boolean = true,
+    val videoOrientationPreference: VideoOrientationPreference = VideoOrientationPreference.AUTO,
+    val audioBalance: Float = 0.0f, // -1.0f (Left) .. 0.0f (Center) .. +1.0f (Right)
     val subtitlesEnabledByDefault: Boolean = true,
     val subtitleFontScale: Float = 1.0f,
     val subtitleSyncOffsetMs: Long = 0L,
@@ -52,6 +63,11 @@ class UserPreferencesRepository(private val context: Context) {
         val DEFAULT_SPEED = floatPreferencesKey("default_playback_speed")
         val RESUME_ENABLED = booleanPreferencesKey("resume_playback_enabled")
         val RECORD_HISTORY = booleanPreferencesKey("record_playback_history")
+        val KEEP_SCREEN_ON_VIDEO = booleanPreferencesKey("keep_screen_on_during_video")
+        val BACKGROUND_PLAYBACK = booleanPreferencesKey("background_playback_enabled")
+        val VIDEO_GESTURE_CONTROLS = booleanPreferencesKey("video_gesture_controls_enabled")
+        val VIDEO_ORIENTATION_PREF = stringPreferencesKey("video_orientation_preference")
+        val AUDIO_BALANCE = floatPreferencesKey("audio_balance")
         val SUBTITLES_ENABLED = booleanPreferencesKey("subtitles_enabled_default")
         val SUBTITLE_FONT_SCALE = floatPreferencesKey("subtitle_font_scale")
         val SUBTITLE_OFFSET_MS = longPreferencesKey("subtitle_sync_offset_ms")
@@ -73,6 +89,10 @@ class UserPreferencesRepository(private val context: Context) {
             runCatching { SortOption.valueOf(it) }.getOrNull()
         } ?: SortOption.DATE_DESC
 
+        val orientationPref = prefs[Keys.VIDEO_ORIENTATION_PREF]?.let {
+            runCatching { VideoOrientationPreference.valueOf(it) }.getOrNull()
+        } ?: VideoOrientationPreference.AUTO
+
         val bandsCsv = prefs[Keys.EQ_BANDS_CSV] ?: "0,0,0,0,0"
         val parsedBands = bandsCsv.split(",")
             .mapNotNull { it.trim().toIntOrNull() }
@@ -84,6 +104,11 @@ class UserPreferencesRepository(private val context: Context) {
             defaultPlaybackSpeed = (prefs[Keys.DEFAULT_SPEED] ?: 1.0f).coerceIn(0.25f, 3.0f),
             resumePlaybackEnabled = prefs[Keys.RESUME_ENABLED] ?: true,
             recordPlaybackHistory = prefs[Keys.RECORD_HISTORY] ?: true,
+            keepScreenOnDuringVideo = prefs[Keys.KEEP_SCREEN_ON_VIDEO] ?: true,
+            backgroundPlaybackEnabled = prefs[Keys.BACKGROUND_PLAYBACK] ?: true,
+            videoGestureControlsEnabled = prefs[Keys.VIDEO_GESTURE_CONTROLS] ?: true,
+            videoOrientationPreference = orientationPref,
+            audioBalance = (prefs[Keys.AUDIO_BALANCE] ?: 0.0f).coerceIn(-1.0f, 1.0f),
             subtitlesEnabledByDefault = prefs[Keys.SUBTITLES_ENABLED] ?: true,
             subtitleFontScale = (prefs[Keys.SUBTITLE_FONT_SCALE] ?: 1.0f).coerceIn(0.6f, 2.0f),
             subtitleSyncOffsetMs = prefs[Keys.SUBTITLE_OFFSET_MS] ?: 0L,
@@ -115,6 +140,26 @@ class UserPreferencesRepository(private val context: Context) {
 
     suspend fun setRecordPlaybackHistory(enabled: Boolean) {
         context.pulseDataStore.edit { it[Keys.RECORD_HISTORY] = enabled }
+    }
+
+    suspend fun setKeepScreenOnDuringVideo(enabled: Boolean) {
+        context.pulseDataStore.edit { it[Keys.KEEP_SCREEN_ON_VIDEO] = enabled }
+    }
+
+    suspend fun setBackgroundPlaybackEnabled(enabled: Boolean) {
+        context.pulseDataStore.edit { it[Keys.BACKGROUND_PLAYBACK] = enabled }
+    }
+
+    suspend fun setVideoGestureControlsEnabled(enabled: Boolean) {
+        context.pulseDataStore.edit { it[Keys.VIDEO_GESTURE_CONTROLS] = enabled }
+    }
+
+    suspend fun setVideoOrientationPreference(pref: VideoOrientationPreference) {
+        context.pulseDataStore.edit { it[Keys.VIDEO_ORIENTATION_PREF] = pref.name }
+    }
+
+    suspend fun setAudioBalance(balance: Float) {
+        context.pulseDataStore.edit { it[Keys.AUDIO_BALANCE] = balance.coerceIn(-1.0f, 1.0f) }
     }
 
     suspend fun setSubtitlesEnabled(enabled: Boolean) {

@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
@@ -51,7 +52,9 @@ import com.example.BuildConfig
 import com.example.ads.OptionalAdManager
 import com.example.data.preferences.SortOption
 import com.example.data.preferences.UserPreferencesState
+import com.example.data.preferences.VideoOrientationPreference
 import com.example.ui.theme.AppThemeMode
+import kotlin.math.abs
 
 @Composable
 fun ProfileAndSettingsScreen(
@@ -63,6 +66,11 @@ fun ProfileAndSettingsScreen(
     onSetDefaultSpeed: (Float) -> Unit,
     onSetResumePlayback: (Boolean) -> Unit,
     onSetRecordHistory: (Boolean) -> Unit,
+    onSetBackgroundPlayback: (Boolean) -> Unit = {},
+    onSetKeepScreenOnDuringVideo: (Boolean) -> Unit = {},
+    onSetVideoGestureControls: (Boolean) -> Unit = {},
+    onSetVideoOrientationPref: (VideoOrientationPreference) -> Unit = {},
+    onSetAudioBalance: (Float) -> Unit = {},
     onSetSubtitlesEnabled: (Boolean) -> Unit,
     onSetSubtitleScale: (Float) -> Unit,
     onSetDefaultSort: (SortOption) -> Unit,
@@ -111,7 +119,7 @@ fun ProfileAndSettingsScreen(
             title = { Text("Reset Application Preferences?") },
             text = {
                 Text(
-                    "Resets theme, playback speed, subtitle styling, sorting, and equalizer settings to factory defaults. Playlists and media files are preserved."
+                    "Resets theme, playback speed, subtitle styling, sorting, video orientation, and equalizer settings to factory defaults. Playlists and media files are preserved."
                 )
             },
             confirmButton = {
@@ -190,7 +198,7 @@ fun ProfileAndSettingsScreen(
         contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Local Profile & Offline Privacy Header (Phase 4 & 13: No online account required)
+        // Local Profile & Offline Privacy Header
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -256,7 +264,7 @@ fun ProfileAndSettingsScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Material You Dynamic Colors (Android 12+)", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "When off, uses PulsePlay Obsidian & Studio Amber palette",
+                            "When off, uses PulsePlay Midnight Violet & Cyan Studio palette",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -270,12 +278,99 @@ fun ProfileAndSettingsScreen(
             }
         }
 
-        // Playback, Speed & Library Sorting Preferences
+        // Video Screen, Rotation & Gesture Preferences
         item {
             SettingsSectionCard(
-                title = "Playback & Library Preferences",
+                title = "Video Screen, Orientation & Gestures",
+                icon = Icons.Default.ScreenRotation
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Keep Screen On During Video Playback", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Keeps display awake while video is actively playing; clears on pause/stop",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.keepScreenOnDuringVideo,
+                        onCheckedChange = onSetKeepScreenOnDuringVideo,
+                        modifier = Modifier.testTag("settings_keep_screen_on_switch")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Video Gesture Controls", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Vertical swipe for brightness (left) & volume (right); double-tap play/pause",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.videoGestureControlsEnabled,
+                        onCheckedChange = onSetVideoGestureControls,
+                        modifier = Modifier.testTag("settings_video_gestures_switch")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Default Video Orientation Mode",
+                    style = MaterialTheme.typography.labelLarge
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(VideoOrientationPreference.entries) { pref ->
+                        FilterChip(
+                            selected = userPreferences.videoOrientationPreference == pref,
+                            onClick = { onSetVideoOrientationPref(pref) },
+                            label = { Text(pref.label) },
+                            modifier = Modifier.testTag("settings_video_orientation_${pref.name.lowercase()}")
+                        )
+                    }
+                }
+            }
+        }
+
+        // Playback, Background Service, Speed & Library Sorting Preferences
+        item {
+            SettingsSectionCard(
+                title = "Playback & Background Service",
                 icon = Icons.Default.Speed
             ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Background Audio Playback", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Continues playing via MediaSessionService when screen turns off or app is backgrounded",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.backgroundPlaybackEnabled,
+                        onCheckedChange = onSetBackgroundPlayback,
+                        modifier = Modifier.testTag("settings_background_playback_switch")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = "Default Playback Speed (${userPreferences.defaultPlaybackSpeed}x)",
                     style = MaterialTheme.typography.labelLarge
@@ -284,7 +379,7 @@ fun ProfileAndSettingsScreen(
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)) { spd ->
                         FilterChip(
-                            selected = kotlin.math.abs(userPreferences.defaultPlaybackSpeed - spd) < 0.05f,
+                            selected = abs(userPreferences.defaultPlaybackSpeed - spd) < 0.05f,
                             onClick = { onSetDefaultSpeed(spd) },
                             label = { Text("${spd}x") }
                         )
@@ -363,6 +458,21 @@ fun ProfileAndSettingsScreen(
                     valueRange = 0.7f..1.8f
                 )
 
+                val balanceLabel = when {
+                    abs(userPreferences.audioBalance) < 0.05f -> "Center"
+                    userPreferences.audioBalance < 0f -> "L ${(abs(userPreferences.audioBalance) * 100).toInt()}%"
+                    else -> "R ${(userPreferences.audioBalance * 100).toInt()}%"
+                }
+                Text(
+                    text = "Stereo Channel Balance: $balanceLabel",
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Slider(
+                    value = userPreferences.audioBalance,
+                    onValueChange = onSetAudioBalance,
+                    valueRange = -1.0f..1.0f
+                )
+
                 OutlinedButton(
                     onClick = onOpenEqualizerClick,
                     modifier = Modifier.testTag("settings_open_eq_button")
@@ -374,7 +484,7 @@ fun ProfileAndSettingsScreen(
             }
         }
 
-        // Privacy, Permissions & Optional Advertising Audit (Phase 13 & Phase 14)
+        // Privacy, Permissions & Optional Advertising Audit
         item {
             SettingsSectionCard(
                 title = "Privacy, Permissions & Optional Ad Module",
@@ -461,7 +571,7 @@ fun ProfileAndSettingsScreen(
             }
         }
 
-        // Application Version & Open-Source Acknowledgements (Phase 4 & Phase 15)
+        // Application Version & Open-Source Acknowledgements
         item {
             SettingsSectionCard(
                 title = "About & Open-Source Licenses",

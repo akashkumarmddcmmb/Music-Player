@@ -17,22 +17,29 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.Sort
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Equalizer
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -46,6 +53,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -56,6 +64,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,6 +80,14 @@ import com.example.data.preferences.SortOption
 import com.example.data.preferences.UserPreferencesState
 import com.example.ui.components.MediaItemCard
 import com.example.ui.components.formatDurationMillis
+import com.example.ui.theme.FavoriteCardGradientEnd
+import com.example.ui.theme.FavoriteCardGradientStart
+import com.example.ui.theme.MusicCardGradientEnd
+import com.example.ui.theme.MusicCardGradientStart
+import com.example.ui.theme.PlaylistCardGradientEnd
+import com.example.ui.theme.PlaylistCardGradientStart
+import com.example.ui.theme.VideoCardGradientEnd
+import com.example.ui.theme.VideoCardGradientStart
 import com.example.viewmodel.LibrarySubTab
 
 @Composable
@@ -191,6 +211,7 @@ fun HomeDashboardScreen(
     allMedia: List<MediaEntity>,
     audioMedia: List<MediaEntity>,
     videoMedia: List<MediaEntity>,
+    playlistsCount: Int = 0,
     recentHistory: List<PlaybackHistoryEntity>,
     favoriteUris: Set<String>,
     currentlyPlayingUri: String?,
@@ -200,6 +221,10 @@ fun HomeDashboardScreen(
     onRequestPermissionClick: () -> Unit,
     onPickSafFileClick: () -> Unit,
     onGenerateSamplesClick: () -> Unit,
+    onNavigateToMusic: () -> Unit = {},
+    onNavigateToVideos: () -> Unit = {},
+    onNavigateToPlaylists: () -> Unit = {},
+    onNavigateToFavorites: () -> Unit = {},
     onPlayMedia: (MediaEntity, List<MediaEntity>) -> Unit,
     onToggleFavorite: (MediaEntity) -> Unit,
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
@@ -252,7 +277,71 @@ fun HomeDashboardScreen(
             }
         }
 
-        // Quick Studio & Hardware DSP Cards
+        // 2x2 Category Dashboard Cards (Inspired by PulsePlay Home Concept: Music, Videos, Playlists, Favorites)
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    HomeCategoryTile(
+                        title = "Music",
+                        subtitle = "${audioMedia.size} tracks",
+                        icon = Icons.Default.LibraryMusic,
+                        gradientColors = listOf(MusicCardGradientStart, MusicCardGradientEnd),
+                        onClick = onNavigateToMusic,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("home_category_music")
+                    )
+                    HomeCategoryTile(
+                        title = "Videos",
+                        subtitle = "${videoMedia.size} videos",
+                        icon = Icons.Default.Movie,
+                        gradientColors = listOf(VideoCardGradientStart, VideoCardGradientEnd),
+                        onClick = onNavigateToVideos,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("home_category_videos")
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    HomeCategoryTile(
+                        title = "Playlists",
+                        subtitle = "$playlistsCount sets",
+                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                        gradientColors = listOf(PlaylistCardGradientStart, PlaylistCardGradientEnd),
+                        onClick = onNavigateToPlaylists,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("home_category_playlists")
+                    )
+                    HomeCategoryTile(
+                        title = "Favorites",
+                        subtitle = "${favoriteUris.size} saved",
+                        icon = Icons.Default.Favorite,
+                        gradientColors = listOf(FavoriteCardGradientStart, FavoriteCardGradientEnd),
+                        onClick = onNavigateToFavorites,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("home_category_favorites")
+                    )
+                }
+            }
+        }
+
+        // Studio & Audio Tools Hub (Media Editor, Equalizer DSP, Audio Converter, Audio Cutter)
+        item {
+            Text(
+                text = "Studio & Audio Tools",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -265,7 +354,7 @@ fun HomeDashboardScreen(
                         .testTag("quick_action_studio_card"),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
                     )
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
@@ -295,7 +384,7 @@ fun HomeDashboardScreen(
                         .testTag("quick_action_eq_card"),
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
                     )
                 ) {
                     Column(modifier = Modifier.padding(14.dp)) {
@@ -311,7 +400,7 @@ fun HomeDashboardScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Multi-band EQ & Bass Boost",
+                            text = "5-Band Biquad EQ & Bass Boost",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -320,7 +409,7 @@ fun HomeDashboardScreen(
             }
         }
 
-        // Recently Played Section
+        // Recently Played / Continue Listening Section
         if (recentHistory.isNotEmpty()) {
             item {
                 Text(
@@ -335,11 +424,11 @@ fun HomeDashboardScreen(
                         val matchingMedia = allMedia.find { it.uriString == hist.uriString }
                         Card(
                             modifier = Modifier
-                                .width(190.dp)
+                                .width(196.dp)
                                 .clickable(enabled = matchingMedia != null) {
                                     matchingMedia?.let { onPlayMedia(it, allMedia) }
                                 },
-                            shape = RoundedCornerShape(14.dp),
+                            shape = RoundedCornerShape(16.dp),
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                             )
@@ -349,20 +438,21 @@ fun HomeDashboardScreen(
                                     Icon(
                                         imageVector = Icons.Default.History,
                                         contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
+                                        tint = MaterialTheme.colorScheme.secondary,
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = "Resume @ ${formatDurationMillis(hist.lastPositionMs)}",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.primary
+                                        color = MaterialTheme.colorScheme.secondary
                                     )
                                 }
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = hist.titleSnapshot,
                                     style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -418,6 +508,59 @@ fun HomeDashboardScreen(
                     onFavoriteToggle = { onToggleFavorite(media) },
                     onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                     onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeCategoryTile(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    gradientColors: List<Color>,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier.clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Brush.linearGradient(gradientColors))
+                .padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Column {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.85f)
                 )
             }
         }
@@ -493,6 +636,10 @@ fun LibraryAndFoldersScreen(
     allMedia: List<MediaEntity>,
     selectedFolder: String?,
     onSelectFolder: (String?) -> Unit,
+    selectedAlbum: String? = null,
+    onSelectAlbum: (String?) -> Unit = {},
+    selectedArtist: String? = null,
+    onSelectArtist: (String?) -> Unit = {},
     playlists: List<PlaylistWithCount>,
     selectedPlaylistId: Long?,
     playlistItems: List<MediaEntity>,
@@ -506,7 +653,8 @@ fun LibraryAndFoldersScreen(
     onPlayMedia: (MediaEntity, List<MediaEntity>) -> Unit,
     onToggleFavorite: (MediaEntity) -> Unit,
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
-    onOpenStudioForMedia: (MediaEntity) -> Unit,
+    onOpenStudioForMedia: (MediaEntity?) -> Unit,
+    onOpenEqualizer: () -> Unit = {},
     onClearHistoryOnly: () -> Unit
 ) {
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
@@ -558,7 +706,7 @@ fun LibraryAndFoldersScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Sub-navigation chips: Folders, Playlists, Favorites, History
+        // Sub-navigation chips: All Songs, Albums, Artists, Folders, Playlists, Favorites, History, Studio Tools
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -571,9 +719,11 @@ fun LibraryAndFoldersScreen(
                     onClick = {
                         onSelectSubTab(tab)
                         onSelectFolder(null)
+                        onSelectAlbum(null)
+                        onSelectArtist(null)
                         onSelectPlaylist(null)
                     },
-                    label = { Text(tab.name.lowercase().replaceFirstChar { it.uppercase() }) },
+                    label = { Text(tab.label) },
                     modifier = Modifier.testTag("library_subtab_${tab.name.lowercase()}")
                 )
             }
@@ -587,6 +737,183 @@ fun LibraryAndFoldersScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             when (selectedSubTab) {
+                LibrarySubTab.ALL_SONGS -> {
+                    item {
+                        Text(
+                            text = "All Media Tracks (${allMedia.size})",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    items(allMedia, key = { it.uriString }) { media ->
+                        MediaItemCard(
+                            media = media,
+                            isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                            isFavorite = favoriteUris.contains(media.uriString),
+                            onPlayClick = { onPlayMedia(media, allMedia) },
+                            onFavoriteToggle = { onToggleFavorite(media) },
+                            onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                        )
+                    }
+                }
+
+                LibrarySubTab.ALBUMS -> {
+                    val groupedByAlbum = allMedia.groupBy { it.album.ifBlank { "Unknown Album" } }
+                    if (selectedAlbum == null) {
+                        item {
+                            Text(
+                                text = "Albums (${groupedByAlbum.size})",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        items(groupedByAlbum.entries.toList(), key = { it.key }) { (albumName, tracks) ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectAlbum(albumName) }
+                                    .testTag("album_card_$albumName"),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Album,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = albumName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "${tracks.size} tracks • ${tracks.firstOrNull()?.artist ?: "Unknown Artist"}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        val albumTracks = groupedByAlbum[selectedAlbum].orEmpty()
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Album: $selectedAlbum",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(onClick = { onSelectAlbum(null) }) {
+                                    Text("All Albums")
+                                }
+                            }
+                        }
+                        items(albumTracks, key = { it.uriString }) { media ->
+                            MediaItemCard(
+                                media = media,
+                                isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                isFavorite = favoriteUris.contains(media.uriString),
+                                onPlayClick = { onPlayMedia(media, albumTracks) },
+                                onFavoriteToggle = { onToggleFavorite(media) },
+                                onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                            )
+                        }
+                    }
+                }
+
+                LibrarySubTab.ARTISTS -> {
+                    val groupedByArtist = allMedia.groupBy { it.artist.ifBlank { "Unknown Artist" } }
+                    if (selectedArtist == null) {
+                        item {
+                            Text(
+                                text = "Artists (${groupedByArtist.size})",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        items(groupedByArtist.entries.toList(), key = { it.key }) { (artistName, tracks) ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onSelectArtist(artistName) }
+                                    .testTag("artist_card_$artistName"),
+                                shape = RoundedCornerShape(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Person,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = artistName,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "${tracks.size} media items",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        val artistTracks = groupedByArtist[selectedArtist].orEmpty()
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Artist: $selectedArtist",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(onClick = { onSelectArtist(null) }) {
+                                    Text("All Artists")
+                                }
+                            }
+                        }
+                        items(artistTracks, key = { it.uriString }) { media ->
+                            MediaItemCard(
+                                media = media,
+                                isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                isFavorite = favoriteUris.contains(media.uriString),
+                                onPlayClick = { onPlayMedia(media, artistTracks) },
+                                onFavoriteToggle = { onToggleFavorite(media) },
+                                onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                            )
+                        }
+                    }
+                }
+
                 LibrarySubTab.FOLDERS -> {
                     val groupedByFolder = allMedia.groupBy { it.folderName }
                     if (selectedFolder == null) {
@@ -874,6 +1201,127 @@ fun LibraryAndFoldersScreen(
                         }
                     }
                 }
+
+                LibrarySubTab.TOOLS -> {
+                    item {
+                        Text(
+                            text = "PulsePlay Studio & DSP Tools",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Offline audio/video editing, format conversion, and real-time 5-band biquad DSP",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    item {
+                        StudioToolFeatureCard(
+                            title = "Audio Cutter & Trim Studio",
+                            subtitle = "Sample-accurate RIFF WAVE & M4A audio trimming without modifying original files",
+                            icon = Icons.Default.ContentCut,
+                            badge = "EDITOR",
+                            onClick = { onOpenStudioForMedia(null) }
+                        )
+                    }
+                    item {
+                        StudioToolFeatureCard(
+                            title = "Audio & Video Format Converter",
+                            subtitle = "Convert audio to 16-bit PCM WAV or AAC M4A, or extract audio tracks from video files",
+                            icon = Icons.Default.Transform,
+                            badge = "CONVERTER",
+                            onClick = { onOpenStudioForMedia(null) }
+                        )
+                    }
+                    item {
+                        StudioToolFeatureCard(
+                            title = "Video Trimmer & Orientation Remuxer",
+                            subtitle = "Trim video ranges and write ISO MP4 orientation matrices (0° / 90° / 180° / 270°)",
+                            icon = Icons.Default.Movie,
+                            badge = "VIDEO LAB",
+                            onClick = { onOpenStudioForMedia(null) }
+                        )
+                    }
+                    item {
+                        StudioToolFeatureCard(
+                            title = "5-Band Biquad Equalizer & Bass Boost",
+                            subtitle = "Real-time PCM16 cascade filter bank (60 Hz – 14 kHz) with soft-knee limiter",
+                            icon = Icons.Default.GraphicEq,
+                            badge = "LIVE DSP",
+                            onClick = onOpenEqualizer
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StudioToolFeatureCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    badge: String,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(26.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer
+                    ) {
+                        Text(
+                            text = badge,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         }
     }

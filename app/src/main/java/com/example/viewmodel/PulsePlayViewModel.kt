@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import android.content.ComponentName
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.annotation.OptIn
@@ -33,12 +34,14 @@ import com.example.data.local.PulseDatabase
 import com.example.data.preferences.SortOption
 import com.example.data.preferences.UserPreferencesRepository
 import com.example.data.preferences.UserPreferencesState
+import com.example.data.preferences.VideoOrientationPreference
 import com.example.data.repository.MediaLibraryRepository
 import com.example.media.ConversionCapabilityRegistry
 import com.example.media.ConversionProfile
 import com.example.media.EqualizerController
 import com.example.media.HardwareEqualizerState
 import com.example.media.MediaProcessorEngine
+import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
 import com.example.media.SampleMediaGenerator
 import com.example.media.SubtitleCueItem
@@ -68,11 +71,15 @@ enum class PrimaryTab {
     SETTINGS
 }
 
-enum class LibrarySubTab {
-    FOLDERS,
-    PLAYLISTS,
-    FAVORITES,
-    HISTORY
+enum class LibrarySubTab(val label: String) {
+    ALL_SONGS("All Songs"),
+    ALBUMS("Albums"),
+    ARTISTS("Artists"),
+    FOLDERS("Folders"),
+    PLAYLISTS("Playlists"),
+    FAVORITES("Favorites"),
+    HISTORY("History"),
+    TOOLS("Studio Tools")
 }
 
 enum class RepeatModeState {
@@ -109,6 +116,7 @@ data class PlaybackUiState(
     val videoAspectMode: VideoAspectMode = VideoAspectMode.FIT,
     val videoRotationDegrees: Int = 0,
     val isFullscreenVideo: Boolean = false,
+    val isVideoControlsLocked: Boolean = false,
     val brightnessGestureLevel: Float = 0.75f, // 0.1..1.0
     val volumeGestureLevel: Float = 0.80f,     // 0.0..1.0
     val loadedSubtitleName: String? = null,
@@ -139,6 +147,12 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _selectedFolderFilter = MutableStateFlow<String?>(null)
     val selectedFolderFilter: StateFlow<String?> = _selectedFolderFilter.asStateFlow()
+
+    private val _selectedAlbumFilter = MutableStateFlow<String?>(null)
+    val selectedAlbumFilter: StateFlow<String?> = _selectedAlbumFilter.asStateFlow()
+
+    private val _selectedArtistFilter = MutableStateFlow<String?>(null)
+    val selectedArtistFilter: StateFlow<String?> = _selectedArtistFilter.asStateFlow()
 
     private val _selectedPlaylistId = MutableStateFlow<Long?>(null)
     val selectedPlaylistId: StateFlow<Long?> = _selectedPlaylistId.asStateFlow()
@@ -283,7 +297,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val idx = activePlayer?.currentMediaItemIndex ?: -1
             val queue = _playbackState.value.queue
-            val nextEntity = queue.getOrNull(idx) ?: _playbackState.value.currentMedia
+            val matchedFromLibrary = mediaItem?.mediaId?.let { id ->
+                allMedia.value.find { it.uriString == id }
+            }
+            val nextEntity = queue.getOrNull(idx) ?: matchedFromLibrary ?: _playbackState.value.currentMedia
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = nextEntity,
                 currentQueueIndex = idx,
@@ -441,39 +458,19 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     @OptIn(UnstableApi::class)
+    @Synchronized
     private fun attachManagedPlayer(player: Player, audioSessionId: Int) {
         val previousFallback = fallbackLocalPlayer
         activePlayer?.removeListener(playerListener)
 
-        // If transitioning from temporary fallbackLocalPlayer to service MediaController,
-        // hand off any active queue/playback state and immediately release fallbackLocalPlayer
+        // Safely hand off any active queue/playback state from temporary fallbackLocalPlayer to
+        // the authoritative MediaController and immediately stop/release fallbackLocalPlayer
+        val snapshot = PlayerHandoffAndVideoPolicy.handoffFallbackToAuthoritativePlayer(
+            outgoingFallback = previousFallback,
+            incomingTarget = player
+        )
         if (previousFallback != null && previousFallback !== player) {
-            val hadItems = previousFallback.mediaItemCount > 0
-            val itemsToTransfer = mutableListOf<MediaItem>()
-            for (i in 0 until previousFallback.mediaItemCount) {
-                itemsToTransfer.add(previousFallback.getMediaItemAt(i))
-            }
-            val startIndex = previousFallback.currentMediaItemIndex.coerceAtLeast(0)
-            val startPos = previousFallback.currentPosition.coerceAtLeast(0L)
-            val wasPlaying = previousFallback.isPlaying || previousFallback.playWhenReady
-            val speed = previousFallback.playbackParameters.speed
-            val repeat = previousFallback.repeatMode
-            val shuffle = previousFallback.shuffleModeEnabled
-
-            previousFallback.stop()
-            previousFallback.release()
             fallbackLocalPlayer = null
-
-            if (hadItems && player.mediaItemCount == 0) {
-                player.setMediaItems(itemsToTransfer, startIndex, startPos)
-                player.setPlaybackSpeed(speed)
-                player.repeatMode = repeat
-                player.shuffleModeEnabled = shuffle
-                player.prepare()
-                if (wasPlaying) {
-                    player.play()
-                }
-            }
         }
 
         activePlayer = player
@@ -481,7 +478,39 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
         viewModelScope.launch {
             val prefs = preferencesRepository.preferencesFlow.first()
-            player.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
+            if (snapshot.mediaItems.isEmpty()) {
+                player.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
+            } else {
+                // Synchronize UI state if service already had an active queue or transferred from fallback
+                val currentAll = allMedia.value
+                val reconstructedQueue = snapshot.mediaItems.mapNotNull { item ->
+                    currentAll.find { it.uriString == item.mediaId }
+                }
+                val activeEntity = reconstructedQueue.getOrNull(snapshot.currentMediaItemIndex)
+                    ?: _playbackState.value.currentMedia
+                if (activeEntity != null) {
+                    val repeatState = when (snapshot.repeatMode) {
+                        Player.REPEAT_MODE_ONE -> RepeatModeState.ONE
+                        Player.REPEAT_MODE_ALL -> RepeatModeState.ALL
+                        else -> RepeatModeState.OFF
+                    }
+                    _playbackState.value = _playbackState.value.copy(
+                        currentMedia = activeEntity,
+                        queue = if (reconstructedQueue.isNotEmpty()) reconstructedQueue else _playbackState.value.queue,
+                        currentQueueIndex = snapshot.currentMediaItemIndex,
+                        isPlaying = snapshot.isPlaying || snapshot.playWhenReady,
+                        currentPositionMs = snapshot.currentPositionMs,
+                        durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: activeEntity.durationMs,
+                        playbackSpeed = snapshot.playbackSpeed,
+                        shuffleEnabled = snapshot.shuffleModeEnabled,
+                        repeatMode = repeatState
+                    )
+                    if (snapshot.isPlaying || snapshot.playWhenReady) {
+                        startProgressPolling()
+                    }
+                }
+            }
+
             val resolvedSessionId = if (audioSessionId > 0) {
                 audioSessionId
             } else {
@@ -493,7 +522,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 presetIndex = prefs.equalizerPresetIndex,
                 bassStrength = prefs.bassBoostStrength,
                 savedBandLevelsMb = prefs.customBandLevelsMb,
-                isPlaybackActive = player.isPlaying || player.mediaItemCount > 0
+                isPlaybackActive = player.isPlaying || player.playWhenReady || player.mediaItemCount > 0
             )
             queryServiceAudioSessionIdIfController(player)
         }
@@ -512,6 +541,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectFolderFilter(folderName: String?) {
         _selectedFolderFilter.value = folderName
+    }
+
+    fun selectAlbumFilter(albumName: String?) {
+        _selectedAlbumFilter.value = albumName
+    }
+
+    fun selectArtistFilter(artistName: String?) {
+        _selectedArtistFilter.value = artistName
     }
 
     fun selectPlaylistDetail(playlistId: Long?) {
@@ -615,7 +652,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             } else 0L
             val initialSeekMs = if (savedPos in 1000L until (media.durationMs - 1500L)) savedPos else 0L
 
-            val player = activePlayer ?: return@launch
             val mediaItems = resolvedQueue.map { item ->
                 MediaItem.Builder()
                     .setMediaId(item.uriString)
@@ -630,9 +666,22 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     .build()
             }
 
+            // Ensure PulsePlaybackService is started so background & screen-off playback survives Activity backgrounding
+            val app = getApplication<Application>()
+            runCatching {
+                app.startService(Intent(app, PulsePlaybackService::class.java))
+            }
+
+            // Acquire authoritative activePlayer AFTER suspend points so handoff never races with playMedia
+            val player = activePlayer ?: run {
+                ensureFallbackLocalExoPlayer()
+                activePlayer
+            } ?: return@launch
+
             player.setMediaItems(mediaItems, startIndex, initialSeekMs)
             player.PlaybackParameters = PlaybackParameters(prefs.defaultPlaybackSpeed)
             player.prepare()
+            player.playWhenReady = true
             player.play()
 
             // Synchronize Equalizer DSP and resolve active audioSessionId without casting MediaController to ExoPlayer
@@ -747,8 +796,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         _playbackState.value = _playbackState.value.copy(videoRotationDegrees = nextRot)
     }
 
+    fun setVideoRotationDegrees(degrees: Int) {
+        val normalized = ((degrees % 360) + 360) % 360
+        _playbackState.value = _playbackState.value.copy(videoRotationDegrees = normalized)
+    }
+
     fun setFullscreenVideo(fullscreen: Boolean) {
         _playbackState.value = _playbackState.value.copy(isFullscreenVideo = fullscreen)
+    }
+
+    fun setVideoControlsLocked(locked: Boolean) {
+        _playbackState.value = _playbackState.value.copy(isVideoControlsLocked = locked)
     }
 
     fun adjustBrightnessGesture(delta: Float) {
@@ -1115,6 +1173,35 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setRecordPlaybackHistory(enabled: Boolean) {
         viewModelScope.launch { preferencesRepository.setRecordPlaybackHistory(enabled) }
+    }
+
+    fun setKeepScreenOnDuringVideo(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepository.setKeepScreenOnDuringVideo(enabled) }
+    }
+
+    fun setBackgroundPlaybackEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepository.setBackgroundPlaybackEnabled(enabled) }
+    }
+
+    fun setVideoGestureControlsEnabled(enabled: Boolean) {
+        viewModelScope.launch { preferencesRepository.setVideoGestureControlsEnabled(enabled) }
+    }
+
+    fun setVideoOrientationPreference(pref: VideoOrientationPreference) {
+        viewModelScope.launch { preferencesRepository.setVideoOrientationPreference(pref) }
+    }
+
+    fun cycleVideoOrientationPreference() {
+        viewModelScope.launch {
+            val current = userPreferences.value.videoOrientationPreference
+            val entries = VideoOrientationPreference.entries
+            val next = entries[(entries.indexOf(current) + 1) % entries.size]
+            preferencesRepository.setVideoOrientationPreference(next)
+        }
+    }
+
+    fun setAudioBalance(balance: Float) {
+        viewModelScope.launch { preferencesRepository.setAudioBalance(balance) }
     }
 
     fun setSubtitlesEnabled(enabled: Boolean) {

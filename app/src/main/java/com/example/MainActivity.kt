@@ -1,7 +1,11 @@
 package com.example
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -55,6 +59,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -68,8 +73,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.MediaEntity
+import com.example.data.local.MediaType
+import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.ui.components.PersistentMiniPlayerBar
 import com.example.ui.screens.EqualizerBottomSheet
 import com.example.ui.screens.HomeDashboardScreen
@@ -80,6 +93,7 @@ import com.example.ui.screens.ProfileAndSettingsScreen
 import com.example.ui.screens.SearchAndActionHeader
 import com.example.ui.screens.StudioEditorOverlayScreen
 import com.example.ui.theme.PulsePlayTheme
+import com.example.viewmodel.LibrarySubTab
 import com.example.viewmodel.PrimaryTab
 import com.example.viewmodel.PulsePlayViewModel
 
@@ -117,6 +131,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+private tailrec fun Context.findHostActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findHostActivity()
+    else -> null
 }
 
 private data class NavDestinationItem(
@@ -168,10 +188,14 @@ private val primaryDestinations = listOf(
 @Composable
 fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val activity = remember(context) { context.findHostActivity() }
 
     val selectedTab by viewModel.selectedTab.collectAsStateWithLifecycle()
     val selectedLibSubTab by viewModel.selectedLibrarySubTab.collectAsStateWithLifecycle()
     val selectedFolder by viewModel.selectedFolderFilter.collectAsStateWithLifecycle()
+    val selectedAlbum by viewModel.selectedAlbumFilter.collectAsStateWithLifecycle()
+    val selectedArtist by viewModel.selectedArtistFilter.collectAsStateWithLifecycle()
     val selectedPlaylistId by viewModel.selectedPlaylistId.collectAsStateWithLifecycle()
 
     val allMedia by viewModel.allMedia.collectAsStateWithLifecycle()
@@ -198,6 +222,98 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val isEqualizerSheetOpen by viewModel.isEqualizerSheetOpen.collectAsStateWithLifecycle()
 
     var pendingPlaylistAddMedia by remember { mutableStateOf<MediaEntity?>(null) }
+    var isActivityResumed by remember { mutableStateOf(true) }
+
+    // Track Activity lifecycle for lifecycle-safe FLAG_KEEP_SCREEN_ON
+    DisposableEffect(lifecycleOwner, activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> isActivityResumed = true
+                Lifecycle.Event.ON_PAUSE,
+                Lifecycle.Event.ON_STOP,
+                Lifecycle.Event.ON_DESTROY -> {
+                    isActivityResumed = false
+                    PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(activity?.window, false)
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(activity?.window, false)
+        }
+    }
+
+    // Lifecycle-safe Window FLAG_KEEP_SCREEN_ON management during active video playback
+    val shouldKeepVideoScreenAwake = PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
+        isActivityResumed = isActivityResumed,
+        isNowPlayingOverlayVisible = isNowPlayingExpanded && !isStudioSheetOpen,
+        mediaType = playbackState.currentMedia?.mediaType,
+        isPlaying = playbackState.isPlaying,
+        hasPlaybackError = playbackState.playbackError != null,
+        keepScreenOnPreferenceEnabled = userPreferences.keepScreenOnDuringVideo
+    )
+
+    DisposableEffect(
+        activity,
+        shouldKeepVideoScreenAwake
+    ) {
+        PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(
+            window = activity?.window,
+            shouldKeepAwake = shouldKeepVideoScreenAwake
+        )
+        onDispose {
+            PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(
+                window = activity?.window,
+                shouldKeepAwake = false
+            )
+        }
+    }
+
+    // Real Android Display Orientation & Immersive System Bars for Video Player
+    val targetOrientation = PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
+        isNowPlayingOverlayVisible = isNowPlayingExpanded && !isStudioSheetOpen,
+        mediaType = playbackState.currentMedia?.mediaType,
+        isFullscreenVideo = playbackState.isFullscreenVideo,
+        orientationPreference = userPreferences.videoOrientationPreference
+    )
+    val isFullscreenVideoActive = isNowPlayingExpanded &&
+        !isStudioSheetOpen &&
+        playbackState.currentMedia?.mediaType == MediaType.VIDEO &&
+        playbackState.isFullscreenVideo
+
+    DisposableEffect(
+        activity,
+        targetOrientation,
+        isFullscreenVideoActive
+    ) {
+        if (activity != null) {
+            if (activity.requestedOrientation != targetOrientation) {
+                activity.requestedOrientation = targetOrientation
+            }
+            val window = activity.window
+            if (window != null) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                if (isFullscreenVideoActive) {
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        }
+        onDispose {
+            if (activity != null && !isNowPlayingExpanded) {
+                activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                activity.window?.let { win ->
+                    WindowCompat.getInsetsController(win, win.decorView)
+                        .show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+        }
+    }
 
     val playlistDetailItemsFlow = remember(selectedPlaylistId) {
         selectedPlaylistId?.let { viewModel.mediaRepository.observePlaylistItems(it) }
@@ -251,7 +367,6 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     ) { resultMap ->
         val anyGranted = resultMap.values.any { it } || checkAnyMediaOrAllFilesGranted()
         viewModel.onPermissionResult(granted = anyGranted, permanentlyDenied = !anyGranted)
-        // After runtime popup (Notification + Audio/Video), prompt All Files Access if not yet granted
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             !Environment.isExternalStorageManager() &&
             !hasPromptedAllFilesOnLaunch
@@ -379,11 +494,13 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     if (isEqualizerSheetOpen) {
         EqualizerBottomSheet(
             eqState = eqState,
+            audioBalance = userPreferences.audioBalance,
             onDismiss = { viewModel.setEqualizerSheetOpen(false) },
             onSetEnabled = { viewModel.setEqualizerEnabled(it) },
             onSelectPreset = { viewModel.selectEqualizerPreset(it) },
             onBandLevelChange = { band, lvl -> viewModel.updateEqualizerBand(band, lvl) },
-            onBassBoostChange = { viewModel.updateBassBoost(it) }
+            onBassBoostChange = { viewModel.updateBassBoost(it) },
+            onAudioBalanceChange = { viewModel.setAudioBalance(it) }
         )
     }
 
@@ -439,6 +556,10 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             onCycleAspectMode = { viewModel.cycleVideoAspectMode() },
             onRotateVideo90 = { viewModel.rotateVideoView90Degrees() },
             onToggleFullscreen = { viewModel.setFullscreenVideo(it) },
+            onToggleControlsLock = { viewModel.setVideoControlsLocked(it) },
+            onSelectVideoOrientation = { viewModel.setVideoOrientationPreference(it) },
+            onToggleKeepScreenOn = { viewModel.setKeepScreenOnDuringVideo(it) },
+            onToggleVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
             onBrightnessGestureDelta = { viewModel.adjustBrightnessGesture(it) },
             onVolumeGestureDelta = { viewModel.adjustVolumeGesture(it) },
             onPickSubtitleFileClick = {
@@ -478,7 +599,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                         .fillMaxWidth()
                         .navigationBarsPadding()
                 ) {
-                    // Persistent Mini-Player ONLY when playback is active (Phase 3 requirement)
+                    // Persistent Mini-Player ONLY when playback is active
                     AnimatedVisibility(visible = playbackState.currentMedia != null) {
                         PersistentMiniPlayerBar(
                             playbackState = playbackState,
@@ -595,6 +716,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     allMedia = allMedia,
                                     audioMedia = audioMedia,
                                     videoMedia = videoMedia,
+                                    playlistsCount = playlists.size,
                                     recentHistory = history,
                                     favoriteUris = favoriteUris,
                                     currentlyPlayingUri = playbackState.currentMedia?.uriString,
@@ -607,6 +729,20 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     },
                                     onGenerateSamplesClick = {
                                         viewModel.generateBuiltInSamplesExplicitly()
+                                    },
+                                    onNavigateToMusic = {
+                                        viewModel.selectPrimaryTab(PrimaryTab.MUSIC)
+                                    },
+                                    onNavigateToVideos = {
+                                        viewModel.selectPrimaryTab(PrimaryTab.VIDEOS)
+                                    },
+                                    onNavigateToPlaylists = {
+                                        viewModel.selectPrimaryTab(PrimaryTab.LIBRARY)
+                                        viewModel.selectLibrarySubTab(LibrarySubTab.PLAYLISTS)
+                                    },
+                                    onNavigateToFavorites = {
+                                        viewModel.selectPrimaryTab(PrimaryTab.LIBRARY)
+                                        viewModel.selectLibrarySubTab(LibrarySubTab.FAVORITES)
                                     },
                                     onPlayMedia = { item, queue ->
                                         viewModel.playMedia(item, queue)
@@ -621,7 +757,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                             PrimaryTab.VIDEOS -> {
                                 MediaCatalogScreen(
                                     title = "Video Cinema Vault (${videoMedia.size})",
-                                    subtitle = "Hardware-accelerated Media3 ExoPlayer with SRT/WebVTT subtitles, aspect controls & gesture telemetry",
+                                    subtitle = "Hardware-accelerated Media3 ExoPlayer with SRT/WebVTT subtitles, orientation controls & gesture telemetry",
                                     mediaList = videoMedia,
                                     favoriteUris = favoriteUris,
                                     currentlyPlayingUri = playbackState.currentMedia?.uriString,
@@ -668,6 +804,10 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     allMedia = allMedia,
                                     selectedFolder = selectedFolder,
                                     onSelectFolder = { viewModel.selectFolderFilter(it) },
+                                    selectedAlbum = selectedAlbum,
+                                    onSelectAlbum = { viewModel.selectAlbumFilter(it) },
+                                    selectedArtist = selectedArtist,
+                                    onSelectArtist = { viewModel.selectArtistFilter(it) },
                                     playlists = playlists,
                                     selectedPlaylistId = selectedPlaylistId,
                                     playlistItems = playlistDetailItems,
@@ -686,6 +826,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onToggleFavorite = { viewModel.toggleFavorite(it) },
                                     onAddToPlaylistRequest = { pendingPlaylistAddMedia = it },
                                     onOpenStudioForMedia = { viewModel.openStudioForMedia(it) },
+                                    onOpenEqualizer = { viewModel.setEqualizerSheetOpen(true) },
                                     onClearHistoryOnly = { viewModel.clearPlaybackHistoryOnly() }
                                 )
                             }
@@ -700,6 +841,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onSetDefaultSpeed = { viewModel.setDefaultPlaybackSpeedPref(it) },
                                     onSetResumePlayback = { viewModel.setResumePlaybackEnabled(it) },
                                     onSetRecordHistory = { viewModel.setRecordPlaybackHistory(it) },
+                                    onSetBackgroundPlayback = { viewModel.setBackgroundPlaybackEnabled(it) },
+                                    onSetKeepScreenOnDuringVideo = { viewModel.setKeepScreenOnDuringVideo(it) },
+                                    onSetVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
+                                    onSetVideoOrientationPref = { viewModel.setVideoOrientationPreference(it) },
+                                    onSetAudioBalance = { viewModel.setAudioBalance(it) },
                                     onSetSubtitlesEnabled = { viewModel.setSubtitlesEnabled(it) },
                                     onSetSubtitleScale = { viewModel.setSubtitleFontScale(it) },
                                     onSetDefaultSort = { viewModel.setDefaultSortOption(it) },

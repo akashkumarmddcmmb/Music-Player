@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Info
@@ -61,6 +62,9 @@ fun ProfileAndSettingsScreen(
     userPreferences: UserPreferencesState,
     hasMediaPermission: Boolean,
     historyCount: Int,
+    sleepTimerMinutes: Int = 0,
+    sleepTimerStopAtEndOfTrack: Boolean = false,
+    preampGainDb: Float = 0.0f,
     onSetThemeMode: (AppThemeMode) -> Unit,
     onSetDynamicColor: (Boolean) -> Unit,
     onSetDefaultSpeed: (Float) -> Unit,
@@ -71,6 +75,9 @@ fun ProfileAndSettingsScreen(
     onSetVideoGestureControls: (Boolean) -> Unit = {},
     onSetVideoOrientationPref: (VideoOrientationPreference) -> Unit = {},
     onSetAudioBalance: (Float) -> Unit = {},
+    onSetPreampGainDb: (Float) -> Unit = {},
+    onSetSleepTimerMinutes: (Int) -> Unit = {},
+    onSetSleepTimerEndOfTrack: (Boolean) -> Unit = {},
     onSetSubtitlesEnabled: (Boolean) -> Unit,
     onSetSubtitleScale: (Float) -> Unit,
     onSetDefaultSort: (SortOption) -> Unit,
@@ -344,10 +351,10 @@ fun ProfileAndSettingsScreen(
             }
         }
 
-        // Playback, Background Service, Speed & Library Sorting Preferences
+        // Playback, Background Service, Speed (0.5x–3.0x), Sleep Timer & Library Sorting Preferences
         item {
             SettingsSectionCard(
-                title = "Playback & Background Service",
+                title = "Playback, Speed (0.5x–3.0x) & Sleep Timer",
                 icon = Icons.Default.Speed
             ) {
                 Row(
@@ -372,16 +379,58 @@ fun ProfileAndSettingsScreen(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "Default Playback Speed (${userPreferences.defaultPlaybackSpeed}x)",
+                    text = "Default Playback Speed (${userPreferences.defaultPlaybackSpeed}x • 0.5x–3.0x)",
                     style = MaterialTheme.typography.labelLarge
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)) { spd ->
+                    items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
                         FilterChip(
                             selected = abs(userPreferences.defaultPlaybackSpeed - spd) < 0.05f,
                             onClick = { onSetDefaultSpeed(spd) },
-                            label = { Text("${spd}x") }
+                            label = { Text("${spd}x") },
+                            modifier = Modifier.testTag("settings_speed_chip_${spd}")
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bedtime,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Sleep Timer (Automatic Stop)",
+                        style = MaterialTheme.typography.labelLarge
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(listOf(0, 5, 10, 15, 30, 45, 60)) { mins ->
+                        val selected = if (mins == 0) {
+                            sleepTimerMinutes == 0 && !sleepTimerStopAtEndOfTrack
+                        } else {
+                            !sleepTimerStopAtEndOfTrack && sleepTimerMinutes == mins
+                        }
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSetSleepTimerMinutes(mins) },
+                            label = { Text(if (mins == 0) "Off" else "$mins min") },
+                            modifier = Modifier.testTag("settings_sleep_timer_$mins")
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = sleepTimerStopAtEndOfTrack,
+                            onClick = { onSetSleepTimerEndOfTrack(!sleepTimerStopAtEndOfTrack) },
+                            label = { Text("End of Track") },
+                            modifier = Modifier.testTag("settings_sleep_timer_eot")
                         )
                     }
                 }
@@ -430,10 +479,10 @@ fun ProfileAndSettingsScreen(
             }
         }
 
-        // Subtitle & Audio DSP Preferences
+        // Audio Settings, Better Sound Experience & Lyrics (SRT / WebVTT)
         item {
             SettingsSectionCard(
-                title = "Subtitles & Equalizer DSP",
+                title = "Audio Settings, Lyrics (SRT/VTT) & Equalizer DSP",
                 icon = Icons.Default.Subtitles
             ) {
                 Row(
@@ -441,7 +490,7 @@ fun ProfileAndSettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Enable Subtitles by Default (SRT / WebVTT)", style = MaterialTheme.typography.bodyMedium)
+                    Text("Enable Synchronized Lyrics & Subtitles (SRT / WebVTT)", style = MaterialTheme.typography.bodyMedium)
                     Switch(
                         checked = userPreferences.subtitlesEnabledByDefault,
                         onCheckedChange = onSetSubtitlesEnabled
@@ -449,7 +498,7 @@ fun ProfileAndSettingsScreen(
                 }
 
                 Text(
-                    text = "Default Subtitle Font Scale: ${(userPreferences.subtitleFontScale * 100).toInt()}%",
+                    text = "Default Lyrics & Subtitle Font Scale: ${(userPreferences.subtitleFontScale * 100).toInt()}%",
                     style = MaterialTheme.typography.labelMedium
                 )
                 Slider(
@@ -458,13 +507,24 @@ fun ProfileAndSettingsScreen(
                     valueRange = 0.7f..1.8f
                 )
 
+                Text(
+                    text = "Sound Enhancer Preamp Gain: %+.1f dB".format(preampGainDb),
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Slider(
+                    value = preampGainDb,
+                    onValueChange = onSetPreampGainDb,
+                    valueRange = -6.0f..6.0f,
+                    modifier = Modifier.testTag("settings_preamp_slider")
+                )
+
                 val balanceLabel = when {
                     abs(userPreferences.audioBalance) < 0.05f -> "Center"
                     userPreferences.audioBalance < 0f -> "L ${(abs(userPreferences.audioBalance) * 100).toInt()}%"
                     else -> "R ${(userPreferences.audioBalance * 100).toInt()}%"
                 }
                 Text(
-                    text = "Stereo Channel Balance: $balanceLabel",
+                    text = "Stereo Channel Balance (Real-Time L/R DSP): $balanceLabel",
                     style = MaterialTheme.typography.labelMedium
                 )
                 Slider(

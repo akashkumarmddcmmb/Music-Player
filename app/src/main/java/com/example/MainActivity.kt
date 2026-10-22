@@ -500,7 +500,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             onSelectPreset = { viewModel.selectEqualizerPreset(it) },
             onBandLevelChange = { band, lvl -> viewModel.updateEqualizerBand(band, lvl) },
             onBassBoostChange = { viewModel.updateBassBoost(it) },
-            onAudioBalanceChange = { viewModel.setAudioBalance(it) }
+            onAudioBalanceChange = { viewModel.setAudioBalance(it) },
+            onPreampGainChange = { viewModel.setPreampGainDb(it) }
         )
     }
 
@@ -568,6 +569,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             onToggleSubtitlesEnabled = { viewModel.setSubtitlesEnabled(it) },
             onSetSubtitleFontScale = { viewModel.setSubtitleFontScale(it) },
             onSetSubtitleOffsetMs = { viewModel.setSubtitleSyncOffsetMs(it) },
+            onSetSleepTimerMinutes = { viewModel.setSleepTimerMinutes(it) },
+            onSetSleepTimerEndOfTrack = { viewModel.setSleepTimerEndOfTrack(it) },
             onToggleFavorite = {
                 playbackState.currentMedia?.let { viewModel.toggleFavorite(it) }
             },
@@ -581,6 +584,12 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             },
             onRemoveQueueItem = { idx ->
                 viewModel.removeQueueItemAt(idx)
+            },
+            onMoveQueueItem = { fromIdx, toIdx ->
+                viewModel.moveQueueItem(fromIdx, toIdx)
+            },
+            onSaveQueueAsPlaylist = { playlistName ->
+                viewModel.saveCurrentQueueAsPlaylist(playlistName)
             },
             onRetryPlayback = { viewModel.retryCurrentPlayback() }
         )
@@ -836,6 +845,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     userPreferences = userPreferences,
                                     hasMediaPermission = hasMediaPermission,
                                     historyCount = history.size,
+                                    sleepTimerMinutes = playbackState.sleepTimerTotalMinutes,
+                                    sleepTimerStopAtEndOfTrack = playbackState.sleepTimerStopAtEndOfTrack,
+                                    preampGainDb = eqState.preampGainDb,
                                     onSetThemeMode = { viewModel.setThemeMode(it) },
                                     onSetDynamicColor = { viewModel.setDynamicColor(it) },
                                     onSetDefaultSpeed = { viewModel.setDefaultPlaybackSpeedPref(it) },
@@ -846,6 +858,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onSetVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
                                     onSetVideoOrientationPref = { viewModel.setVideoOrientationPreference(it) },
                                     onSetAudioBalance = { viewModel.setAudioBalance(it) },
+                                    onSetPreampGainDb = { viewModel.setPreampGainDb(it) },
+                                    onSetSleepTimerMinutes = { viewModel.setSleepTimerMinutes(it) },
+                                    onSetSleepTimerEndOfTrack = { viewModel.setSleepTimerEndOfTrack(it) },
                                     onSetSubtitlesEnabled = { viewModel.setSubtitlesEnabled(it) },
                                     onSetSubtitleScale = { viewModel.setSubtitleFontScale(it) },
                                     onSetDefaultSort = { viewModel.setDefaultSortOption(it) },

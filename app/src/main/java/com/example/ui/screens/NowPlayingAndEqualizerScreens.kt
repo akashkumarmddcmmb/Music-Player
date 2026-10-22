@@ -33,8 +33,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MusicNote
@@ -121,6 +124,7 @@ import com.example.viewmodel.RepeatModeState
 import com.example.viewmodel.VideoAspectMode
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.roundToInt
 import kotlin.math.sin
 
 @OptIn(UnstableApi::class)
@@ -151,11 +155,15 @@ fun NowPlayingOverlayScreen(
     onToggleSubtitlesEnabled: (Boolean) -> Unit,
     onSetSubtitleFontScale: (Float) -> Unit,
     onSetSubtitleOffsetMs: (Long) -> Unit,
+    onSetSleepTimerMinutes: (Int) -> Unit = {},
+    onSetSleepTimerEndOfTrack: (Boolean) -> Unit = {},
     onToggleFavorite: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenStudio: () -> Unit,
     onSelectQueueItem: (MediaEntity) -> Unit,
     onRemoveQueueItem: (Int) -> Unit,
+    onMoveQueueItem: (Int, Int) -> Unit = { _, _ -> },
+    onSaveQueueAsPlaylist: (String) -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     BackHandler {
@@ -169,6 +177,7 @@ fun NowPlayingOverlayScreen(
     val currentMedia = playbackState.currentMedia
     var showSubtitleSettings by remember { mutableStateOf(false) }
     var showVideoSettingsSheet by remember { mutableStateOf(false) }
+    var showSleepTimerPanel by remember { mutableStateOf(false) }
     var fullscreenControlsVisible by remember { mutableStateOf(true) }
 
     val shouldKeepVideoAwake = PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
@@ -302,6 +311,22 @@ fun NowPlayingOverlayScreen(
                                     }
                                 }
                                 IconButton(
+                                    onClick = { showSleepTimerPanel = !showSleepTimerPanel },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("now_playing_sleep_timer_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Bedtime,
+                                        contentDescription = "Sleep Timer",
+                                        tint = if (playbackState.isSleepTimerActive) {
+                                            MaterialTheme.colorScheme.tertiary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        }
+                                    )
+                                }
+                                IconButton(
                                     onClick = onOpenEqualizer,
                                     modifier = Modifier
                                         .minimumInteractiveComponentSize()
@@ -382,7 +407,98 @@ fun NowPlayingOverlayScreen(
                         } else {
                             StudioCircularAudioArtworkAndWaveform(
                                 currentMedia = currentMedia,
-                                playbackState = playbackState
+                                playbackState = playbackState,
+                                subtitlesEnabled = userPreferences.subtitlesEnabledByDefault
+                            )
+                        }
+                    }
+
+                    // Key Features Quick Action Chips Row (Lyrics SRT/VTT, Sleep Timer, Equalizer, Studio Editor)
+                    item {
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.testTag("now_playing_feature_chips_row")
+                        ) {
+                            item {
+                                FilterChip(
+                                    selected = showSubtitleSettings || !playbackState.activeSubtitleText.isNullOrBlank(),
+                                    onClick = { showSubtitleSettings = !showSubtitleSettings },
+                                    label = {
+                                        val fmt = playbackState.loadedSubtitleFormat?.name ?: "SRT/VTT"
+                                        Text("Lyrics ($fmt)")
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Subtitles,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("now_playing_lyrics_chip")
+                                )
+                            }
+                            item {
+                                FilterChip(
+                                    selected = showSleepTimerPanel || playbackState.isSleepTimerActive,
+                                    onClick = { showSleepTimerPanel = !showSleepTimerPanel },
+                                    label = {
+                                        val timerLabel = when {
+                                            playbackState.sleepTimerStopAtEndOfTrack -> "Sleep: End of Track"
+                                            playbackState.sleepTimerRemainingMs > 0L ->
+                                                "Sleep: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
+                                            else -> "Sleep Timer"
+                                        }
+                                        Text(timerLabel)
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Bedtime,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("now_playing_sleep_timer_chip")
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = onOpenEqualizer,
+                                    label = { Text("Equalizer & Bass") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.Equalizer,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("now_playing_eq_chip")
+                                )
+                            }
+                            item {
+                                AssistChip(
+                                    onClick = onOpenStudio,
+                                    label = { Text("Audio/Video Edit") },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Default.ContentCut,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("now_playing_editor_chip")
+                                )
+                            }
+                        }
+                    }
+
+                    // Sleep Timer (Automatic Stop) Panel
+                    if (showSleepTimerPanel || playbackState.isSleepTimerActive) {
+                        item {
+                            SleepTimerControlCard(
+                                playbackState = playbackState,
+                                onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+                                onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack
                             )
                         }
                     }
@@ -407,7 +523,7 @@ fun NowPlayingOverlayScreen(
                         }
                     }
 
-                    // Subtitle Controls Panel (SRT / WebVTT)
+                    // Synchronized Lyrics & Subtitle Controls Panel (SRT / WebVTT for Music & Video)
                     if (showSubtitleSettings || playbackState.subtitleError != null) {
                         item {
                             SubtitleSettingsCard(
@@ -416,7 +532,8 @@ fun NowPlayingOverlayScreen(
                                 onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
                                 onSetSubtitleFontScale = onSetSubtitleFontScale,
                                 onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                                onPickSubtitleFileClick = onPickSubtitleFileClick
+                                onPickSubtitleFileClick = onPickSubtitleFileClick,
+                                onSeekToCue = onSeekTo
                             )
                         }
                     }
@@ -591,23 +708,34 @@ fun NowPlayingOverlayScreen(
                         }
                     }
 
-                    // Playback Speed Selector Strip
+                    // Playback Speed Selector Strip (0.5x – 3.0x) + Fine Speed Slider
                     item {
-                        val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+                        val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
                         Column {
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Icon(
-                                    Icons.Default.Speed,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Speed,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Playback Speed (${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x)",
+                                        style = MaterialTheme.typography.titleSmall
+                                    )
+                                }
                                 Text(
-                                    text = "Playback Speed (${playbackState.playbackSpeed}x)",
-                                    style = MaterialTheme.typography.titleSmall
+                                    text = "Range: 0.5x – 3.0x",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -621,16 +749,49 @@ fun NowPlayingOverlayScreen(
                                     )
                                 }
                             }
+                            Slider(
+                                value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
+                                onValueChange = { raw ->
+                                    val snapped = (raw * 20f).roundToInt() / 20f
+                                    onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
+                                },
+                                valueRange = 0.5f..3.0f,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("now_playing_speed_slider")
+                            )
                         }
                     }
 
-                    // Active Playback Queue Management
+                    // Active Playback Queue Management (Reorder Up/Down, Remove, Save as Playlist)
                     item {
-                        Text(
-                            text = "Up Next • Active Queue (${playbackState.queue.size})",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Up Next • Active Queue (${playbackState.queue.size})",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (playbackState.queue.isNotEmpty()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        onSaveQueueAsPlaylist("Queue Mix (${playbackState.queue.size} tracks)")
+                                    },
+                                    modifier = Modifier.testTag("save_queue_as_playlist_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Save as Playlist", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
                     }
 
                     itemsIndexed(
@@ -679,8 +840,34 @@ fun NowPlayingOverlayScreen(
                                 }
                                 if (playbackState.queue.size > 1) {
                                     IconButton(
+                                        onClick = { onMoveQueueItem(idx, idx - 1) },
+                                        enabled = idx > 0,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("queue_move_up_$idx")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowUp,
+                                            contentDescription = "Move track up"
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = { onMoveQueueItem(idx, idx + 1) },
+                                        enabled = idx < playbackState.queue.lastIndex,
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .testTag("queue_move_down_$idx")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = "Move track down"
+                                        )
+                                    }
+                                    IconButton(
                                         onClick = { onRemoveQueueItem(idx) },
-                                        modifier = Modifier.minimumInteractiveComponentSize()
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("queue_remove_$idx")
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.DeleteOutline,
@@ -1500,12 +1687,13 @@ private fun ImmersiveVideoCinemaLayout(
 }
 
 /**
- * Original PulsePlay Circular Studio Artwork & Live Acoustic Waveform centerpiece.
+ * Original PulsePlay Circular Studio Artwork, Live Acoustic Waveform & Synchronized Lyrics centerpiece.
  */
 @Composable
 private fun StudioCircularAudioArtworkAndWaveform(
     currentMedia: MediaEntity,
-    playbackState: PlaybackUiState
+    playbackState: PlaybackUiState,
+    subtitlesEnabled: Boolean = true
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
@@ -1632,6 +1820,123 @@ private fun StudioCircularAudioArtworkAndWaveform(
                     )
                 }
             }
+
+            // Synchronized Lyrics Banner (SRT & WebVTT) for Music Playback
+            if (subtitlesEnabled && !playbackState.activeSubtitleText.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("active_lyrics_banner")
+                ) {
+                    Text(
+                        text = playbackState.activeSubtitleText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.secondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Sleep Timer (Automatic Stop) Control Card.
+ */
+@Composable
+private fun SleepTimerControlCard(
+    playbackState: PlaybackUiState,
+    onSetSleepTimerMinutes: (Int) -> Unit,
+    onSetSleepTimerEndOfTrack: (Boolean) -> Unit
+) {
+    val presetMinutes = listOf(0, 5, 10, 15, 30, 45, 60)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("sleep_timer_panel"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Bedtime,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary
+                    )
+                    Text(
+                        text = "Sleep Timer (Automatic Stop)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                val statusLabel = when {
+                    playbackState.sleepTimerStopAtEndOfTrack -> "Stops at End of Track"
+                    playbackState.sleepTimerRemainingMs > 0L ->
+                        "Remaining: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
+                    else -> "Off"
+                }
+                Text(
+                    text = statusLabel,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (playbackState.isSleepTimerActive) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.testTag("sleep_timer_status_text")
+                )
+            }
+
+            Text(
+                text = "Automatically pauses music or video playback when the countdown completes or the current track ends.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(presetMinutes) { mins ->
+                    val isSelected = if (mins == 0) {
+                        !playbackState.isSleepTimerActive
+                    } else {
+                        !playbackState.sleepTimerStopAtEndOfTrack && playbackState.sleepTimerTotalMinutes == mins
+                    }
+                    FilterChip(
+                        selected = isSelected,
+                        onClick = { onSetSleepTimerMinutes(mins) },
+                        label = { Text(if (mins == 0) "Off" else "$mins min") },
+                        modifier = Modifier.testTag("sleep_timer_chip_$mins")
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = playbackState.sleepTimerStopAtEndOfTrack,
+                        onClick = {
+                            onSetSleepTimerEndOfTrack(!playbackState.sleepTimerStopAtEndOfTrack)
+                        },
+                        label = { Text("End of Track") },
+                        modifier = Modifier.testTag("sleep_timer_chip_end_of_track")
+                    )
+                }
+            }
         }
     }
 }
@@ -1710,13 +2015,13 @@ private fun VideoPlayerSettingsCard(
                 }
             }
 
-            // 3. Playback Speed
+            // 3. Playback Speed (0.5x – 3.0x)
             Text(
-                text = "Playback Speed (${playbackState.playbackSpeed}x)",
+                text = "Playback Speed (${playbackState.playbackSpeed}x • 0.5x–3.0x)",
                 style = MaterialTheme.typography.labelMedium
             )
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)) { spd ->
+                items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
                     FilterChip(
                         selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
                         onClick = { onSetPlaybackSpeed(spd) },
@@ -1803,7 +2108,8 @@ private fun SubtitleSettingsCard(
     onToggleSubtitlesEnabled: (Boolean) -> Unit,
     onSetSubtitleFontScale: (Float) -> Unit,
     onSetSubtitleOffsetMs: (Long) -> Unit,
-    onPickSubtitleFileClick: () -> Unit
+    onPickSubtitleFileClick: () -> Unit,
+    onSeekToCue: (Long) -> Unit = {}
 ) {
     Card(
         modifier = Modifier
@@ -1821,7 +2127,7 @@ private fun SubtitleSettingsCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Subtitle Engine (SRT & WebVTT Verified)",
+                    text = "Lyrics & Subtitles (SRT & WebVTT)",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -1834,8 +2140,8 @@ private fun SubtitleSettingsCard(
 
             Text(
                 text = playbackState.loadedSubtitleName?.let {
-                    "Loaded: $it (${playbackState.loadedSubtitleFormat}) • ${playbackState.loadedSubtitleCues.size} cues"
-                } ?: "No subtitle track loaded",
+                    "Loaded: $it (${playbackState.loadedSubtitleFormat}) • ${playbackState.loadedSubtitleCues.size} synchronized cues"
+                } ?: "No SRT/WebVTT lyrics or subtitle track loaded",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1847,6 +2153,61 @@ private fun SubtitleSettingsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error
                 )
+            }
+
+            // Synchronized Lyrics / Cue List (tap any line to jump to its timestamp)
+            if (playbackState.loadedSubtitleCues.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.65f))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "Synchronized Lyrics / Cues (Tap line to seek):",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    playbackState.loadedSubtitleCues.forEachIndexed { idx, cue ->
+                        val isActiveCue = playbackState.activeSubtitleText == cue.text
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (isActiveCue) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                )
+                                .clickable { onSeekToCue(cue.startMs) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                .testTag("lyrics_cue_item_$idx"),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = formatDurationMillis(cue.startMs),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.width(48.dp)
+                            )
+                            Text(
+                                text = cue.text,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = if (isActiveCue) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isActiveCue) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                }
+                            )
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -1890,14 +2251,14 @@ private fun SubtitleSettingsCard(
             ) {
                 Icon(Icons.Default.ClosedCaption, contentDescription = null)
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Load Local .SRT / .VTT File (SAF)")
+                Text("Load Local .SRT / .VTT Lyrics or Subtitles (SAF)")
             }
         }
     }
 }
 
 /**
- * Multiband Biquad Equalizer, Bass Boost & Channel Balance DSP Bottom Sheet.
+ * Multiband Biquad Equalizer, Bass Boost, Preamp Sound Enhancer & Channel Balance DSP Bottom Sheet.
  */
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1909,7 +2270,8 @@ fun EqualizerBottomSheet(
     onSelectPreset: (Int) -> Unit,
     onBandLevelChange: (Int, Int) -> Unit,
     onBassBoostChange: (Int) -> Unit,
-    onAudioBalanceChange: (Float) -> Unit = {}
+    onAudioBalanceChange: (Float) -> Unit = {},
+    onPreampGainChange: (Float) -> Unit = {}
 ) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -2075,6 +2437,30 @@ fun EqualizerBottomSheet(
                     valueRange = 0f..1000f,
                     enabled = eqState.isEnabled,
                     modifier = Modifier.testTag("eq_bass_boost_slider")
+                )
+            }
+
+            // Preamp / Sound Enhancer Gain (-6.0 dB to +6.0 dB)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Sound Enhancer Preamp Gain",
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                    Text(
+                        text = "%+.1f dB".format(eqState.preampGainDb),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+                }
+                Slider(
+                    value = eqState.preampGainDb,
+                    onValueChange = onPreampGainChange,
+                    valueRange = -6.0f..6.0f,
+                    modifier = Modifier.testTag("eq_preamp_slider")
                 )
             }
 

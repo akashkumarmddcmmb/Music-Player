@@ -9,7 +9,6 @@ import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -24,7 +23,6 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.google.common.util.concurrent.ListenableFuture
-import com.example.data.local.JobStatus
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
 import com.example.data.local.PlaybackHistoryEntity
@@ -125,8 +123,14 @@ data class PlaybackUiState(
     val activeSubtitleText: String? = null,
     val subtitleError: String? = null,
     val availableAudioTracks: List<AudioTrackOption> = emptyList(),
+    val sleepTimerTotalMinutes: Int = 0,
+    val sleepTimerRemainingMs: Long = 0L,
+    val sleepTimerStopAtEndOfTrack: Boolean = false,
     val playbackError: String? = null
-)
+) {
+    val isSleepTimerActive: Boolean
+        get() = sleepTimerRemainingMs > 0L || sleepTimerStopAtEndOfTrack
+}
 
 class PulsePlayViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -235,11 +239,12 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     val conversionProfiles: List<ConversionProfile> =
         ConversionCapabilityRegistry.getSupportedProfiles()
 
-    // Single Managed Playback Engine (Phase 6 & 7 requirement: never create duplicate players)
+    // Single Managed Playback Engine (never create duplicate players)
     private var activePlayer: Player? = null
     private var mediaControllerFuture: ListenableFuture<MediaController>? = null
     private var fallbackLocalPlayer: ExoPlayer? = null
     private var progressPollingJob: Job? = null
+    private var sleepTimerJob: Job? = null
     private var activeProcessingJob: Job? = null
     private var lastHistoryWriteTimeMs: Long = 0L
 
@@ -275,6 +280,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 player.isPlaying || (playbackState == Player.STATE_READY && player.mediaItemCount > 0)
             )
             queryServiceAudioSessionIdIfController(player)
+
+            if (playbackState == Player.STATE_ENDED && _playbackState.value.sleepTimerStopAtEndOfTrack) {
+                triggerSleepTimerAutoStop("Sleep Timer: Stopped automatically at end of track.")
+            }
         }
 
         @OptIn(UnstableApi::class)
@@ -282,6 +291,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             if (audioSessionId > 0) {
                 viewModelScope.launch {
                     val prefs = userPreferences.first()
+                    equalizerController.setStereoBalance(prefs.audioBalance)
                     equalizerController.bindToAudioSession(
                         audioSessionId = audioSessionId,
                         enabled = prefs.equalizerEnabled,
@@ -295,6 +305,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            // If Sleep Timer "Stop at End of Track" is armed and track finished automatically, stop now
+            if (_playbackState.value.sleepTimerStopAtEndOfTrack &&
+                reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO
+            ) {
+                triggerSleepTimerAutoStop("Sleep Timer: Stopped automatically at end of track.")
+                return
+            }
+
             val idx = activePlayer?.currentMediaItemIndex ?: -1
             val queue = _playbackState.value.queue
             val matchedFromLibrary = mediaItem?.mediaId?.let { id ->
@@ -326,14 +344,12 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         viewModelScope.launch {
-            // Phase 16: Recover any interrupted processing jobs from prior session closure
             dao.recoverInterruptedJobsOnStartup()
-            // Ensure legal sample fixtures exist and scan library
             refreshLibrary()
         }
         viewModelScope.launch {
-            // Restore persisted Equalizer + Bass Boost settings immediately on startup
             val initialPrefs = preferencesRepository.preferencesFlow.first()
+            equalizerController.setStereoBalance(initialPrefs.audioBalance)
             equalizerController.bindToAudioSession(
                 audioSessionId = PulsePlaybackService.serviceAudioSessionId.value,
                 enabled = initialPrefs.equalizerEnabled,
@@ -343,9 +359,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 isPlaybackActive = PulsePlaybackService.serviceIsPlaying.value
             )
 
-            // Continuously synchronize Equalizer DSP with PulsePlaybackService audioSessionId
             PulsePlaybackService.serviceAudioSessionId.collect { serviceSessionId ->
                 val prefs = preferencesRepository.preferencesFlow.first()
+                equalizerController.setStereoBalance(prefs.audioBalance)
                 val currentSession = equalizerController.state.value
                 val effectiveEnabled = currentSession.isEnabled || prefs.equalizerEnabled
                 val effectiveBands = if (currentSession.bands.any { it.currentLevelMb != 0 }) {
@@ -395,6 +411,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         if (sessionId > 0 && equalizerController.state.value.activeAudioSessionId != sessionId) {
                             viewModelScope.launch {
                                 val prefs = preferencesRepository.preferencesFlow.first()
+                                equalizerController.setStereoBalance(prefs.audioBalance)
                                 equalizerController.bindToAudioSession(
                                     audioSessionId = sessionId,
                                     enabled = prefs.equalizerEnabled,
@@ -439,7 +456,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             ensureFallbackLocalExoPlayer()
         }
 
-        // Immediate local ExoPlayer availability if MediaSessionService is still binding
         if (activePlayer == null) {
             ensureFallbackLocalExoPlayer()
         }
@@ -463,8 +479,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         val previousFallback = fallbackLocalPlayer
         activePlayer?.removeListener(playerListener)
 
-        // Safely hand off any active queue/playback state from temporary fallbackLocalPlayer to
-        // the authoritative MediaController and immediately stop/release fallbackLocalPlayer
         val snapshot = PlayerHandoffAndVideoPolicy.handoffFallbackToAuthoritativePlayer(
             outgoingFallback = previousFallback,
             incomingTarget = player
@@ -478,10 +492,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
         viewModelScope.launch {
             val prefs = preferencesRepository.preferencesFlow.first()
+            equalizerController.setStereoBalance(prefs.audioBalance)
             if (snapshot.mediaItems.isEmpty()) {
                 player.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
             } else {
-                // Synchronize UI state if service already had an active queue or transferred from fallback
                 val currentAll = allMedia.value
                 val reconstructedQueue = snapshot.mediaItems.mapNotNull { item ->
                     currentAll.find { it.uriString == item.mediaId }
@@ -630,7 +644,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // --- Playback Controls (Phase 6 & Phase 7) ---
+    // --- Playback Controls ---
     fun playMedia(media: MediaEntity, queueContext: List<MediaEntity> = emptyList()) {
         viewModelScope.launch {
             val isAvailable = mediaRepository.verifyUriAvailability(media.uriString)
@@ -666,26 +680,24 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     .build()
             }
 
-            // Ensure PulsePlaybackService is started so background & screen-off playback survives Activity backgrounding
             val app = getApplication<Application>()
             runCatching {
                 app.startService(Intent(app, PulsePlaybackService::class.java))
             }
 
-            // Acquire authoritative activePlayer AFTER suspend points so handoff never races with playMedia
             val player = activePlayer ?: run {
                 ensureFallbackLocalExoPlayer()
                 activePlayer
             } ?: return@launch
 
             player.setMediaItems(mediaItems, startIndex, initialSeekMs)
-            player.PlaybackParameters = PlaybackParameters(prefs.defaultPlaybackSpeed)
+            player.playbackParameters = PlaybackParameters(prefs.defaultPlaybackSpeed)
             player.prepare()
             player.playWhenReady = true
             player.play()
 
-            // Synchronize Equalizer DSP and resolve active audioSessionId without casting MediaController to ExoPlayer
             val sessionId = resolveActiveAudioSessionId(player)
+            equalizerController.setStereoBalance(prefs.audioBalance)
             equalizerController.bindToAudioSession(
                 audioSessionId = sessionId,
                 enabled = prefs.equalizerEnabled,
@@ -711,12 +723,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             startProgressPolling()
         }
     }
-
-    private var Player.PlaybackParameters: PlaybackParameters
-        get() = playbackParameters
-        set(value) {
-            playbackParameters = value
-        }
 
     fun togglePlayPause() {
         val player = activePlayer ?: return
@@ -784,6 +790,81 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         _playbackState.value = _playbackState.value.copy(playbackSpeed = clamped)
     }
 
+    // --- Sleep Timer (Automatic Stop) ---
+    fun setSleepTimerMinutes(minutes: Int) {
+        sleepTimerJob?.cancel()
+        if (minutes <= 0) {
+            _playbackState.value = _playbackState.value.copy(
+                sleepTimerTotalMinutes = 0,
+                sleepTimerRemainingMs = 0L,
+                sleepTimerStopAtEndOfTrack = false
+            )
+            _statusBannerMessage.value = "Sleep Timer turned off."
+            return
+        }
+
+        val totalMs = minutes * 60_000L
+        _playbackState.value = _playbackState.value.copy(
+            sleepTimerTotalMinutes = minutes,
+            sleepTimerRemainingMs = totalMs,
+            sleepTimerStopAtEndOfTrack = false
+        )
+        _statusBannerMessage.value = "Sleep Timer set for $minutes min (automatic stop)."
+
+        sleepTimerJob = viewModelScope.launch {
+            while (isActive && _playbackState.value.sleepTimerRemainingMs > 0L) {
+                delay(1000L)
+                advanceSleepTimerByMs(1000L)
+            }
+        }
+    }
+
+    fun setSleepTimerEndOfTrack(enabled: Boolean) {
+        sleepTimerJob?.cancel()
+        _playbackState.value = _playbackState.value.copy(
+            sleepTimerTotalMinutes = 0,
+            sleepTimerRemainingMs = 0L,
+            sleepTimerStopAtEndOfTrack = enabled
+        )
+        _statusBannerMessage.value = if (enabled) {
+            "Sleep Timer: Will automatically stop at the end of the current track."
+        } else {
+            "Sleep Timer turned off."
+        }
+    }
+
+    fun cancelSleepTimer() {
+        setSleepTimerMinutes(0)
+    }
+
+    /**
+     * Advances the Sleep Timer countdown by [elapsedMs] and automatically pauses playback when it reaches 0.
+     */
+    fun advanceSleepTimerByMs(elapsedMs: Long) {
+        val current = _playbackState.value
+        if (current.sleepTimerRemainingMs <= 0L) return
+        val nextRemaining = (current.sleepTimerRemainingMs - elapsedMs).coerceAtLeast(0L)
+        if (nextRemaining == 0L) {
+            triggerSleepTimerAutoStop("Sleep Timer finished • Playback paused automatically.")
+        } else {
+            _playbackState.value = current.copy(sleepTimerRemainingMs = nextRemaining)
+        }
+    }
+
+    private fun triggerSleepTimerAutoStop(message: String) {
+        sleepTimerJob?.cancel()
+        sleepTimerJob = null
+        activePlayer?.playWhenReady = false
+        activePlayer?.pause()
+        _playbackState.value = _playbackState.value.copy(
+            isPlaying = false,
+            sleepTimerTotalMinutes = 0,
+            sleepTimerRemainingMs = 0L,
+            sleepTimerStopAtEndOfTrack = false
+        )
+        _statusBannerMessage.value = message
+    }
+
     fun cycleVideoAspectMode() {
         val modes = VideoAspectMode.entries
         val currentIdx = modes.indexOf(_playbackState.value.videoAspectMode)
@@ -825,31 +906,78 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         playMedia(current, _playbackState.value.queue)
     }
 
+    // --- Queue & Playlist Management ---
+    fun setQueue(items: List<MediaEntity>, initialIndex: Int = 0) {
+        val safeIndex = if (items.isNotEmpty()) initialIndex.coerceIn(0, items.size - 1) else 0
+        val current = _playbackState.value
+        _playbackState.value = current.copy(
+            queue = items,
+            currentQueueIndex = safeIndex,
+            currentMedia = items.getOrNull(safeIndex) ?: current.currentMedia
+        )
+    }
+
     fun removeQueueItemAt(index: Int) {
         val currentQueue = _playbackState.value.queue.toMutableList()
         if (index !in currentQueue.indices) return
         currentQueue.removeAt(index)
         activePlayer?.removeMediaItem(index)
-        _playbackState.value = _playbackState.value.copy(queue = currentQueue)
+        val adjustedCurrentIdx = activePlayer?.currentMediaItemIndex
+            ?: _playbackState.value.currentQueueIndex.coerceAtMost((currentQueue.size - 1).coerceAtLeast(0))
+        _playbackState.value = _playbackState.value.copy(
+            queue = currentQueue,
+            currentQueueIndex = adjustedCurrentIdx
+        )
     }
 
-    // --- Subtitles (Phase 9) ---
-    private fun autoLoadMatchingSampleSubtitles(media: MediaEntity) {
-        if (media.mediaType != MediaType.VIDEO) {
-            _playbackState.value = _playbackState.value.copy(
-                loadedSubtitleName = null,
-                loadedSubtitleFormat = null,
-                loadedSubtitleCues = emptyList(),
-                activeSubtitleText = null,
-                subtitleError = null
-            )
-            return
+    fun moveQueueItem(fromIndex: Int, toIndex: Int) {
+        val currentQueue = _playbackState.value.queue.toMutableList()
+        if (fromIndex !in currentQueue.indices || toIndex !in currentQueue.indices || fromIndex == toIndex) return
+        val moved = currentQueue.removeAt(fromIndex)
+        currentQueue.add(toIndex, moved)
+        activePlayer?.moveMediaItem(fromIndex, toIndex)
+        val newCurrentIdx = when (_playbackState.value.currentQueueIndex) {
+            fromIndex -> toIndex
+            in (minOf(fromIndex, toIndex)..maxOf(fromIndex, toIndex)) -> {
+                if (fromIndex < toIndex) _playbackState.value.currentQueueIndex - 1
+                else _playbackState.value.currentQueueIndex + 1
+            }
+            else -> _playbackState.value.currentQueueIndex
         }
+        _playbackState.value = _playbackState.value.copy(
+            queue = currentQueue,
+            currentQueueIndex = newCurrentIdx
+        )
+    }
 
+    fun saveCurrentQueueAsPlaylist(playlistName: String) {
+        val queueItems = _playbackState.value.queue
+        if (queueItems.isEmpty() || playlistName.isBlank()) return
+        viewModelScope.launch {
+            val plId = mediaRepository.createPlaylist(
+                name = playlistName.trim(),
+                description = "Saved from active queue (${queueItems.size} tracks)"
+            )
+            queueItems.forEach { item ->
+                mediaRepository.addMediaToPlaylist(plId, item.uriString)
+            }
+            _statusBannerMessage.value = "Saved queue (${queueItems.size} tracks) to playlist '${playlistName.trim()}'"
+        }
+    }
+
+    // --- Synchronized Lyrics & Subtitles (SRT & WebVTT for Both Audio & Video) ---
+    private fun autoLoadMatchingSampleSubtitles(media: MediaEntity) {
         val sampleSubs = sampleGenerator.getBundledSampleSubtitleFiles()
-        val srtFile = sampleSubs.firstOrNull { it.extension.equals("srt", true) }
-        if (srtFile != null && srtFile.exists()) {
-            loadSubtitleFromFile(srtFile)
+        val preferredFile = if (media.mediaType == MediaType.AUDIO) {
+            // Prefer WebVTT or SRT synchronized lyrics for studio audio tracks
+            sampleSubs.firstOrNull { it.extension.equals("vtt", true) }
+                ?: sampleSubs.firstOrNull { it.extension.equals("srt", true) }
+        } else {
+            sampleSubs.firstOrNull { it.extension.equals("srt", true) }
+                ?: sampleSubs.firstOrNull { it.extension.equals("vtt", true) }
+        }
+        if (preferredFile != null && preferredFile.exists()) {
+            loadSubtitleFromFile(preferredFile)
         }
     }
 
@@ -880,7 +1008,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             val res = SubtitleParser.loadAndValidateSubtitleUri(
                 getApplication(),
                 uri,
-                uri.lastPathSegment ?: "External Subtitle"
+                uri.lastPathSegment ?: "External Lyrics/Subtitle"
             )
             when (res) {
                 is SubtitleLoadResult.Success -> {
@@ -891,7 +1019,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         subtitleError = null
                     )
                     updateSubtitleCueForPosition(_playbackState.value.currentPositionMs)
-                    _statusBannerMessage.value = "Loaded ${res.format} subtitle (${res.cues.size} cues)."
+                    _statusBannerMessage.value = "Loaded ${res.format} lyrics/subtitles (${res.cues.size} cues)."
                 }
                 is SubtitleLoadResult.Error -> {
                     _playbackState.value = _playbackState.value.copy(
@@ -971,7 +1099,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                     updateSubtitleCueForPosition(pos)
 
-                    // Phase 6 Requirement: Save playback state without continuously writing to DB at high frequency
                     val now = System.currentTimeMillis()
                     if (now - lastHistoryWriteTimeMs >= 10_000L) {
                         persistCurrentPlaybackPosition(force = false)
@@ -1033,7 +1160,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // --- Equalizer Actions (Phase 10) ---
+    // --- Equalizer & Audio DSP Actions ---
     fun setEqualizerEnabled(enabled: Boolean) {
         equalizerController.setEnabled(enabled)
         saveEqualizerToPreferences()
@@ -1054,6 +1181,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         saveEqualizerToPreferences()
     }
 
+    fun setPreampGainDb(gainDb: Float) {
+        equalizerController.setPreampGainDb(gainDb)
+    }
+
     private fun saveEqualizerToPreferences() {
         val eqState = equalizerController.state.value
         viewModelScope.launch {
@@ -1066,7 +1197,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // --- Media Editor & Converter Actions (Phase 11 & Phase 12) ---
+    // --- Media Editor & Converter Actions ---
     fun runAudioTrimJob(
         source: MediaEntity,
         startMs: Long,
@@ -1151,7 +1282,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    // --- Preferences & Privacy Actions (Phase 4 & Phase 13) ---
+    // --- Preferences & Privacy Actions ---
     fun setThemeMode(mode: AppThemeMode) {
         viewModelScope.launch { preferencesRepository.setThemeMode(mode) }
     }
@@ -1201,6 +1332,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setAudioBalance(balance: Float) {
+        equalizerController.setStereoBalance(balance)
         viewModelScope.launch { preferencesRepository.setAudioBalance(balance) }
     }
 
@@ -1243,6 +1375,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             preferencesRepository.resetAllPreferences()
             val resolvedId = resolveActiveAudioSessionId(activePlayer)
+            equalizerController.setStereoBalance(0.0f)
+            equalizerController.setPreampGainDb(0.0f)
             equalizerController.bindToAudioSession(
                 audioSessionId = resolvedId,
                 enabled = false,
@@ -1281,6 +1415,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     override fun onCleared() {
         progressPollingJob?.cancel()
+        sleepTimerJob?.cancel()
         activeProcessingJob?.cancel()
         equalizerController.releaseEffects()
         activePlayer?.removeListener(playerListener)

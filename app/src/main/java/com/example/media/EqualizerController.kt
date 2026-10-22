@@ -45,6 +45,8 @@ data class HardwareEqualizerState(
     val selectedPresetIndex: Int = 0,
     val bands: List<EqualizerBandSpec> = defaultBandSpecs(),
     val bassBoostStrength: Int = 0, // 0..1000
+    val stereoBalance: Float = 0.0f, // -1.0f..1.0f
+    val preampGainDb: Float = 0.0f,  // -6.0f..6.0f
     val statusMessage: String = EqualizerDiagnosticState.EQUALIZER_DISABLED.displayText
 ) {
     companion object {
@@ -83,16 +85,8 @@ data class HardwareEqualizerState(
 
 /**
  * Coordinates the primary real-time Media3 [PulseEqualizerAudioProcessor] (5-band cascaded biquad
- * DSP + 85 Hz low-shelf Bass Boost + soft-knee limiter) with optional Android hardware
- * [Equalizer] and [BassBoost] effects.
- *
- * Guarantees:
- * 1. Software DSP is the primary deterministic audio processing path so all band sliders, presets,
- *    enable/disable toggles, and Bass Boost produce real, measurable PCM changes on every device.
- * 2. Software DSP and hardware [AudioEffect] are never active simultaneously on the same audio
- *    stream (prevents double-filtering).
- * 3. Hardware effects, when requested, bind strictly to the active player's real `audioSessionId`
- *    (never `0` and never via casting `MediaController` to `ExoPlayer`).
+ * DSP + low-shelf Bass Boost + Stereo L/R Balance + Preamp + soft-knee limiter) with optional
+ * Android hardware [Equalizer] and [BassBoost] effects.
  */
 @OptIn(UnstableApi::class)
 class EqualizerController(
@@ -142,6 +136,22 @@ class EqualizerController(
         }
     }
 
+    fun setStereoBalance(balance: Float) {
+        val clamped = if (balance.isFinite()) balance.coerceIn(-1.0f, 1.0f) else 0.0f
+        if (_state.value.stereoBalance != clamped) {
+            _state.value = _state.value.copy(stereoBalance = clamped)
+            syncDspAndState()
+        }
+    }
+
+    fun setPreampGainDb(gainDb: Float) {
+        val clamped = if (gainDb.isFinite()) gainDb.coerceIn(-6.0f, 6.0f) else 0.0f
+        if (_state.value.preampGainDb != clamped) {
+            _state.value = _state.value.copy(preampGainDb = clamped)
+            syncDspAndState()
+        }
+    }
+
     fun bindToAudioSession(
         audioSessionId: Int,
         enabled: Boolean,
@@ -180,7 +190,6 @@ class EqualizerController(
             boundSessionId = audioSessionId
         }
 
-        // Only instantiate hardware AudioEffect if explicitly requested or if descriptor is present
         if (preferHardwareEffect && descriptorSupported) {
             try {
                 if (equalizer == null) {
@@ -218,7 +227,6 @@ class EqualizerController(
                 hardwareBassOperational = false
             }
         } else {
-            // Software DSP is primary; ensure hardware effect is not active to prevent double-EQ
             releaseHardwareEffectsOnly()
             hardwareSessionOperational = false
             hardwareBassOperational = false
@@ -308,7 +316,6 @@ class EqualizerController(
             current.activeAudioSessionId > 0 &&
             (current.bassBoostStrength == 0 || hardwareBassOperational)
 
-        // Ensure hardware effect is immediately disabled whenever software DSP is handling the stream
         if (!useHardware) {
             runCatching {
                 equalizer?.enabled = false
@@ -321,7 +328,9 @@ class EqualizerController(
             bypassForHardwareEffect = useHardware,
             bandLevelsMb = current.bands.map { it.currentLevelMb },
             bandFrequenciesHz = current.bands.map { it.centerFreqHz },
-            bassBoostStrength = current.bassBoostStrength
+            bassBoostStrength = current.bassBoostStrength,
+            stereoBalance = current.stereoBalance,
+            preampGainDb = current.preampGainDb
         )
 
         val dspUpdatedOk = runCatching {

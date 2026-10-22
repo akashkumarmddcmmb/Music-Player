@@ -832,6 +832,109 @@ class ExampleRobolectricTest {
         testMp4.delete()
     }
 
+    @Test
+    fun `stereo balance preamp gain sleep timer 0_5x to 3_0x playback speed and queue reordering work end to end`() {
+        val sampleRate = 44100
+        val inputSignal = synthesizeMultiTonePcm16Stereo(
+            sampleRateHz = sampleRate,
+            frameCount = 1024,
+            frequenciesHz = listOf(440.0),
+            amplitude = 0.25
+        )
+
+        // 1. Hard Left Stereo Balance (-1.0f): Right channel (odd indices) must be attenuated to 0
+        val hardLeftBank = MultiBandBiquadFilterBank(sampleRate, 2).apply {
+            updateConfig(
+                EqualizerDspConfig(
+                    isEnabled = false,
+                    stereoBalance = -1.0f,
+                    preampGainDb = 0.0f
+                )
+            )
+        }
+        val leftOnlyPcm = hardLeftBank.processPcm16Array(inputSignal)
+        var leftEnergy = 0L
+        var rightEnergy = 0L
+        for (frame in 0 until 1024) {
+            leftEnergy += abs(leftOnlyPcm[frame * 2].toInt())
+            rightEnergy += abs(leftOnlyPcm[frame * 2 + 1].toInt())
+        }
+        assertTrue("Left channel must retain full audio signal when balance = -1.0f", leftEnergy > 50_000L)
+        assertEquals("Right channel must be completely muted when balance = -1.0f", 0L, rightEnergy)
+
+        // 2. Preamp Gain (+6.0 dB): Output amplitude must be ~2x original amplitude
+        val preampBank = MultiBandBiquadFilterBank(sampleRate, 2).apply {
+            updateConfig(
+                EqualizerDspConfig(
+                    isEnabled = false,
+                    stereoBalance = 0.0f,
+                    preampGainDb = 6.0f
+                )
+            )
+        }
+        val boostedPcm = preampBank.processPcm16Array(inputSignal)
+        var origEnergy = 0L
+        var boostedEnergy = 0L
+        for (i in inputSignal.indices) {
+            origEnergy += abs(inputSignal[i].toInt())
+            boostedEnergy += abs(boostedPcm[i].toInt())
+        }
+        assertTrue(
+            "+6 dB preamp must measurably amplify signal (orig=$origEnergy, boosted=$boostedEnergy)",
+            boostedEnergy > (origEnergy * 1.85).toLong()
+        )
+
+        // 3. ViewModel Sleep Timer (Automatic Stop), 0.5x-3.0x Speed, Queue Reordering, and Audio Lyrics
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.viewmodel.PulsePlayViewModel(app)
+
+        val itemA = MediaEntity(
+            uriString = "file:///song_a.wav",
+            mediaStoreId = null,
+            title = "Song A",
+            artist = "Artist A",
+            album = "Album A",
+            folderName = "Music",
+            durationMs = 180_000L,
+            sizeBytes = 1024L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000001L
+        )
+        val itemB = itemA.copy(uriString = "file:///song_b.wav", title = "Song B")
+        val itemC = itemA.copy(uriString = "file:///song_c.wav", title = "Song C")
+
+        vm.setQueue(listOf(itemA, itemB, itemC))
+        assertEquals(listOf("Song A", "Song B", "Song C"), vm.playbackState.value.queue.map { it.title })
+
+        // Reorder Song C from index 2 to index 1
+        vm.moveQueueItem(2, 1)
+        assertEquals(listOf("Song A", "Song C", "Song B"), vm.playbackState.value.queue.map { it.title })
+
+        // Playback Speed 0.5x to 3.0x
+        vm.setPlaybackSpeed(0.5f)
+        assertEquals(0.5f, vm.playbackState.value.playbackSpeed, 0.01f)
+        vm.setPlaybackSpeed(3.0f)
+        assertEquals(3.0f, vm.playbackState.value.playbackSpeed, 0.01f)
+
+        // Sleep Timer countdown & automatic stop
+        vm.setSleepTimerMinutes(10)
+        assertTrue(vm.playbackState.value.isSleepTimerActive)
+        assertEquals(10, vm.playbackState.value.sleepTimerTotalMinutes)
+        assertEquals(600_000L, vm.playbackState.value.sleepTimerRemainingMs)
+
+        // Advance timer by 300 seconds -> still active with 300s remaining
+        vm.advanceSleepTimerByMs(300_000L)
+        assertTrue(vm.playbackState.value.isSleepTimerActive)
+        assertEquals(300_000L, vm.playbackState.value.sleepTimerRemainingMs)
+
+        // Advance remaining 300 seconds -> timer expires and automatically pauses playback
+        vm.advanceSleepTimerByMs(300_000L)
+        assertFalse(vm.playbackState.value.isSleepTimerActive)
+        assertEquals(0L, vm.playbackState.value.sleepTimerRemainingMs)
+        assertFalse("Playback must be paused when Sleep Timer reaches 0", vm.playbackState.value.isPlaying)
+    }
+
     private fun synthesizeMultiTonePcm16Stereo(
         sampleRateHz: Int,
         frameCount: Int,

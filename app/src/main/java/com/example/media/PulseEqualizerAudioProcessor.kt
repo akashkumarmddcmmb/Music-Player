@@ -131,20 +131,26 @@ data class BiquadCoefficients(
 }
 
 /**
- * Immutable snapshot of the Equalizer + Bass Boost DSP configuration.
+ * Immutable snapshot of the Equalizer + Bass Boost + Stereo Balance + Preamp DSP configuration.
  */
 data class EqualizerDspConfig(
     val isEnabled: Boolean = false,
     val bypassForHardwareEffect: Boolean = false,
     val bandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
     val bandFrequenciesHz: List<Int> = DEFAULT_BAND_FREQUENCIES_HZ,
-    val bassBoostStrength: Int = 0 // 0..1000
+    val bassBoostStrength: Int = 0, // 0..1000
+    val stereoBalance: Float = 0.0f, // -1.0 (Left) .. 0.0 (Center) .. +1.0 (Right)
+    val preampGainDb: Float = 0.0f   // -6.0 .. +6.0 dB
 ) {
+    val hasStereoOrPreampAdjustment: Boolean
+        get() = abs(stereoBalance) > 0.01f || abs(preampGainDb) > 0.05f
+
     val isEffectivelyActive: Boolean
-        get() = isEnabled && !bypassForHardwareEffect
+        get() = (isEnabled && !bypassForHardwareEffect) || hasStereoOrPreampAdjustment
 
     val hasNonZeroAdjustments: Boolean
-        get() = bandLevelsMb.any { it != 0 } || bassBoostStrength > 0
+        get() = (isEnabled && !bypassForHardwareEffect && (bandLevelsMb.any { it != 0 } || bassBoostStrength > 0)) ||
+            hasStereoOrPreampAdjustment
 
     companion object {
         val DEFAULT_BAND_FREQUENCIES_HZ = listOf(60, 230, 910, 3600, 14000)
@@ -155,8 +161,8 @@ data class EqualizerDspConfig(
 }
 
 /**
- * Multiband cascaded Direct Form II Transposed biquad filter bank with Bass Boost and
- * soft-knee output protection.
+ * Multiband cascaded Direct Form II Transposed biquad filter bank with Bass Boost,
+ * Left/Right Stereo Channel Balance, Preamp Gain, and soft-knee output protection.
  */
 class MultiBandBiquadFilterBank(
     sampleRateHz: Int = 44100,
@@ -169,6 +175,8 @@ class MultiBandBiquadFilterBank(
     // 5 EQ bands + 1 Bass Boost low-shelf section = 6 sections total
     private var sectionCoeffs: Array<BiquadCoefficients> = Array(TOTAL_SECTIONS) { BiquadCoefficients.IDENTITY }
     private var preampLinearGain: Double = 1.0
+    private var leftBalanceGain: Double = 1.0
+    private var rightBalanceGain: Double = 1.0
 
     // State arrays indexed by [sectionIndex * maxChannels + channel]
     private var z1 = DoubleArray(TOTAL_SECTIONS * 8)
@@ -200,11 +208,19 @@ class MultiBandBiquadFilterBank(
             newConfig.bandFrequenciesHz.getOrElse(idx) { defaultFreq }.coerceIn(20, 20000)
         }
         val sanitizedBass = newConfig.bassBoostStrength.coerceIn(0, EqualizerDspConfig.MAX_BASS_BOOST_STRENGTH)
+        val sanitizedBalance = if (newConfig.stereoBalance.isFinite()) {
+            newConfig.stereoBalance.coerceIn(-1.0f, 1.0f)
+        } else 0.0f
+        val sanitizedPreamp = if (newConfig.preampGainDb.isFinite()) {
+            newConfig.preampGainDb.coerceIn(-6.0f, 6.0f)
+        } else 0.0f
 
         val normalized = newConfig.copy(
             bandLevelsMb = sanitizedBands,
             bandFrequenciesHz = sanitizedFreqs,
-            bassBoostStrength = sanitizedBass
+            bassBoostStrength = sanitizedBass,
+            stereoBalance = sanitizedBalance,
+            preampGainDb = sanitizedPreamp
         )
         if (normalized != activeConfig) {
             val wasActive = activeConfig.isEffectivelyActive
@@ -230,11 +246,16 @@ class MultiBandBiquadFilterBank(
 
     private fun rebuildCoefficients() {
         val cfg = activeConfig
-        if (!cfg.isEffectivelyActive) {
+        val bal = cfg.stereoBalance.toDouble().coerceIn(-1.0, 1.0)
+        leftBalanceGain = if (bal > 0.0) (1.0 - bal).coerceIn(0.0, 1.0) else 1.0
+        rightBalanceGain = if (bal < 0.0) (1.0 + bal).coerceIn(0.0, 1.0) else 1.0
+
+        val eqActive = cfg.isEnabled && !cfg.bypassForHardwareEffect
+        if (!eqActive) {
             for (i in 0 until TOTAL_SECTIONS) {
                 sectionCoeffs[i] = BiquadCoefficients.IDENTITY
             }
-            preampLinearGain = 1.0
+            preampLinearGain = 10.0.pow(cfg.preampGainDb.toDouble() / 20.0)
             return
         }
 
@@ -265,7 +286,7 @@ class MultiBandBiquadFilterBank(
             )
         }
 
-        // Dedicated Bass Boost section: 0..1000 maps to 0.0..+9.0 dB low-shelf boost (corner at 130 Hz so 60-90 Hz sits on the shelf plateau)
+        // Dedicated Bass Boost section: 0..1000 maps to 0.0..+9.0 dB low-shelf boost (corner at 130 Hz)
         val bassBoostDb = (cfg.bassBoostStrength.coerceIn(0, 1000) / 1000.0) * 9.0
         sectionCoeffs[BASS_BOOST_SECTION_INDEX] = BiquadCoefficients.design(
             type = BiquadFilterType.LOW_SHELF,
@@ -275,19 +296,27 @@ class MultiBandBiquadFilterBank(
             q = 0.7071
         )
 
-        // Headroom management: attenuate pre-gain only when multiple overlapping bands are heavily boosted simultaneously
-        val combinedBoostDb = maxPositiveBoostDb + bassBoostDb
+        val combinedBoostDb = maxPositiveBoostDb + bassBoostDb + max(0.0, cfg.preampGainDb.toDouble())
         val headroomAttenuationDb = if (combinedBoostDb > 18.0) {
             -((combinedBoostDb - 18.0) * 0.25).coerceAtMost(9.0)
         } else {
             0.0
         }
-        preampLinearGain = 10.0.pow(headroomAttenuationDb / 20.0)
+        preampLinearGain = 10.0.pow((cfg.preampGainDb.toDouble() + headroomAttenuationDb) / 20.0)
+    }
+
+    private fun channelGainFor(ch: Int, totalChannels: Int): Double {
+        if (totalChannels < 2) return preampLinearGain
+        return when (ch) {
+            0 -> preampLinearGain * leftBalanceGain
+            1 -> preampLinearGain * rightBalanceGain
+            else -> preampLinearGain
+        }
     }
 
     /**
      * Processes an array of normalized floating-point samples [-1.0, 1.0] in-place.
-     * Interleaved by [ currentChannelCount ].
+     * Interleaved by [currentChannelCount].
      */
     @Synchronized
     fun processNormalizedSamplesInPlace(samples: DoubleArray, frameCount: Int = samples.size / currentChannelCount) {
@@ -298,12 +327,11 @@ class MultiBandBiquadFilterBank(
 
         val channels = currentChannelCount
         val totalSamples = min(samples.size, frameCount * channels)
-        val preGain = preampLinearGain
 
         var sampleIndex = 0
         while (sampleIndex < totalSamples) {
             for (ch in 0 until channels) {
-                var x = samples[sampleIndex + ch] * preGain
+                var x = samples[sampleIndex + ch] * channelGainFor(ch, channels)
                 for (sec in 0 until TOTAL_SECTIONS) {
                     val c = sectionCoeffs[sec]
                     if (c !== BiquadCoefficients.IDENTITY) {
@@ -332,13 +360,12 @@ class MultiBandBiquadFilterBank(
 
         val output = ShortArray(input.size)
         val channels = currentChannelCount
-        val preGain = preampLinearGain
         var idx = 0
         val limit = input.size - (input.size % channels)
 
         while (idx < limit) {
             for (ch in 0 until channels) {
-                var x = (input[idx + ch].toDouble() / 32768.0) * preGain
+                var x = (input[idx + ch].toDouble() / 32768.0) * channelGainFor(ch, channels)
                 for (sec in 0 until TOTAL_SECTIONS) {
                     val c = sectionCoeffs[sec]
                     if (c !== BiquadCoefficients.IDENTITY) {
@@ -378,7 +405,6 @@ class MultiBandBiquadFilterBank(
         }
 
         val channels = currentChannelCount
-        val preGain = preampLinearGain
 
         when (encoding) {
             C.ENCODING_PCM_16BIT -> {
@@ -386,7 +412,7 @@ class MultiBandBiquadFilterBank(
                 while (inputBuffer.remaining() >= frameBytes) {
                     for (ch in 0 until channels) {
                         val rawShort = inputBuffer.short
-                        var x = (rawShort.toDouble() / 32768.0) * preGain
+                        var x = (rawShort.toDouble() / 32768.0) * channelGainFor(ch, channels)
                         for (sec in 0 until TOTAL_SECTIONS) {
                             val c = sectionCoeffs[sec]
                             if (c !== BiquadCoefficients.IDENTITY) {
@@ -413,7 +439,7 @@ class MultiBandBiquadFilterBank(
                 while (inputBuffer.remaining() >= frameBytes) {
                     for (ch in 0 until channels) {
                         val rawFloat = inputBuffer.float
-                        var x = (if (rawFloat.isFinite()) rawFloat.toDouble() else 0.0) * preGain
+                        var x = (if (rawFloat.isFinite()) rawFloat.toDouble() else 0.0) * channelGainFor(ch, channels)
                         for (sec in 0 until TOTAL_SECTIONS) {
                             val c = sectionCoeffs[sec]
                             if (c !== BiquadCoefficients.IDENTITY) {
@@ -461,7 +487,8 @@ class MultiBandBiquadFilterBank(
 
 /**
  * Media3 [AudioProcessor] wired into the ExoPlayer [androidx.media3.exoplayer.audio.DefaultAudioSink]
- * pipeline so all audio playback receives real-time 5-band biquad EQ and Bass Boost processing.
+ * pipeline so all audio playback receives real-time 5-band biquad EQ, Bass Boost, Stereo Balance,
+ * and Preamp DSP processing.
  */
 @OptIn(UnstableApi::class)
 class PulseEqualizerAudioProcessor : BaseAudioProcessor() {

@@ -181,7 +181,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
-    private val _hasMediaPermission = MutableStateFlow(false)
+    private val _hasMediaPermission = MutableStateFlow(mediaRepository.hasDeviceMediaAccess())
     val hasMediaPermission: StateFlow<Boolean> = _hasMediaPermission.asStateFlow()
 
     private val _permissionPermanentlyDenied = MutableStateFlow(false)
@@ -189,6 +189,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _isScanningLibrary = MutableStateFlow(false)
     val isScanningLibrary: StateFlow<Boolean> = _isScanningLibrary.asStateFlow()
+    private var pendingRescanAfterCurrent: Boolean = false
 
     private val _statusBannerMessage = MutableStateFlow<String?>(null)
     val statusBannerMessage: StateFlow<String?> = _statusBannerMessage.asStateFlow()
@@ -655,22 +656,36 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun onPermissionResult(granted: Boolean, permanentlyDenied: Boolean = false) {
-        _hasMediaPermission.value = granted
-        _permissionPermanentlyDenied.value = !granted && permanentlyDenied
+        val effectiveGranted = granted || mediaRepository.hasDeviceMediaAccess()
+        _hasMediaPermission.value = effectiveGranted
+        _permissionPermanentlyDenied.value = !effectiveGranted && permanentlyDenied
         refreshLibrary()
     }
 
-    fun refreshLibrary() {
-        if (_isScanningLibrary.value) return
+    fun refreshLibrary(showStatusFeedback: Boolean = false) {
+        if (_isScanningLibrary.value) {
+            pendingRescanAfterCurrent = true
+            return
+        }
         viewModelScope.launch {
             _isScanningLibrary.value = true
             try {
-                val count = mediaRepository.scanAndSyncMediaLibrary(
-                    includeDeviceMediaStore = _hasMediaPermission.value
-                )
-                if (count > 0 && _studioTargetMedia.value == null) {
-                    _studioTargetMedia.value = allMedia.value.firstOrNull()
-                }
+                do {
+                    pendingRescanAfterCurrent = false
+                    val hasAccess = _hasMediaPermission.value || mediaRepository.hasDeviceMediaAccess()
+                    if (hasAccess && !_hasMediaPermission.value) {
+                        _hasMediaPermission.value = true
+                    }
+                    val count = mediaRepository.scanAndSyncMediaLibrary(
+                        includeDeviceMediaStore = hasAccess
+                    )
+                    if (count > 0 && _studioTargetMedia.value == null) {
+                        _studioTargetMedia.value = allMedia.value.firstOrNull()
+                    }
+                    if (showStatusFeedback) {
+                        _statusBannerMessage.value = "Scanned $count audio & video files across all folders."
+                    }
+                } while (pendingRescanAfterCurrent)
             } finally {
                 _isScanningLibrary.value = false
             }
@@ -1150,6 +1165,12 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
  
     fun onAppForegrounded() {
         isAppInForeground = true
+        val nowHasAccess = mediaRepository.hasDeviceMediaAccess()
+        if (nowHasAccess && !_hasMediaPermission.value) {
+            _hasMediaPermission.value = true
+            _permissionPermanentlyDenied.value = false
+            refreshLibrary()
+        }
         if (activePlayer?.isPlaying == true) {
             startProgressPolling()
         }

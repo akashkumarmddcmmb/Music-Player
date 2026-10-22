@@ -572,11 +572,20 @@ fun NowPlayingOverlayScreen(
                                     maxLines = 2,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                                Text(
-                                    text = "${currentMedia.artist} • ${currentMedia.album}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
+                                val artistText = currentMedia.artist.takeIf {
+                                    it.isNotBlank() &&
+                                        !it.startsWith("PulsePlay", ignoreCase = true) &&
+                                        it != "<unknown>" &&
+                                        it != "Unknown Artist" &&
+                                        it != "Local Storage"
+                                }
+                                if (artistText != null) {
+                                    Text(
+                                        text = artistText,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                             IconButton(
                                 onClick = onToggleFavorite,
@@ -1328,7 +1337,7 @@ private fun ImmersiveVideoCinemaLayout(
         val formattedSize = if (currentMedia.sizeBytes > 0L) {
             formatFileSize(currentMedia.sizeBytes)
         } else {
-            currentMedia.artist
+            "HD Video"
         }
         "$resolutionTag • $formattedSize"
     }

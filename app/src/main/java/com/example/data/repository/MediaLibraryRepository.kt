@@ -1,14 +1,18 @@
 package com.example.data.repository
 
+import android.Manifest
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.MediaMetadataRetriever
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
+import androidx.core.content.ContextCompat
 import com.example.data.local.FavoriteEntity
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
@@ -38,172 +42,222 @@ class MediaLibraryRepository(
     fun observePlaylistItems(playlistId: Long): Flow<List<MediaEntity>> =
         dao.observePlaylistMedia(playlistId)
 
+    companion object {
+        private val AUDIO_EXTENSIONS = setOf(
+            "mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "amr", "aiff", "alac", "mid"
+        )
+        private val VIDEO_EXTENSIONS = setOf(
+            "mp4", "mkv", "webm", "3gp", "mov", "avi", "flv", "ts", "m4v", "mpeg", "mpg", "wmv"
+        )
+    }
+
     /**
-     * Scans shared MediaStore for Audio and Video items when permission is granted,
-     * and also ensures built-in legal reference samples are indexed so the user
-     * can test playback, EQ, subtitles, trimming, and conversion immediately.
+     * Checks directly against OS runtime permissions and All Files Access so scanning
+     * never misses device files due to stale UI state.
+     */
+    fun hasDeviceMediaAccess(): Boolean {
+        if (isAllFilesAccessGranted()) return true
+        val permsToCheck = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.READ_MEDIA_AUDIO)
+                add(Manifest.permission.READ_MEDIA_VIDEO)
+            }
+            add(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+        return permsToCheck.any { perm ->
+            runCatching {
+                ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+            }.getOrDefault(false)
+        }
+    }
+
+    /**
+     * Scans shared MediaStore (Audio, Video, and Files tables) plus readable external storage
+     * directories for all audio and video items and folders, and also ensures built-in legal
+     * reference samples are indexed.
      */
     suspend fun scanAndSyncMediaLibrary(includeDeviceMediaStore: Boolean): Int =
         withContext(Dispatchers.IO) {
-            val discovered = mutableListOf<MediaEntity>()
+            val discovered = LinkedHashMap<String, MediaEntity>()
+            val seenPaths = HashSet<String>()
 
             // Always ensure legal built-in studio samples exist and are indexed
             val samples = runCatching {
                 sampleGenerator.ensureLegalSampleMediaGenerated()
             }.getOrDefault(emptyList())
-            discovered.addAll(samples)
+            for (sample in samples) {
+                discovered[sample.uriString] = sample
+                Uri.parse(sample.uriString).path?.let { seenPaths.add(it) }
+            }
 
-            if (includeDeviceMediaStore || isAllFilesAccessGranted()) {
-                discovered.addAll(queryMediaStoreAudio())
-                discovered.addAll(queryMediaStoreVideo())
-                if (isAllFilesAccessGranted()) {
-                    val existingPaths = discovered.mapNotNull { Uri.parse(it.uriString).path }.toHashSet()
-                    discovered.addAll(scanExternalStorageDirectories(existingPaths))
+            val canScanDevice = includeDeviceMediaStore || hasDeviceMediaAccess()
+            if (canScanDevice) {
+                for (item in queryMediaStoreAudio(seenPaths)) {
+                    discovered[item.uriString] = item
+                }
+                for (item in queryMediaStoreVideo(seenPaths)) {
+                    discovered[item.uriString] = item
+                }
+                for (item in queryMediaStoreFilesFallback(seenPaths)) {
+                    if (!discovered.containsKey(item.uriString)) {
+                        discovered[item.uriString] = item
+                    }
+                }
+                for (item in scanExternalStorageDirectories(seenPaths)) {
+                    if (!discovered.containsKey(item.uriString)) {
+                        discovered[item.uriString] = item
+                    }
                 }
             }
 
-            if (discovered.isNotEmpty()) {
-                dao.upsertMediaItems(discovered)
+            val finalItems = discovered.values.toList()
+            if (finalItems.isNotEmpty()) {
+                dao.upsertMediaItems(finalItems)
             }
-            discovered.size
+            finalItems.size
         }
 
     private fun isAllFilesAccessGranted(): Boolean {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
+        return runCatching {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
+        }.getOrDefault(false)
     }
 
-    private fun scanExternalStorageDirectories(existingPaths: HashSet<String>): List<MediaEntity> {
-        val results = mutableListOf<MediaEntity>()
-        val rootDir = runCatching { Environment.getExternalStorageDirectory() }.getOrNull() ?: return results
-        if (!rootDir.exists() || !rootDir.canRead()) return results
+    private fun resolveFolderName(
+        bucketName: String?,
+        relativePath: String?,
+        dataPath: String?,
+        fallback: String
+    ): String {
+        val cleanBucket = bucketName?.trim()?.takeIf { it.isNotEmpty() && it != "0" }
+        if (cleanBucket != null) return cleanBucket
 
-        val audioExts = setOf("mp3", "wav", "m4a", "aac", "flac", "ogg", "opus")
-        val videoExts = setOf("mp4", "mkv", "webm", "3gp", "mov", "avi")
+        val fromRel = relativePath
+            ?.trim()
+            ?.trim('/')
+            ?.substringAfterLast('/')
+            ?.takeIf { it.isNotEmpty() && it != "0" }
+        if (fromRel != null) return fromRel
 
-        val standardDirNames = listOf(
-            Environment.DIRECTORY_MUSIC,
-            Environment.DIRECTORY_MOVIES,
-            Environment.DIRECTORY_DOWNLOADS,
-            Environment.DIRECTORY_DCIM,
-            Environment.DIRECTORY_PODCASTS
-        )
-        val candidateDirs = standardDirNames.mapNotNull { name ->
-            runCatching { Environment.getExternalStoragePublicDirectory(name) }.getOrNull()
-        }.filter { it.exists() && it.canRead() }
+        val fromData = dataPath
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { File(it).parentFile?.name }.getOrNull() }
+            ?.takeIf { it.isNotBlank() && it != "0" }
+        if (fromData != null) return fromData
 
-        val searchDirs = if (candidateDirs.isNotEmpty()) candidateDirs else listOf(rootDir)
-
-        runCatching {
-            for (searchDir in searchDirs) {
-                if (results.size >= 300) break
-                searchDir.walkTopDown()
-                    .onEnter { dir ->
-                        !dir.name.startsWith(".") &&
-                            !dir.absolutePath.contains("/Android/data") &&
-                            !dir.absolutePath.contains("/Android/obb")
-                    }
-                    .maxDepth(3)
-                    .forEach { file ->
-                    if (results.size >= 300) return@forEach
-                    if (!file.isFile || file.length() < 4096L) return@forEach
-                    if (existingPaths.contains(file.absolutePath)) return@forEach
-                    val ext = file.extension.lowercase()
-                    val isAudio = ext in audioExts
-                    val isVideo = ext in videoExts
-                    if (!isAudio && !isVideo) return@forEach
-
-                    val mime = when (ext) {
-                        "mp3" -> "audio/mpeg"
-                        "wav" -> "audio/wav"
-                        "m4a", "aac" -> "audio/mp4"
-                        "flac" -> "audio/flac"
-                        "ogg", "opus" -> "audio/ogg"
-                        "mp4" -> "video/mp4"
-                        "mkv" -> "video/x-matroska"
-                        "webm" -> "video/webm"
-                        else -> if (isVideo) "video/*" else "audio/*"
-                    }
-                    results.add(
-                        MediaEntity(
-                            uriString = Uri.fromFile(file).toString(),
-                            mediaStoreId = null,
-                            title = file.nameWithoutExtension.ifBlank { file.name },
-                            artist = "Local Storage",
-                            album = file.parentFile?.name ?: "Internal Storage",
-                            folderName = file.parentFile?.name ?: "Internal Storage",
-                            durationMs = 0L,
-                            sizeBytes = file.length(),
-                            mimeType = mime,
-                            mediaType = if (isVideo) MediaType.VIDEO else MediaType.AUDIO,
-                            dateAddedEpochSec = file.lastModified() / 1000L,
-                            isAvailable = true,
-                            isGeneratedSample = false
-                        )
-                    )
-                }
-            }
-        }
-        return results
+        return fallback
     }
 
-    private fun queryMediaStoreAudio(): List<MediaEntity> {
+    private fun resolveMimeTypeForExtension(ext: String, isVideo: Boolean): String = when (ext) {
+        "mp3" -> "audio/mpeg"
+        "wav" -> "audio/wav"
+        "m4a", "aac", "alac" -> "audio/mp4"
+        "flac" -> "audio/flac"
+        "ogg", "opus" -> "audio/ogg"
+        "wma" -> "audio/x-ms-wma"
+        "amr" -> "audio/amr"
+        "mp4", "m4v" -> "video/mp4"
+        "mkv" -> "video/x-matroska"
+        "webm" -> "video/webm"
+        "3gp" -> "video/3gpp"
+        "mov" -> "video/quicktime"
+        "avi" -> "video/x-msvideo"
+        "ts" -> "video/mp2t"
+        else -> if (isVideo) "video/*" else "audio/*"
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queryMediaStoreAudio(seenPaths: HashSet<String>): List<MediaEntity> {
         val list = mutableListOf<MediaEntity>()
-        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(
-            MediaStore.Audio.Media._ID,
-            MediaStore.Audio.Media.DISPLAY_NAME,
-            MediaStore.Audio.Media.TITLE,
-            MediaStore.Audio.Media.ARTIST,
-            MediaStore.Audio.Media.ALBUM,
-            MediaStore.Audio.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Audio.Media.DURATION,
-            MediaStore.Audio.Media.SIZE,
-            MediaStore.Audio.Media.MIME_TYPE,
-            MediaStore.Audio.Media.DATE_ADDED
-        )
-        val selection = "${MediaStore.Audio.Media.DURATION} >= ?"
-        val selectionArgs = arrayOf("1000")
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        } else {
+            MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        }
+        val projection = buildList {
+            add(MediaStore.Audio.Media._ID)
+            add(MediaStore.Audio.Media.DISPLAY_NAME)
+            add(MediaStore.Audio.Media.TITLE)
+            add(MediaStore.Audio.Media.ARTIST)
+            add(MediaStore.Audio.Media.ALBUM)
+            add(MediaStore.Audio.Media.BUCKET_DISPLAY_NAME)
+            add(MediaStore.Audio.Media.DURATION)
+            add(MediaStore.Audio.Media.SIZE)
+            add(MediaStore.Audio.Media.MIME_TYPE)
+            add(MediaStore.Audio.Media.DATE_ADDED)
+            add(MediaStore.MediaColumns.DATA)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.MediaColumns.RELATIVE_PATH)
+            }
+        }.toTypedArray()
+
         val sortOrder = "${MediaStore.Audio.Media.DATE_ADDED} DESC"
 
         runCatching {
             context.contentResolver.query(
                 collection,
                 projection,
-                selection,
-                selectionArgs,
+                null,
+                null,
                 sortOrder
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DISPLAY_NAME)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
-                val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM)
+                val nameCol = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+                val titleCol = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
+                val artistCol = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                val albumCol = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM)
                 val bucketCol = cursor.getColumnIndex(MediaStore.Audio.Media.BUCKET_DISPLAY_NAME)
-                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DURATION)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.SIZE)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.MIME_TYPE)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.DATE_ADDED)
+                val durCol = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Audio.Media.MIME_TYPE)
+                val dateCol = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
+                val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                val relCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                } else -1
 
                 var count = 0
-                while (cursor.moveToNext() && count < 500) {
+                while (cursor.moveToNext() && count < 10_000) {
                     val id = cursor.getLong(idCol)
                     val contentUri = ContentUris.withAppendedId(collection, id)
-                    val title = cursor.getString(titleCol)?.takeIf { it.isNotBlank() }
-                        ?: cursor.getString(nameCol)
+                    val displayName = if (nameCol >= 0) cursor.getString(nameCol) else null
+                    val rawTitle = if (titleCol >= 0) cursor.getString(titleCol) else null
+                    val dataPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                    val relPath = if (relCol >= 0) cursor.getString(relCol) else null
+                    val bucketName = if (bucketCol >= 0) cursor.getString(bucketCol) else null
+
+                    val durationMs = if (durCol >= 0) cursor.getLong(durCol).coerceAtLeast(0L) else 0L
+                    val sizeBytes = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(0L) else 0L
+                    if (sizeBytes <= 0L && durationMs <= 0L && dataPath.isNullOrBlank()) continue
+
+                    dataPath?.takeIf { it.isNotBlank() }?.let { path ->
+                        seenPaths.add(path)
+                        runCatching { File(path).canonicalPath }.getOrNull()?.let { seenPaths.add(it) }
+                    }
+
+                    val cleanDisplayName = displayName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() }
+                    val title = rawTitle?.takeIf { it.isNotBlank() && it != "<unknown>" }
+                        ?: cleanDisplayName
+                        ?: dataPath?.let { File(it).nameWithoutExtension }
                         ?: "Audio Track #$id"
-                    val artist = cursor.getString(artistCol)
+
+                    val folder = resolveFolderName(
+                        bucketName = bucketName,
+                        relativePath = relPath,
+                        dataPath = dataPath,
+                        fallback = "Music"
+                    )
+                    val artist = (if (artistCol >= 0) cursor.getString(artistCol) else null)
                         ?.takeIf { it.isNotBlank() && it != "<unknown>" }
-                        ?: "Unknown Artist"
-                    val album = cursor.getString(albumCol)
+                        ?: folder
+                    val album = (if (albumCol >= 0) cursor.getString(albumCol) else null)
                         ?.takeIf { it.isNotBlank() && it != "<unknown>" }
-                        ?: "Local Audio"
-                    val folder = if (bucketCol >= 0) {
-                        cursor.getString(bucketCol)?.takeIf { it.isNotBlank() } ?: "Music"
-                    } else "Music"
-                    val durationMs = cursor.getLong(durCol).coerceAtLeast(0L)
-                    val sizeBytes = cursor.getLong(sizeCol).coerceAtLeast(0L)
-                    val mime = cursor.getString(mimeCol) ?: "audio/*"
-                    val dateAdded = cursor.getLong(dateCol)
+                        ?: folder
+
+                    val mime = (if (mimeCol >= 0) cursor.getString(mimeCol) else null)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "audio/*"
+                    val dateAdded = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
 
                     list.add(
                         MediaEntity(
@@ -229,23 +283,33 @@ class MediaLibraryRepository(
         return list
     }
 
-    private fun queryMediaStoreVideo(): List<MediaEntity> {
+    @Suppress("DEPRECATION")
+    private fun queryMediaStoreVideo(seenPaths: HashSet<String>): List<MediaEntity> {
         val list = mutableListOf<MediaEntity>()
-        val collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        val projection = arrayOf(
-            MediaStore.Video.Media._ID,
-            MediaStore.Video.Media.DISPLAY_NAME,
-            MediaStore.Video.Media.TITLE,
-            MediaStore.Video.Media.ARTIST,
-            MediaStore.Video.Media.ALBUM,
-            MediaStore.Video.Media.BUCKET_DISPLAY_NAME,
-            MediaStore.Video.Media.DURATION,
-            MediaStore.Video.Media.SIZE,
-            MediaStore.Video.Media.MIME_TYPE,
-            MediaStore.Video.Media.WIDTH,
-            MediaStore.Video.Media.HEIGHT,
-            MediaStore.Video.Media.DATE_ADDED
-        )
+        val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL)
+        } else {
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+        }
+        val projection = buildList {
+            add(MediaStore.Video.Media._ID)
+            add(MediaStore.Video.Media.DISPLAY_NAME)
+            add(MediaStore.Video.Media.TITLE)
+            add(MediaStore.Video.Media.ARTIST)
+            add(MediaStore.Video.Media.ALBUM)
+            add(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
+            add(MediaStore.Video.Media.DURATION)
+            add(MediaStore.Video.Media.SIZE)
+            add(MediaStore.Video.Media.MIME_TYPE)
+            add(MediaStore.Video.Media.WIDTH)
+            add(MediaStore.Video.Media.HEIGHT)
+            add(MediaStore.Video.Media.DATE_ADDED)
+            add(MediaStore.MediaColumns.DATA)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.MediaColumns.RELATIVE_PATH)
+            }
+        }.toTypedArray()
+
         val sortOrder = "${MediaStore.Video.Media.DATE_ADDED} DESC"
 
         runCatching {
@@ -257,40 +321,66 @@ class MediaLibraryRepository(
                 sortOrder
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
-                val titleCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.TITLE)
-                val artistCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.ARTIST)
-                val albumCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.ALBUM)
+                val nameCol = cursor.getColumnIndex(MediaStore.Video.Media.DISPLAY_NAME)
+                val titleCol = cursor.getColumnIndex(MediaStore.Video.Media.TITLE)
+                val artistCol = cursor.getColumnIndex(MediaStore.Video.Media.ARTIST)
+                val albumCol = cursor.getColumnIndex(MediaStore.Video.Media.ALBUM)
                 val bucketCol = cursor.getColumnIndex(MediaStore.Video.Media.BUCKET_DISPLAY_NAME)
-                val durCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.SIZE)
-                val mimeCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.MIME_TYPE)
-                val widthCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.WIDTH)
-                val heightCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.HEIGHT)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+                val durCol = cursor.getColumnIndex(MediaStore.Video.Media.DURATION)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Video.Media.SIZE)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Video.Media.MIME_TYPE)
+                val widthCol = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
+                val heightCol = cursor.getColumnIndex(MediaStore.Video.Media.HEIGHT)
+                val dateCol = cursor.getColumnIndex(MediaStore.Video.Media.DATE_ADDED)
+                val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                val relCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                } else -1
 
                 var count = 0
-                while (cursor.moveToNext() && count < 500) {
+                while (cursor.moveToNext() && count < 10_000) {
                     val id = cursor.getLong(idCol)
                     val contentUri = ContentUris.withAppendedId(collection, id)
-                    val title = cursor.getString(titleCol)?.takeIf { it.isNotBlank() }
-                        ?: cursor.getString(nameCol)
+                    val displayName = if (nameCol >= 0) cursor.getString(nameCol) else null
+                    val rawTitle = if (titleCol >= 0) cursor.getString(titleCol) else null
+                    val dataPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                    val relPath = if (relCol >= 0) cursor.getString(relCol) else null
+                    val bucketName = if (bucketCol >= 0) cursor.getString(bucketCol) else null
+
+                    val durationMs = if (durCol >= 0) cursor.getLong(durCol).coerceAtLeast(0L) else 0L
+                    val sizeBytes = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(0L) else 0L
+                    if (sizeBytes <= 0L && durationMs <= 0L && dataPath.isNullOrBlank()) continue
+
+                    dataPath?.takeIf { it.isNotBlank() }?.let { path ->
+                        seenPaths.add(path)
+                        runCatching { File(path).canonicalPath }.getOrNull()?.let { seenPaths.add(it) }
+                    }
+
+                    val cleanDisplayName = displayName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() }
+                    val title = rawTitle?.takeIf { it.isNotBlank() && it != "<unknown>" }
+                        ?: cleanDisplayName
+                        ?: dataPath?.let { File(it).nameWithoutExtension }
                         ?: "Video Clip #$id"
-                    val artist = cursor.getString(artistCol)
+
+                    val folder = resolveFolderName(
+                        bucketName = bucketName,
+                        relativePath = relPath,
+                        dataPath = dataPath,
+                        fallback = "Videos"
+                    )
+                    val artist = (if (artistCol >= 0) cursor.getString(artistCol) else null)
                         ?.takeIf { it.isNotBlank() && it != "<unknown>" }
-                        ?: "Local Video"
-                    val album = cursor.getString(albumCol)
+                        ?: folder
+                    val album = (if (albumCol >= 0) cursor.getString(albumCol) else null)
                         ?.takeIf { it.isNotBlank() && it != "<unknown>" }
-                        ?: "Videos"
-                    val folder = if (bucketCol >= 0) {
-                        cursor.getString(bucketCol)?.takeIf { it.isNotBlank() } ?: "Videos"
-                    } else "Videos"
-                    val durationMs = cursor.getLong(durCol).coerceAtLeast(0L)
-                    val sizeBytes = cursor.getLong(sizeCol).coerceAtLeast(0L)
-                    val mime = cursor.getString(mimeCol) ?: "video/*"
-                    val width = cursor.getInt(widthCol)
-                    val height = cursor.getInt(heightCol)
-                    val dateAdded = cursor.getLong(dateCol)
+                        ?: folder
+
+                    val mime = (if (mimeCol >= 0) cursor.getString(mimeCol) else null)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: "video/*"
+                    val width = if (widthCol >= 0) cursor.getInt(widthCol) else 0
+                    val height = if (heightCol >= 0) cursor.getInt(heightCol) else 0
+                    val dateAdded = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
 
                     list.add(
                         MediaEntity(
@@ -316,6 +406,268 @@ class MediaLibraryRepository(
             }
         }
         return list
+    }
+
+    /**
+     * Queries MediaStore.Files for any audio or video files in custom folders (e.g. Downloads,
+     * WhatsApp, Telegram, Movies, Music) that were indexed as generic files or missed by
+     * MediaStore.Audio / MediaStore.Video.
+     */
+    @Suppress("DEPRECATION")
+    private fun queryMediaStoreFilesFallback(seenPaths: HashSet<String>): List<MediaEntity> {
+        val list = mutableListOf<MediaEntity>()
+        val collection = MediaStore.Files.getContentUri("external")
+        val projection = buildList {
+            add(MediaStore.Files.FileColumns._ID)
+            add(MediaStore.Files.FileColumns.DISPLAY_NAME)
+            add(MediaStore.Files.FileColumns.TITLE)
+            add(MediaStore.Files.FileColumns.MEDIA_TYPE)
+            add(MediaStore.Files.FileColumns.MIME_TYPE)
+            add(MediaStore.Files.FileColumns.SIZE)
+            add(MediaStore.Files.FileColumns.DATE_ADDED)
+            add(MediaStore.MediaColumns.DURATION)
+            add(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            add(MediaStore.MediaColumns.DATA)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.MediaColumns.RELATIVE_PATH)
+            }
+        }.toTypedArray()
+
+        val sortOrder = "${MediaStore.Files.FileColumns.DATE_ADDED} DESC"
+
+        runCatching {
+            context.contentResolver.query(
+                collection,
+                projection,
+                null,
+                null,
+                sortOrder
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Files.FileColumns._ID)
+                val nameCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                val titleCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.TITLE)
+                val mediaTypeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.MEDIA_TYPE)
+                val mimeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
+                val sizeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
+                val dateCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_ADDED)
+                val durCol = cursor.getColumnIndex(MediaStore.MediaColumns.DURATION)
+                val bucketCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                val relCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                } else -1
+
+                var count = 0
+                while (cursor.moveToNext() && count < 10_000) {
+                    val dataPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                    if (!dataPath.isNullOrBlank() && seenPaths.contains(dataPath)) continue
+
+                    val displayName = if (nameCol >= 0) cursor.getString(nameCol) else null
+                    val mime = if (mimeCol >= 0) cursor.getString(mimeCol) else null
+                    val mediaTypeVal = if (mediaTypeCol >= 0) cursor.getInt(mediaTypeCol) else 0
+
+                    val ext = (displayName ?: dataPath ?: "")
+                        .substringAfterLast('.', "")
+                        .lowercase()
+
+                    val isVideo = mediaTypeVal == MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO ||
+                        mime?.startsWith("video/") == true ||
+                        ext in VIDEO_EXTENSIONS
+                    val isAudio = !isVideo && (
+                        mediaTypeVal == MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO ||
+                            mime?.startsWith("audio/") == true ||
+                            ext in AUDIO_EXTENSIONS
+                        )
+
+                    if (!isAudio && !isVideo) continue
+
+                    val sizeBytes = if (sizeCol >= 0) cursor.getLong(sizeCol).coerceAtLeast(0L) else 0L
+                    val durationMs = if (durCol >= 0) cursor.getLong(durCol).coerceAtLeast(0L) else 0L
+                    if (sizeBytes <= 0L && durationMs <= 0L) continue
+
+                    dataPath?.takeIf { it.isNotBlank() }?.let { path ->
+                        seenPaths.add(path)
+                        runCatching { File(path).canonicalPath }.getOrNull()?.let { seenPaths.add(it) }
+                    }
+
+                    val id = cursor.getLong(idCol)
+                    val contentUri = if (isVideo) {
+                        ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+                    } else if (isAudio && mediaTypeVal == MediaStore.Files.FileColumns.MEDIA_TYPE_AUDIO) {
+                        ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+                    } else {
+                        ContentUris.withAppendedId(collection, id)
+                    }
+
+                    val rawTitle = if (titleCol >= 0) cursor.getString(titleCol) else null
+                    val cleanName = displayName?.substringBeforeLast('.')?.takeIf { it.isNotBlank() }
+                    val title = rawTitle?.takeIf { it.isNotBlank() && it != "<unknown>" }
+                        ?: cleanName
+                        ?: dataPath?.let { File(it).nameWithoutExtension }
+                        ?: "Media #$id"
+
+                    val bucketName = if (bucketCol >= 0) cursor.getString(bucketCol) else null
+                    val relPath = if (relCol >= 0) cursor.getString(relCol) else null
+                    val folder = resolveFolderName(
+                        bucketName = bucketName,
+                        relativePath = relPath,
+                        dataPath = dataPath,
+                        fallback = if (isVideo) "Videos" else "Music"
+                    )
+
+                    val resolvedMime = mime?.takeIf { it.isNotBlank() }
+                        ?: resolveMimeTypeForExtension(ext, isVideo)
+                    val dateAdded = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
+
+                    list.add(
+                        MediaEntity(
+                            uriString = contentUri.toString(),
+                            mediaStoreId = id,
+                            title = title,
+                            artist = folder,
+                            album = folder,
+                            folderName = folder,
+                            durationMs = durationMs,
+                            sizeBytes = sizeBytes,
+                            mimeType = resolvedMime,
+                            mediaType = if (isVideo) MediaType.VIDEO else MediaType.AUDIO,
+                            dateAddedEpochSec = dateAdded,
+                            isAvailable = true,
+                            isGeneratedSample = false
+                        )
+                    )
+                    count++
+                }
+            }
+        }
+        return list
+    }
+
+    /**
+     * Walks readable external storage directories so any audio or video file in any folder
+     * (including Download, WhatsApp, Telegram, Movies, Music, DCIM, Recordings, Bluetooth, etc.)
+     * that hasn't been indexed by MediaStore yet is still discovered and grouped into its folder.
+     */
+    private fun scanExternalStorageDirectories(existingPaths: HashSet<String>): List<MediaEntity> {
+        val results = mutableListOf<MediaEntity>()
+        val unindexedPathsToScan = mutableListOf<String>()
+
+        val rootCandidates = LinkedHashSet<File>()
+        runCatching { Environment.getExternalStorageDirectory() }.getOrNull()?.let { rootCandidates.add(it) }
+
+        val standardDirNames = listOf(
+            Environment.DIRECTORY_MUSIC,
+            Environment.DIRECTORY_MOVIES,
+            Environment.DIRECTORY_DOWNLOADS,
+            Environment.DIRECTORY_DCIM,
+            Environment.DIRECTORY_PODCASTS,
+            Environment.DIRECTORY_RINGTONES,
+            Environment.DIRECTORY_NOTIFICATIONS,
+            Environment.DIRECTORY_ALARMS,
+            "Audiobooks",
+            "Recordings",
+            "WhatsApp",
+            "Telegram",
+            "Bluetooth",
+            "Movies",
+            "Music",
+            "Video",
+            "Videos",
+            "SnapTube",
+            "VidMate"
+        )
+        for (name in standardDirNames) {
+            runCatching { Environment.getExternalStoragePublicDirectory(name) }.getOrNull()?.let { dir ->
+                if (dir.exists() && dir.canRead()) {
+                    rootCandidates.add(dir)
+                }
+            }
+        }
+
+        // Also check secondary storage volumes under /storage if readable
+        runCatching {
+            File("/storage").listFiles()?.forEach { vol ->
+                if (vol.isDirectory && vol.canRead() && vol.name != "self" && vol.name != "emulated") {
+                    rootCandidates.add(vol)
+                }
+            }
+        }
+
+        val visitedDirs = HashSet<String>()
+        runCatching {
+            for (searchDir in rootCandidates) {
+                if (!searchDir.exists() || !searchDir.canRead()) continue
+                if (results.size >= 10_000) break
+
+                searchDir.walkTopDown()
+                    .onEnter { dir ->
+                        val canonical = runCatching { dir.canonicalPath }.getOrDefault(dir.absolutePath)
+                        if (!visitedDirs.add(canonical)) {
+                            false
+                        } else {
+                            dir.canRead() &&
+                                (!dir.name.startsWith(".") || dir.name == ".Statuses") &&
+                                !dir.absolutePath.contains("/Android/data") &&
+                                !dir.absolutePath.contains("/Android/obb")
+                        }
+                    }
+                    .maxDepth(8)
+                    .forEach { file ->
+                        if (results.size >= 10_000) return@forEach
+                        if (!file.isFile || file.length() <= 512L) return@forEach
+
+                        val absPath = file.absolutePath
+                        val canonPath = runCatching { file.canonicalPath }.getOrDefault(absPath)
+                        if (existingPaths.contains(absPath) || existingPaths.contains(canonPath)) return@forEach
+
+                        val ext = file.extension.lowercase()
+                        val isVideo = ext in VIDEO_EXTENSIONS
+                        val isAudio = !isVideo && ext in AUDIO_EXTENSIONS
+                        if (!isAudio && !isVideo) return@forEach
+
+                        existingPaths.add(absPath)
+                        existingPaths.add(canonPath)
+                        if (unindexedPathsToScan.size < 200) {
+                            unindexedPathsToScan.add(absPath)
+                        }
+
+                        val parentName = file.parentFile?.name?.takeIf { it.isNotBlank() && it != "0" }
+                            ?: if (isVideo) "Videos" else "Music"
+                        val mime = resolveMimeTypeForExtension(ext, isVideo)
+
+                        results.add(
+                            MediaEntity(
+                                uriString = Uri.fromFile(file).toString(),
+                                mediaStoreId = null,
+                                title = file.nameWithoutExtension.ifBlank { file.name },
+                                artist = parentName,
+                                album = parentName,
+                                folderName = parentName,
+                                durationMs = 0L,
+                                sizeBytes = file.length(),
+                                mimeType = mime,
+                                mediaType = if (isVideo) MediaType.VIDEO else MediaType.AUDIO,
+                                dateAddedEpochSec = file.lastModified() / 1000L,
+                                isAvailable = true,
+                                isGeneratedSample = false
+                            )
+                        )
+                    }
+            }
+        }
+
+        if (unindexedPathsToScan.isNotEmpty()) {
+            runCatching {
+                MediaScannerConnection.scanFile(
+                    context,
+                    unindexedPathsToScan.toTypedArray(),
+                    null,
+                    null
+                )
+            }
+        }
+
+        return results
     }
 
     /**

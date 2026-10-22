@@ -331,8 +331,10 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     var hasPromptedAllFilesOnLaunch by rememberSaveable { mutableStateOf(false) }
 
     val checkAnyMediaOrAllFilesGranted = {
-        val allFilesGranted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-            Environment.isExternalStorageManager()
+        val allFilesGranted = runCatching {
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                Environment.isExternalStorageManager()
+        }.getOrDefault(false)
         val mediaPerms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.READ_MEDIA_VIDEO)
         } else {
@@ -373,7 +375,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     ) { resultMap ->
         val anyGranted = resultMap.values.any { it } || checkAnyMediaOrAllFilesGranted()
         viewModel.onPermissionResult(granted = anyGranted, permanentlyDenied = !anyGranted)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+        if (!anyGranted &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
             !Environment.isExternalStorageManager() &&
             !hasPromptedAllFilesOnLaunch
         ) {
@@ -396,12 +399,22 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             )
         }
         permissionLauncher.launch(perms)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            !Environment.isExternalStorageManager() &&
+            checkAnyMediaOrAllFilesGranted()
+        ) {
             launchAllFilesAccessSettings()
         }
     }
 
-    // Directly request Notification, Media, and All Files Access permissions on launch if not yet granted
+    val triggerFullScanOrPermission = {
+        if (!checkAnyMediaOrAllFilesGranted()) {
+            requestMediaPermissions()
+        }
+        viewModel.refreshLibrary(showStatusFeedback = true)
+    }
+
+    // Request Notification and Media permissions on launch if not yet granted
     LaunchedEffect(Unit) {
         val requiredRuntimePerms = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             arrayOf(
@@ -415,22 +428,12 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 Manifest.permission.WRITE_EXTERNAL_STORAGE
             )
         }
-        val allRuntimeGranted = requiredRuntimePerms.all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-        }
         val mediaOrAllFilesGranted = checkAnyMediaOrAllFilesGranted()
         viewModel.onPermissionResult(granted = mediaOrAllFilesGranted)
 
-        if (!allRuntimeGranted && !hasPromptedPermissionOnLaunch) {
+        if (!mediaOrAllFilesGranted && !hasPromptedPermissionOnLaunch) {
             hasPromptedPermissionOnLaunch = true
             permissionLauncher.launch(requiredRuntimePerms)
-        } else if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-            !Environment.isExternalStorageManager() &&
-            !hasPromptedAllFilesOnLaunch
-        ) {
-            hasPromptedAllFilesOnLaunch = true
-            launchAllFilesAccessSettings()
         }
     }
 
@@ -779,7 +782,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                         safMediaLauncher.launch(arrayOf("audio/*", "video/*"))
                                     },
                                     onGenerateSamplesClick = {
-                                        viewModel.generateBuiltInSamplesExplicitly()
+                                        triggerFullScanOrPermission()
                                     },
                                     onNavigateToMusic = {
                                         viewModel.selectPrimaryTab(PrimaryTab.MUSIC)
@@ -794,6 +797,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onNavigateToFavorites = {
                                         viewModel.selectPrimaryTab(PrimaryTab.LIBRARY)
                                         viewModel.selectLibrarySubTab(LibrarySubTab.FAVORITES)
+                                    },
+                                    onNavigateToFolder = { folderName ->
+                                        viewModel.selectPrimaryTab(PrimaryTab.LIBRARY)
+                                        viewModel.selectLibrarySubTab(LibrarySubTab.FOLDERS)
+                                        viewModel.selectFolderFilter(folderName)
                                     },
                                     onPlayMedia = onPlayMediaCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
@@ -811,7 +819,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     favoriteUris = favoriteUris,
                                     currentlyPlayingUri = currentlyPlayingUri,
                                     emptyTitle = "No Videos Found",
-                                    emptySubtitle = "Open any MP4/MKV/WebM file via Storage Access Framework or generate the built-in 640x360 MP4 test reel.",
+                                    emptySubtitle = "Tap 'Scan' to index all device video folders or open any MP4/MKV/WebM file via SAF.",
                                     onPlayMedia = onPlayVideoCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
@@ -819,6 +827,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onPickSafFileClick = {
                                         safMediaLauncher.launch(arrayOf("video/*"))
                                     },
+                                    hasMediaPermission = hasMediaPermission,
+                                    onRequestPermissionClick = requestMediaPermissions,
+                                    onRescanClick = triggerFullScanOrPermission,
                                     searchQuery = searchQuery,
                                     onClearSearch = { viewModel.updateSearchQuery("") }
                                 )
@@ -832,7 +843,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     favoriteUris = favoriteUris,
                                     currentlyPlayingUri = currentlyPlayingUri,
                                     emptyTitle = "No Audio Tracks Found",
-                                    emptySubtitle = "Open any local audio file via SAF or use the built-in synthesized studio WAV & M4A tracks.",
+                                    emptySubtitle = "Tap 'Scan' to index all device audio folders or open any local audio file via SAF.",
                                     onPlayMedia = onPlayMediaCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
@@ -840,6 +851,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onPickSafFileClick = {
                                         safMediaLauncher.launch(arrayOf("audio/*"))
                                     },
+                                    hasMediaPermission = hasMediaPermission,
+                                    onRequestPermissionClick = requestMediaPermissions,
+                                    onRescanClick = triggerFullScanOrPermission,
                                     searchQuery = searchQuery,
                                     onClearSearch = { viewModel.updateSearchQuery("") }
                                 )
@@ -874,6 +888,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
                                     onOpenEqualizer = onOpenEqualizerCallback,
                                     onClearHistoryOnly = { viewModel.clearPlaybackHistoryOnly() },
+                                    hasMediaPermission = hasMediaPermission,
+                                    onRequestPermissionClick = requestMediaPermissions,
+                                    onRescanClick = triggerFullScanOrPermission,
                                     canPopSubTab = viewModel.canPopLibrarySubTab(),
                                     onPopSubTab = { viewModel.popLibrarySubTab() },
                                     searchQuery = searchQuery,

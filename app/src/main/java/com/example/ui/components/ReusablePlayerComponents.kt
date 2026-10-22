@@ -152,16 +152,6 @@ fun MediaItemCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                Spacer(modifier = Modifier.height(2.dp))
-
-                Text(
-                    text = "${media.artist} • ${media.folderName}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Row(

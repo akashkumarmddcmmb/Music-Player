@@ -231,6 +231,7 @@ fun HomeDashboardScreen(
     onNavigateToVideos: () -> Unit = {},
     onNavigateToPlaylists: () -> Unit = {},
     onNavigateToFavorites: () -> Unit = {},
+    onNavigateToFolder: (String?) -> Unit = {},
     onPlayMedia: (MediaEntity, List<MediaEntity>) -> Unit,
     onToggleFavorite: (MediaEntity) -> Unit,
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
@@ -277,6 +278,49 @@ fun HomeDashboardScreen(
                                 text = "Zero network calls • Zero tracking IDs • Disabled by default",
                                 style = MaterialTheme.typography.bodySmall
                             )
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!hasMediaPermission) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("home_permission_banner")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Scan All Phone Audio & Video Folders",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Allow storage access so all songs, videos, and folders on your device appear in Categories and Library.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Button(
+                            onClick = onRequestPermissionClick,
+                            modifier = Modifier.testTag("home_grant_permission_button")
+                        ) {
+                            Text("Allow & Scan")
                         }
                     }
                 }
@@ -338,7 +382,6 @@ fun HomeDashboardScreen(
                 }
             }
         }
-
 
         // Recently Played / Continue Listening Section
         if (recentHistory.isNotEmpty()) {
@@ -415,6 +458,12 @@ fun HomeDashboardScreen(
                     onClick = onGenerateSamplesClick,
                     modifier = Modifier.testTag("regenerate_samples_button")
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
                     Text("Refresh")
                 }
             }
@@ -424,9 +473,9 @@ fun HomeDashboardScreen(
             item {
                 EmptyLibraryPlaceholder(
                     title = "No Media Indexed Yet",
-                    subtitle = "Tap 'Verify Samples' to synthesize legal WAV/M4A/MP4 test media or open any local file via SAF.",
+                    subtitle = "Tap 'Scan & Refresh' to scan all audio and video folders on your phone or open a file via SAF.",
                     onActionClick = onGenerateSamplesClick,
-                    actionLabel = "Generate Legal Studio Samples"
+                    actionLabel = "Scan & Refresh Media"
                 )
             }
         } else {
@@ -498,6 +547,12 @@ private fun HomeCategoryTile(
     }
 }
 
+private enum class CatalogViewMode {
+    ALL,
+    FOLDERS,
+    FAVORITES
+}
+
 @Composable
 fun MediaCatalogScreen(
     title: String,
@@ -512,26 +567,43 @@ fun MediaCatalogScreen(
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
     onOpenStudioForMedia: (MediaEntity) -> Unit,
     onPickSafFileClick: () -> Unit,
+    hasMediaPermission: Boolean = true,
+    onRequestPermissionClick: () -> Unit = {},
+    onRescanClick: () -> Unit = {},
     searchQuery: String = "",
     onClearSearch: () -> Unit = {}
 ) {
-    var showFavoritesOnly by rememberSaveable { mutableStateOf(false) }
+    var viewMode by rememberSaveable { mutableStateOf(CatalogViewMode.ALL) }
+    var selectedFolderInCatalog by rememberSaveable { mutableStateOf<String?>(null) }
+
     val favCount = remember(mediaList, favoriteUris) {
         mediaList.count { favoriteUris.contains(it.uriString) }
     }
-    val displayedMedia = remember(mediaList, favoriteUris, showFavoritesOnly) {
-        if (showFavoritesOnly) {
-            mediaList.filter { favoriteUris.contains(it.uriString) }
-        } else {
-            mediaList
+    val groupedFolders = remember(mediaList) {
+        mediaList.groupBy { it.folderName.ifBlank { "Local Storage" } }
+    }
+    val displayedMedia = remember(mediaList, favoriteUris, viewMode, selectedFolderInCatalog) {
+        when (viewMode) {
+            CatalogViewMode.FAVORITES -> mediaList.filter { favoriteUris.contains(it.uriString) }
+            CatalogViewMode.FOLDERS -> {
+                if (selectedFolderInCatalog != null) {
+                    groupedFolders[selectedFolderInCatalog].orEmpty()
+                } else {
+                    mediaList
+                }
+            }
+            CatalogViewMode.ALL -> mediaList
         }
     }
 
     val hasSearch = searchQuery.isNotEmpty()
-    BackHandler(enabled = hasSearch || showFavoritesOnly) {
+    val hasFolderDetail = viewMode == CatalogViewMode.FOLDERS && selectedFolderInCatalog != null
+    val isNonDefaultMode = viewMode != CatalogViewMode.ALL
+    BackHandler(enabled = hasSearch || hasFolderDetail || isNonDefaultMode) {
         when {
             hasSearch -> onClearSearch()
-            showFavoritesOnly -> showFavoritesOnly = false
+            hasFolderDetail -> selectedFolderInCatalog = null
+            isNonDefaultMode -> viewMode = CatalogViewMode.ALL
         }
     }
 
@@ -543,67 +615,221 @@ fun MediaCatalogScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         item {
-            Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                TextButton(
+                    onClick = onRescanClick,
+                    modifier = Modifier.testTag("catalog_rescan_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Scan")
+                }
+            }
+        }
+
+        if (!hasMediaPermission) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Grant Storage Permission",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                text = "Scan all device folders to show every audio & video file here.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(onClick = onRequestPermissionClick) {
+                            Text("Allow")
+                        }
+                    }
+                }
             }
         }
 
         if (mediaList.isNotEmpty()) {
             item {
-                Row(
+                LazyRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    FilterChip(
-                        selected = !showFavoritesOnly,
-                        onClick = { showFavoritesOnly = false },
-                        label = { Text("All (${mediaList.size})") }
-                    )
-                    FilterChip(
-                        selected = showFavoritesOnly,
-                        onClick = { showFavoritesOnly = true },
-                        label = { Text("Favorites ($favCount)") },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Default.Favorite,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    )
+                    item {
+                        FilterChip(
+                            selected = viewMode == CatalogViewMode.ALL,
+                            onClick = {
+                                viewMode = CatalogViewMode.ALL
+                                selectedFolderInCatalog = null
+                            },
+                            label = { Text("All (${mediaList.size})") }
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = viewMode == CatalogViewMode.FOLDERS,
+                            onClick = {
+                                viewMode = CatalogViewMode.FOLDERS
+                                selectedFolderInCatalog = null
+                            },
+                            label = { Text("Folders (${groupedFolders.size})") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Folder,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = viewMode == CatalogViewMode.FAVORITES,
+                            onClick = {
+                                viewMode = CatalogViewMode.FAVORITES
+                                selectedFolderInCatalog = null
+                            },
+                            label = { Text("Favorites ($favCount)") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Favorite,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        )
+                    }
                 }
             }
         }
 
-        if (displayedMedia.isEmpty()) {
-            item {
-                EmptyLibraryPlaceholder(
-                    title = if (showFavoritesOnly) "No Favorites Found" else emptyTitle,
-                    subtitle = if (showFavoritesOnly) "Tap the heart icon on any file to bookmark it as favorite." else emptySubtitle,
-                    onActionClick = if (showFavoritesOnly) { { showFavoritesOnly = false } } else onPickSafFileClick,
-                    actionLabel = if (showFavoritesOnly) "View All Media" else "Open Local File (SAF)"
-                )
+        if (viewMode == CatalogViewMode.FOLDERS && selectedFolderInCatalog == null) {
+            if (groupedFolders.isEmpty()) {
+                item {
+                    EmptyLibraryPlaceholder(
+                        title = emptyTitle,
+                        subtitle = emptySubtitle,
+                        onActionClick = onPickSafFileClick,
+                        actionLabel = "Open Local File (SAF)"
+                    )
+                }
+            } else {
+                items(groupedFolders.entries.toList(), key = { it.key }) { (folderName, itemsInFolder) ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selectedFolderInCatalog = folderName }
+                            .testTag("catalog_folder_card_$folderName"),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(32.dp)
+                            )
+                            Spacer(modifier = Modifier.width(14.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = folderName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "${itemsInFolder.size} files",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
             }
         } else {
-            items(displayedMedia, key = { it.uriString }) { item ->
-                MediaItemCard(
-                    media = item,
-                    isCurrentlyPlaying = currentlyPlayingUri == item.uriString,
-                    isFavorite = favoriteUris.contains(item.uriString),
-                    onPlayClick = { onPlayMedia(item, displayedMedia) },
-                    onFavoriteToggle = { onToggleFavorite(item) },
-                    onAddToPlaylistClick = { onAddToPlaylistRequest(item) },
-                    onOpenInStudioClick = { onOpenStudioForMedia(item) }
-                )
+            if (viewMode == CatalogViewMode.FOLDERS && selectedFolderInCatalog != null) {
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Folder: $selectedFolderInCatalog (${displayedMedia.size})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        TextButton(onClick = { selectedFolderInCatalog = null }) {
+                            Text("All Folders")
+                        }
+                    }
+                }
+            }
+
+            if (displayedMedia.isEmpty()) {
+                item {
+                    EmptyLibraryPlaceholder(
+                        title = if (viewMode == CatalogViewMode.FAVORITES) "No Favorites Found" else emptyTitle,
+                        subtitle = if (viewMode == CatalogViewMode.FAVORITES) "Tap the heart icon on any file to bookmark it as favorite." else emptySubtitle,
+                        onActionClick = if (viewMode == CatalogViewMode.FAVORITES) { { viewMode = CatalogViewMode.ALL } } else onPickSafFileClick,
+                        actionLabel = if (viewMode == CatalogViewMode.FAVORITES) "View All Media" else "Open Local File (SAF)"
+                    )
+                }
+            } else {
+                items(displayedMedia, key = { it.uriString }) { item ->
+                    MediaItemCard(
+                        media = item,
+                        isCurrentlyPlaying = currentlyPlayingUri == item.uriString,
+                        isFavorite = favoriteUris.contains(item.uriString),
+                        onPlayClick = { onPlayMedia(item, displayedMedia) },
+                        onFavoriteToggle = { onToggleFavorite(item) },
+                        onAddToPlaylistClick = { onAddToPlaylistRequest(item) },
+                        onOpenInStudioClick = { onOpenStudioForMedia(item) }
+                    )
+                }
             }
         }
     }
@@ -642,6 +868,9 @@ fun LibraryAndFoldersScreen(
     onOpenStudioForMedia: (MediaEntity?) -> Unit,
     onOpenEqualizer: () -> Unit = {},
     onClearHistoryOnly: () -> Unit,
+    hasMediaPermission: Boolean = true,
+    onRequestPermissionClick: () -> Unit = {},
+    onRescanClick: () -> Unit = {},
     canPopSubTab: Boolean = false,
     onPopSubTab: () -> Unit = {},
     searchQuery: String = "",
@@ -651,6 +880,7 @@ fun LibraryAndFoldersScreen(
     var newPlaylistName by remember { mutableStateOf("") }
     var newPlaylistDesc by remember { mutableStateOf("") }
     var selectedFavoriteFilter by rememberSaveable { mutableStateOf(FavoriteTypeFilter.ALL) }
+    var selectedFolderMediaFilter by rememberSaveable { mutableStateOf(FavoriteTypeFilter.ALL) }
     val favoriteAudio = remember(favoriteMedia) {
         favoriteMedia.filter { it.mediaType == MediaType.AUDIO }
     }
@@ -662,6 +892,7 @@ fun LibraryAndFoldersScreen(
     val hasAlbumDetail = selectedAlbum != null
     val hasArtistDetail = selectedArtist != null
     val hasFolderDetail = selectedFolder != null
+    val hasFolderMediaFilter = selectedSubTab == LibrarySubTab.FOLDERS && selectedFolderMediaFilter != FavoriteTypeFilter.ALL
     val hasFavoriteFilter = selectedSubTab == LibrarySubTab.FAVORITES && selectedFavoriteFilter != FavoriteTypeFilter.ALL
     val hasSearch = searchQuery.isNotEmpty()
 
@@ -672,6 +903,7 @@ fun LibraryAndFoldersScreen(
             hasAlbumDetail ||
             hasArtistDetail ||
             hasFolderDetail ||
+            hasFolderMediaFilter ||
             hasFavoriteFilter ||
             canPopSubTab
     ) {
@@ -682,6 +914,7 @@ fun LibraryAndFoldersScreen(
             hasAlbumDetail -> onSelectAlbum(null)
             hasArtistDetail -> onSelectArtist(null)
             hasFolderDetail -> onSelectFolder(null)
+            hasFolderMediaFilter -> selectedFolderMediaFilter = FavoriteTypeFilter.ALL
             hasFavoriteFilter -> selectedFavoriteFilter = FavoriteTypeFilter.ALL
             canPopSubTab -> onPopSubTab()
         }
@@ -941,16 +1174,128 @@ fun LibraryAndFoldersScreen(
                 }
 
                 LibrarySubTab.FOLDERS -> {
-                    val groupedByFolder = allMedia.groupBy { it.folderName }
+                    val filteredForFolders = when (selectedFolderMediaFilter) {
+                        FavoriteTypeFilter.ALL -> allMedia
+                        FavoriteTypeFilter.AUDIO -> allMedia.filter { it.mediaType == MediaType.AUDIO }
+                        FavoriteTypeFilter.VIDEO -> allMedia.filter { it.mediaType == MediaType.VIDEO }
+                    }
+                    val groupedByFolder = filteredForFolders.groupBy { it.folderName.ifBlank { "Local Storage" } }
+                    val allFoldersCount = allMedia.groupBy { it.folderName.ifBlank { "Local Storage" } }.size
+                    val audioFoldersCount = allMedia.filter { it.mediaType == MediaType.AUDIO }
+                        .groupBy { it.folderName.ifBlank { "Local Storage" } }.size
+                    val videoFoldersCount = allMedia.filter { it.mediaType == MediaType.VIDEO }
+                        .groupBy { it.folderName.ifBlank { "Local Storage" } }.size
+
+                    if (!hasMediaPermission) {
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Allow Storage Access for All Folders",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                        Text(
+                                            text = "Grant permission to scan all audio and video folders on your device.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(onClick = onRequestPermissionClick) {
+                                        Text("Allow")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if (selectedFolder == null) {
                         item {
-                            Text(
-                                text = "Local Media Folders (${groupedByFolder.size})",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Bold
-                            )
+                            Column {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Local Media Folders (${groupedByFolder.size})",
+                                        style = MaterialTheme.typography.titleLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    TextButton(
+                                        onClick = onRescanClick,
+                                        modifier = Modifier.testTag("folders_rescan_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Scan")
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    FilterChip(
+                                        selected = selectedFolderMediaFilter == FavoriteTypeFilter.ALL,
+                                        onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.ALL },
+                                        label = { Text("All ($allFoldersCount)") }
+                                    )
+                                    FilterChip(
+                                        selected = selectedFolderMediaFilter == FavoriteTypeFilter.AUDIO,
+                                        onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.AUDIO },
+                                        label = { Text("Audio ($audioFoldersCount)") },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.LibraryMusic,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    )
+                                    FilterChip(
+                                        selected = selectedFolderMediaFilter == FavoriteTypeFilter.VIDEO,
+                                        onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.VIDEO },
+                                        label = { Text("Videos ($videoFoldersCount)") },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.Movie,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    )
+                                }
+                            }
                         }
                         items(groupedByFolder.entries.toList(), key = { it.key }) { (folderName, itemsInFolder) ->
+                            val audioCount = itemsInFolder.count { it.mediaType == MediaType.AUDIO }
+                            val videoCount = itemsInFolder.count { it.mediaType == MediaType.VIDEO }
+                            val breakdownText = buildList {
+                                if (audioCount > 0) add("$audioCount audio")
+                                if (videoCount > 0) add("$videoCount video")
+                                add("${itemsInFolder.size} media items")
+                            }.joinToString(" • ")
+
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -978,7 +1323,7 @@ fun LibraryAndFoldersScreen(
                                             fontWeight = FontWeight.Bold
                                         )
                                         Text(
-                                            text = "${itemsInFolder.size} media items",
+                                            text = breakdownText,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -995,7 +1340,7 @@ fun LibraryAndFoldersScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "Folder: $selectedFolder",
+                                    text = "Folder: $selectedFolder (${folderItems.size})",
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold
                                 )

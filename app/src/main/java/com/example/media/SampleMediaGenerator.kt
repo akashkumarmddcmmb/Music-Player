@@ -153,8 +153,11 @@ class SampleMediaGenerator(private val context: Context) {
             )
         }
 
-        if (!mp4File.exists() || mp4File.length() < 1024L) {
+        if (!mp4File.exists() || mp4File.length() < 1024L || !hasValidAvcConfig(mp4File)) {
             runCatching {
+                if (mp4File.exists()) {
+                    mp4File.delete()
+                }
                 generateMp4VideoWithAudio(
                     outputFile = mp4File,
                     width = 640,
@@ -195,6 +198,28 @@ class SampleMediaGenerator(private val context: Context) {
             File(sampleDir, "Pulse_Cinema_Test_Reel.srt"),
             File(sampleDir, "Pulse_Cinema_Test_Reel.vtt")
         ).filter { it.exists() }
+    }
+
+    /**
+     * Verifies that an existing MP4 file on disk has an `avcC` box whose first SPS NAL unit
+     * is at least 8 bytes long (preventing Media3 `AvcConfig.parse` ParserException on legacy 4-byte headers).
+     */
+    fun hasValidAvcConfig(mp4File: File): Boolean {
+        if (!mp4File.exists() || mp4File.length() < 512L) return false
+        return runCatching {
+            val bytes = mp4File.readBytes()
+            for (i in 0..(bytes.size - 16)) {
+                if (bytes[i] == 'a'.code.toByte() &&
+                    bytes[i + 1] == 'v'.code.toByte() &&
+                    bytes[i + 2] == 'c'.code.toByte() &&
+                    bytes[i + 3] == 'C'.code.toByte()
+                ) {
+                    val spsLen = ((bytes[i + 10].toInt() and 0xFF) shl 8) or (bytes[i + 11].toInt() and 0xFF)
+                    return spsLen >= 8
+                }
+            }
+            false
+        }.getOrDefault(false)
     }
 
     fun generateStereoWavFile(
@@ -480,6 +505,7 @@ class SampleMediaGenerator(private val context: Context) {
                 val outIdx = videoEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        muxer.updateTrackFormat(videoTrackIndex, videoEncoder.outputFormat)
                         emptyPolls = 0
                     }
                     outIdx >= 0 -> {
@@ -487,18 +513,24 @@ class SampleMediaGenerator(private val context: Context) {
                         val outBuf = videoEncoder.getOutputBuffer(outIdx)
                         val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                         val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                        if (outBuf != null && bufferInfo.size > 0 && !isCodecConfig) {
-                            val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
-                            val safePtsUs = if (rawPtsUs <= lastVideoPtsUs) lastVideoPtsUs + 100L else rawPtsUs
-                            lastVideoPtsUs = safePtsUs
+                        if (outBuf != null && bufferInfo.size > 0) {
+                            if (isCodecConfig) {
+                                outBuf.position(bufferInfo.offset)
+                                outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                                muxer.writeSampleData(videoTrackIndex, outBuf, bufferInfo)
+                            } else {
+                                val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
+                                val safePtsUs = if (rawPtsUs <= lastVideoPtsUs) lastVideoPtsUs + 100L else rawPtsUs
+                                lastVideoPtsUs = safePtsUs
 
-                            val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
-                            muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
+                                val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
+                                muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
 
-                            outBuf.position(bufferInfo.offset)
-                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                            muxer.writeSampleData(videoTrackIndex, outBuf, muxBufferInfo)
-                            samplesWritten++
+                                outBuf.position(bufferInfo.offset)
+                                outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                                muxer.writeSampleData(videoTrackIndex, outBuf, muxBufferInfo)
+                                samplesWritten++
+                            }
                         }
                         videoEncoder.releaseOutputBuffer(outIdx, false)
                         if (isEos) {
@@ -554,6 +586,7 @@ class SampleMediaGenerator(private val context: Context) {
                 val outIdx = audioEncoder.dequeueOutputBuffer(bufferInfo, 10_000)
                 when {
                     outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        muxer.updateTrackFormat(audioTrackIndex, audioEncoder.outputFormat)
                         audioEmptyPolls = 0
                     }
                     outIdx >= 0 -> {
@@ -561,18 +594,24 @@ class SampleMediaGenerator(private val context: Context) {
                         val outBuf = audioEncoder.getOutputBuffer(outIdx)
                         val isCodecConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                         val isEos = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
-                        if (outBuf != null && bufferInfo.size > 0 && !isCodecConfig) {
-                            val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
-                            val safePtsUs = if (rawPtsUs <= lastAudioPtsUs) lastAudioPtsUs + 100L else rawPtsUs
-                            lastAudioPtsUs = safePtsUs
+                        if (outBuf != null && bufferInfo.size > 0) {
+                            if (isCodecConfig) {
+                                outBuf.position(bufferInfo.offset)
+                                outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                                muxer.writeSampleData(audioTrackIndex, outBuf, bufferInfo)
+                            } else {
+                                val rawPtsUs = bufferInfo.presentationTimeUs.coerceAtLeast(0L)
+                                val safePtsUs = if (rawPtsUs <= lastAudioPtsUs) lastAudioPtsUs + 100L else rawPtsUs
+                                lastAudioPtsUs = safePtsUs
 
-                            val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
-                            muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
+                                val safeFlags = bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME
+                                muxBufferInfo.set(bufferInfo.offset, bufferInfo.size, safePtsUs, safeFlags)
 
-                            outBuf.position(bufferInfo.offset)
-                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                            muxer.writeSampleData(audioTrackIndex, outBuf, muxBufferInfo)
-                            samplesWritten++
+                                outBuf.position(bufferInfo.offset)
+                                outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                                muxer.writeSampleData(audioTrackIndex, outBuf, muxBufferInfo)
+                                samplesWritten++
+                            }
                         }
                         audioEncoder.releaseOutputBuffer(outIdx, false)
                         if (isEos) {

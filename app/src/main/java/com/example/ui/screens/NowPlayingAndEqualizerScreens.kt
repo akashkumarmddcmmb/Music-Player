@@ -33,6 +33,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GraphicEq
@@ -55,6 +57,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
+import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.ScreenLockLandscape
 import androidx.compose.material.icons.filled.ScreenLockPortrait
 import androidx.compose.material.icons.filled.ScreenRotation
@@ -64,6 +67,7 @@ import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.SubtitlesOff
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -78,11 +82,13 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -119,6 +125,7 @@ import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.HardwareEqualizerState
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.ui.components.formatDurationMillis
+import com.example.ui.components.formatFileSize
 import com.example.viewmodel.PlaybackUiState
 import com.example.viewmodel.RepeatModeState
 import com.example.viewmodel.VideoAspectMode
@@ -126,6 +133,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlinx.coroutines.delay
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -211,28 +219,36 @@ fun NowPlayingOverlayScreen(
 
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isLandscapeViewport = maxWidth > maxHeight
-            val isImmersiveVideoCanvas = currentMedia.mediaType == MediaType.VIDEO &&
-                (playbackState.isFullscreenVideo || isLandscapeViewport)
+            val isImmersiveVideoCanvas = currentMedia.mediaType == MediaType.VIDEO
 
             if (isImmersiveVideoCanvas) {
-                // Fullscreen / Landscape Cinema Mode: Video fills screen with proper aspect ratio & frame rotation,
-                // while controls and subtitles remain unrotated and properly aligned.
+                // Unified Cinema Video Player (Portrait & Landscape): Full black canvas, 5-button transport
+                // with -10s / +10s & Neon Green Play/Pause, Neon Green seekbar, and 1-tap bottom pills.
                 ImmersiveVideoCinemaLayout(
                     currentMedia = currentMedia,
                     playbackState = playbackState,
                     userPreferences = userPreferences,
                     isFavorite = isFavorite,
+                    isLandscapeViewport = isLandscapeViewport,
                     playerInstance = playerInstance,
                     shouldKeepVideoAwake = shouldKeepVideoAwake,
                     controlsVisible = fullscreenControlsVisible,
                     showVideoSettings = showVideoSettingsSheet,
                     showSubtitleSettings = showSubtitleSettings,
                     onToggleControlsVisible = { fullscreenControlsVisible = !fullscreenControlsVisible },
-                    onToggleVideoSettings = { showVideoSettingsSheet = !showVideoSettingsSheet },
-                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                    onSetControlsVisible = { fullscreenControlsVisible = it },
+                    onToggleVideoSettings = {
+                        showSubtitleSettings = false
+                        showVideoSettingsSheet = !showVideoSettingsSheet
+                    },
+                    onToggleSubtitleSettings = {
+                        showVideoSettingsSheet = false
+                        showSubtitleSettings = !showSubtitleSettings
+                    },
                     onCollapse = {
-                        if (playbackState.isFullscreenVideo) {
+                        if (playbackState.isFullscreenVideo || isLandscapeViewport) {
                             onToggleFullscreen(false)
+                            onSelectVideoOrientation(VideoOrientationPreference.PORTRAIT)
                         } else {
                             onCollapse()
                         }
@@ -241,6 +257,7 @@ fun NowPlayingOverlayScreen(
                     onSeekTo = onSeekTo,
                     onPrevious = onPrevious,
                     onNext = onNext,
+                    onCycleRepeat = onCycleRepeat,
                     onSetPlaybackSpeed = onSetPlaybackSpeed,
                     onCycleAspectMode = onCycleAspectMode,
                     onRotateVideo90 = onRotateVideo90,
@@ -958,6 +975,7 @@ private fun PortraitVideoSurfaceSection(
                             keepScreenOn = shouldKeepVideoAwake
                             resizeMode = when (playbackState.videoAspectMode) {
                                 VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
                                 else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                             }
                         }
@@ -969,6 +987,7 @@ private fun PortraitVideoSurfaceSection(
                         view.keepScreenOn = shouldKeepVideoAwake
                         view.resizeMode = when (playbackState.videoAspectMode) {
                             VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
                             else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                         }
                     },
@@ -1179,19 +1198,26 @@ private fun PortraitVideoSurfaceSection(
     }
 }
 
+private val CinemaNeonGreen = Color(0xFF00E676)
+private val CinemaPillBackground = Color(0xFF1A1D24).copy(alpha = 0.86f)
+private val CinemaPillBorder = Color.White.copy(alpha = 0.14f)
+
 @OptIn(UnstableApi::class)
+@kotlin.OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ImmersiveVideoCinemaLayout(
     currentMedia: MediaEntity,
     playbackState: PlaybackUiState,
     userPreferences: UserPreferencesState,
     isFavorite: Boolean,
+    isLandscapeViewport: Boolean,
     playerInstance: Player?,
     shouldKeepVideoAwake: Boolean,
     controlsVisible: Boolean,
     showVideoSettings: Boolean,
     showSubtitleSettings: Boolean,
     onToggleControlsVisible: () -> Unit,
+    onSetControlsVisible: (Boolean) -> Unit,
     onToggleVideoSettings: () -> Unit,
     onToggleSubtitleSettings: () -> Unit,
     onCollapse: () -> Unit,
@@ -1199,6 +1225,7 @@ private fun ImmersiveVideoCinemaLayout(
     onSeekTo: (Long) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
+    onCycleRepeat: () -> Unit,
     onSetPlaybackSpeed: (Float) -> Unit,
     onCycleAspectMode: () -> Unit,
     onRotateVideo90: () -> Unit,
@@ -1220,6 +1247,38 @@ private fun ImmersiveVideoCinemaLayout(
 ) {
     var containerWidthPx by remember { mutableIntStateOf(1280) }
     var containerHeightPx by remember { mutableIntStateOf(720) }
+    var activeAudioTrackLabel by remember { mutableStateOf("Original HD Audio") }
+    var showAudioTrackSheet by remember { mutableStateOf(false) }
+    var gestureFeedbackBanner by remember { mutableStateOf<String?>(null) }
+
+    // Auto-hide HUD overlay after 3.8s while video is actively playing and no settings sheet is open
+    LaunchedEffect(
+        controlsVisible,
+        playbackState.isPlaying,
+        showVideoSettings,
+        showSubtitleSettings,
+        showAudioTrackSheet,
+        playbackState.isVideoControlsLocked
+    ) {
+        if (controlsVisible &&
+            playbackState.isPlaying &&
+            !showVideoSettings &&
+            !showSubtitleSettings &&
+            !showAudioTrackSheet &&
+            !playbackState.isVideoControlsLocked
+        ) {
+            delay(3800L)
+            onSetControlsVisible(false)
+        }
+    }
+
+    // Auto-dismiss gesture feedback badge
+    LaunchedEffect(gestureFeedbackBanner) {
+        if (gestureFeedbackBanner != null) {
+            delay(1100L)
+            gestureFeedbackBanner = null
+        }
+    }
 
     val frameTransform = remember(playbackState.videoRotationDegrees, containerWidthPx, containerHeightPx) {
         PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(
@@ -1227,6 +1286,51 @@ private fun ImmersiveVideoCinemaLayout(
             containerWidthPx = containerWidthPx,
             containerHeightPx = containerHeightPx
         )
+    }
+
+    val isCurrentlyLandscapeMode = isLandscapeViewport ||
+        userPreferences.videoOrientationPreference == VideoOrientationPreference.LANDSCAPE ||
+        playbackState.isFullscreenVideo
+
+    val toggleLandscapePortraitQuick: () -> Unit = {
+        if (isCurrentlyLandscapeMode) {
+            onSelectVideoOrientation(VideoOrientationPreference.PORTRAIT)
+            onToggleFullscreen(false)
+        } else {
+            onSelectVideoOrientation(VideoOrientationPreference.LANDSCAPE)
+            onToggleFullscreen(true)
+        }
+    }
+
+    val seekRelativeMs: (Long) -> Unit = { deltaMs ->
+        val duration = playbackState.durationMs.coerceAtLeast(1L)
+        val target = (playbackState.currentPositionMs + deltaMs).coerceIn(0L, duration)
+        onSeekTo(target)
+        gestureFeedbackBanner = if (deltaMs > 0) "+10s Forward" else "-10s Rewind"
+    }
+
+    val cycleSpeedQuick: () -> Unit = {
+        val speeds = listOf(1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f)
+        val currentIdx = speeds.indexOfFirst { abs(it - playbackState.playbackSpeed) < 0.04f }
+        val nextSpeed = speeds[(currentIdx + 1) % speeds.size]
+        onSetPlaybackSpeed(nextSpeed)
+        gestureFeedbackBanner = "Speed ${nextSpeed}x"
+    }
+
+    val resolutionTag = remember(currentMedia.sizeBytes, currentMedia.mimeType) {
+        when {
+            currentMedia.sizeBytes >= 25_000_000L -> "FHD 1080p"
+            currentMedia.sizeBytes >= 8_000_000L -> "HD 720p"
+            else -> "HD Video"
+        }
+    }
+    val subtitleMetaText = remember(currentMedia.sizeBytes, resolutionTag) {
+        val formattedSize = if (currentMedia.sizeBytes > 0L) {
+            formatFileSize(currentMedia.sizeBytes)
+        } else {
+            currentMedia.artist
+        }
+        "$resolutionTag • $formattedSize"
     }
 
     Box(
@@ -1237,12 +1341,22 @@ private fun ImmersiveVideoCinemaLayout(
                 containerWidthPx = sz.width.coerceAtLeast(1)
                 containerHeightPx = sz.height.coerceAtLeast(1)
             }
-            .pointerInput(userPreferences.videoGestureControlsEnabled, playbackState.isVideoControlsLocked) {
+            .pointerInput(
+                userPreferences.videoGestureControlsEnabled,
+                playbackState.isVideoControlsLocked,
+                playbackState.currentPositionMs,
+                playbackState.durationMs
+            ) {
                 detectTapGestures(
                     onTap = { onToggleControlsVisible() },
-                    onDoubleTap = {
+                    onDoubleTap = { tapOffset ->
                         if (!playbackState.isVideoControlsLocked) {
-                            onPlayPause()
+                            val widthPx = size.width.coerceAtLeast(1)
+                            when {
+                                tapOffset.x < widthPx * 0.35f -> seekRelativeMs(-10_000L)
+                                tapOffset.x > widthPx * 0.65f -> seekRelativeMs(10_000L)
+                                else -> onPlayPause()
+                            }
                         }
                     }
                 )
@@ -1254,51 +1368,72 @@ private fun ImmersiveVideoCinemaLayout(
                         val delta = -dragAmount / 500f
                         if (change.position.x < widthPx / 2f) {
                             onBrightnessGestureDelta(delta)
+                            val pct = ((playbackState.brightnessGestureLevel + delta).coerceIn(0.1f, 1f) * 100).roundToInt()
+                            gestureFeedbackBanner = "Brightness $pct%"
                         } else {
                             onVolumeGestureDelta(delta)
+                            val pct = ((playbackState.volumeGestureLevel + delta).coerceIn(0f, 1f) * 100).roundToInt()
+                            gestureFeedbackBanner = "Volume $pct%"
                         }
                     }
                 }
             }
             .testTag("video_surface_container")
     ) {
-        if (playerInstance != null) {
-            AndroidView(
-                factory = { ctx ->
-                    PlayerView(ctx).apply {
-                        useController = false
-                        player = playerInstance
-                        keepScreenOn = shouldKeepVideoAwake
-                        resizeMode = when (playbackState.videoAspectMode) {
+        // Video Surface Container centered on pure black cinema canvas
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center
+        ) {
+            val videoModifier = when (playbackState.videoAspectMode) {
+                VideoAspectMode.SIXTEEN_NINE -> Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(16f / 9f)
+                VideoAspectMode.FOUR_THREE -> Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(4f / 3f)
+                else -> Modifier.fillMaxSize()
+            }
+
+            if (playerInstance != null) {
+                AndroidView(
+                    factory = { ctx ->
+                        PlayerView(ctx).apply {
+                            useController = false
+                            player = playerInstance
+                            keepScreenOn = shouldKeepVideoAwake
+                            resizeMode = when (playbackState.videoAspectMode) {
+                                VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            }
+                        }
+                    },
+                    update = { view ->
+                        if (view.player !== playerInstance) {
+                            view.player = playerInstance
+                        }
+                        view.keepScreenOn = shouldKeepVideoAwake
+                        view.resizeMode = when (playbackState.videoAspectMode) {
                             VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                            VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
                             else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                         }
-                    }
-                },
-                update = { view ->
-                    if (view.player !== playerInstance) {
-                        view.player = playerInstance
-                    }
-                    view.keepScreenOn = shouldKeepVideoAwake
-                    view.resizeMode = when (playbackState.videoAspectMode) {
-                        VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                        else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    }
-                },
-                onReset = { view ->
-                    view.player = null
-                },
-                onRelease = { view ->
-                    view.player = null
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        rotationZ = frameTransform.rotationDegrees.toFloat()
-                        scaleX = frameTransform.scaleX
-                        scaleY = frameTransform.scaleY
-                    }
-            )
+                    },
+                    onReset = { view ->
+                        view.player = null
+                    },
+                    onRelease = { view ->
+                        view.player = null
+                    },
+                    modifier = videoModifier
+                        .graphicsLayer {
+                            rotationZ = frameTransform.rotationDegrees.toFloat()
+                            scaleX = frameTransform.scaleX
+                            scaleY = frameTransform.scaleY
+                        }
+                )
+            }
         }
 
         // Brightness gesture overlay
@@ -1311,6 +1446,28 @@ private fun ImmersiveVideoCinemaLayout(
             )
         }
 
+        // Transient gesture feedback badge (Speed / Seek / Brightness / Volume / Aspect)
+        AnimatedVisibility(
+            visible = gestureFeedbackBanner != null,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 78.dp)
+        ) {
+            Surface(
+                color = CinemaPillBackground,
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.border(1.dp, CinemaNeonGreen.copy(alpha = 0.6f), RoundedCornerShape(50))
+            ) {
+                Text(
+                    text = gestureFeedbackBanner.orEmpty(),
+                    color = CinemaNeonGreen,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+        }
+
         // Subtitle overlay (always upright and centered near bottom)
         if (userPreferences.subtitlesEnabledByDefault && !playbackState.activeSubtitleText.isNullOrBlank()) {
             Surface(
@@ -1318,7 +1475,7 @@ private fun ImmersiveVideoCinemaLayout(
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = if (controlsVisible) 110.dp else 24.dp, start = 24.dp, end = 24.dp)
+                    .padding(bottom = if (controlsVisible) 136.dp else 28.dp, start = 24.dp, end = 24.dp)
                     .testTag("active_subtitle_overlay")
             ) {
                 Text(
@@ -1338,7 +1495,7 @@ private fun ImmersiveVideoCinemaLayout(
                 visible = controlsVisible,
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .padding(top = 20.dp)
+                    .padding(top = 24.dp)
             ) {
                 Button(
                     onClick = { onToggleControlsLock(false) },
@@ -1352,7 +1509,7 @@ private fun ImmersiveVideoCinemaLayout(
             return@Box
         }
 
-        // Fullscreen / Landscape Translucent HUD Overlay
+        // Fullscreen / Portrait Cinema Translucent HUD Overlay (matches reference screen recording)
         AnimatedVisibility(
             visible = controlsVisible,
             modifier = Modifier.fillMaxSize()
@@ -1363,15 +1520,19 @@ private fun ImmersiveVideoCinemaLayout(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                Color.Black.copy(alpha = 0.75f),
-                                Color.Transparent,
-                                Color.Black.copy(alpha = 0.85f)
+                                Color.Black.copy(alpha = 0.80f),
+                                Color.Black.copy(alpha = 0.18f),
+                                Color.Black.copy(alpha = 0.18f),
+                                Color.Black.copy(alpha = 0.88f)
                             )
                         )
                     )
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(
+                        horizontal = if (isLandscapeViewport) 22.dp else 14.dp,
+                        vertical = if (isLandscapeViewport) 14.dp else 18.dp
+                    )
             ) {
-                // Top Bar
+                // 1. TOP BAR: Back Arrow, Video Title + "FHD 1080p • 39.7 MB" subtitle, Lock, CC, Equalizer, 1-Tap Rotate
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1379,7 +1540,10 @@ private fun ImmersiveVideoCinemaLayout(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         IconButton(
                             onClick = onCollapse,
                             modifier = Modifier
@@ -1387,12 +1551,16 @@ private fun ImmersiveVideoCinemaLayout(
                                 .testTag("collapse_now_playing_button")
                         ) {
                             Icon(
-                                imageVector = Icons.Default.KeyboardArrowDown,
-                                contentDescription = "Collapse or exit fullscreen",
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
                                 tint = Color.White
                             )
                         }
-                        Column {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 8.dp)
+                        ) {
                             Text(
                                 text = currentMedia.title,
                                 style = MaterialTheme.typography.titleMedium,
@@ -1402,94 +1570,164 @@ private fun ImmersiveVideoCinemaLayout(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                text = "${currentMedia.artist} • ${userPreferences.videoOrientationPreference.label}",
+                                text = subtitleMetaText,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = Color.White.copy(alpha = 0.8f)
+                                color = Color.White.copy(alpha = 0.76f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = onToggleFavorite) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Lock Controls Icon
+                        IconButton(
+                            onClick = { onToggleControlsLock(true) },
+                            modifier = Modifier.testTag("video_lock_chip")
+                        ) {
                             Icon(
-                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                contentDescription = "Favorite",
-                                tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else Color.White
+                                imageVector = Icons.Default.LockOpen,
+                                contentDescription = "Lock Controls",
+                                tint = Color.White
                             )
                         }
+                        // Subtitles / CC Icon
+                        IconButton(
+                            onClick = onToggleSubtitleSettings,
+                            modifier = Modifier.testTag("video_subtitles_chip")
+                        ) {
+                            Icon(
+                                imageVector = if (userPreferences.subtitlesEnabledByDefault) {
+                                    Icons.Default.ClosedCaption
+                                } else {
+                                    Icons.Default.SubtitlesOff
+                                },
+                                contentDescription = "Subtitles",
+                                tint = if (playbackState.loadedSubtitleFormat != null) CinemaNeonGreen else Color.White
+                            )
+                        }
+                        // Equalizer / Audio Icon
                         IconButton(
                             onClick = onOpenEqualizer,
                             modifier = Modifier.testTag("now_playing_eq_button")
                         ) {
-                            Icon(Icons.Default.Equalizer, contentDescription = "Equalizer", tint = Color.White)
+                            Icon(
+                                imageVector = Icons.Default.Equalizer,
+                                contentDescription = "Equalizer",
+                                tint = Color.White
+                            )
                         }
+                        // 1-Tap Landscape/Portrait Screen Rotation Icon (top-right phone rotation icon from video)
                         IconButton(
-                            onClick = onOpenStudio,
-                            modifier = Modifier.testTag("now_playing_studio_button")
+                            onClick = toggleLandscapePortraitQuick,
+                            modifier = Modifier.testTag("video_fullscreen_chip")
                         ) {
-                            Icon(Icons.Default.ContentCut, contentDescription = "Media Editor", tint = Color.White)
-                        }
-                        IconButton(
-                            onClick = onToggleVideoSettings,
-                            modifier = Modifier.testTag("now_playing_video_settings_button")
-                        ) {
-                            Icon(Icons.Default.Settings, contentDescription = "Video Settings", tint = Color.White)
+                            Icon(
+                                imageVector = Icons.Default.ScreenRotation,
+                                contentDescription = "Toggle Landscape / Portrait",
+                                tint = if (isCurrentlyLandscapeMode) CinemaNeonGreen else Color.White
+                            )
                         }
                     }
                 }
 
-                // Center Transport Controls
+                // 2. CENTER 5-BUTTON TRANSPORT OVERLAY: Previous | -10s Replay | Neon Green Play/Pause | +10s Forward | Next
                 Row(
                     modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (isLandscapeViewport) 24.dp else 14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // Previous Video
                     IconButton(
                         onClick = onPrevious,
                         modifier = Modifier
-                            .size(56.dp)
-                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                            .size(48.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
                             .testTag("transport_previous_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.SkipPrevious,
                             contentDescription = "Previous",
                             tint = Color.White,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                     }
 
-                    FilledIconButton(
-                        onClick = onPlayPause,
+                    // Rewind 10 Seconds (↺10)
+                    IconButton(
+                        onClick = { seekRelativeMs(-10_000L) },
                         modifier = Modifier
-                            .size(72.dp)
-                            .testTag("transport_play_pause_button"),
-                        shape = CircleShape
+                            .size(54.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+                            .testTag("transport_rewind_10_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Replay10,
+                            contentDescription = "Rewind 10 seconds",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    // Vibrant Neon Green Play / Pause Circle (68.dp)
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(68.dp)
+                            .clip(CircleShape)
+                            .background(CinemaNeonGreen, CircleShape)
+                            .clickable(onClick = onPlayPause)
+                            .testTag("transport_play_pause_button")
                     ) {
                         Icon(
                             imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
-                            modifier = Modifier.size(38.dp)
+                            tint = Color(0xFF06150D),
+                            modifier = Modifier.size(36.dp)
                         )
                     }
 
+                    // Fast-Forward 10 Seconds (↻10)
+                    IconButton(
+                        onClick = { seekRelativeMs(10_000L) },
+                        modifier = Modifier
+                            .size(54.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
+                            .testTag("transport_forward_10_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Forward10,
+                            contentDescription = "Forward 10 seconds",
+                            tint = Color.White,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+
+                    // Next Video
                     IconButton(
                         onClick = onNext,
                         modifier = Modifier
-                            .size(56.dp)
-                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                            .size(48.dp)
+                            .background(Color.Black.copy(alpha = 0.55f), CircleShape)
+                            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
                             .testTag("transport_next_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.SkipNext,
                             contentDescription = "Next",
                             tint = Color.White,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(26.dp)
                         )
                     }
                 }
 
-                // Bottom Bar: Seekbar + Orientation/Rotate/Subtitles/Fullscreen Chips
+                // 3. BOTTOM BAR: Timestamps -> Neon Green Seekbar -> Dark Translucent Pill Action Bar
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1520,147 +1758,321 @@ private fun ImmersiveVideoCinemaLayout(
 
                     val duration = playbackState.durationMs.coerceAtLeast(1L)
                     val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
-                    Slider(
-                        value = pos.toFloat(),
-                        onValueChange = { onSeekTo(it.toLong()) },
-                        valueRange = 0f..duration.toFloat(),
+
+                    // Timestamps directly above SeekBar (00:08 on left, 06:31 on right)
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .testTag("now_playing_seek_slider")
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                            .padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             text = formatDurationMillis(pos),
                             style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
                             color = Color.White
                         )
                         Text(
                             text = formatDurationMillis(duration),
                             style = MaterialTheme.typography.labelMedium,
-                            color = Color.White.copy(alpha = 0.8f)
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White.copy(alpha = 0.85f)
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    // Neon Green SeekBar with vertical green thumb bar
+                    Slider(
+                        value = pos.toFloat(),
+                        onValueChange = { onSeekTo(it.toLong()) },
+                        valueRange = 0f..duration.toFloat(),
+                        colors = SliderDefaults.colors(
+                            thumbColor = CinemaNeonGreen,
+                            activeTrackColor = CinemaNeonGreen,
+                            inactiveTrackColor = Color.White.copy(alpha = 0.28f)
+                        ),
+                        thumb = {
+                            Box(
+                                modifier = Modifier
+                                    .width(6.dp)
+                                    .height(20.dp)
+                                    .background(CinemaNeonGreen, RoundedCornerShape(3.dp))
+                            )
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(28.dp)
+                            .testTag("now_playing_seek_slider")
+                    )
 
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Bottom Dark Translucent Pill Action Bar (matches video recording pills)
                     LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Pill 1: Playback Speed (1.0x -> 1.25x -> 1.5x -> 2.0x -> 0.5x -> 0.75x)
                         item {
-                            AssistChip(
-                                onClick = { onToggleFullscreen(!playbackState.isFullscreenVideo) },
-                                label = {
-                                    Text(
-                                        if (playbackState.isFullscreenVideo) "Exit Fullscreen" else "Fullscreen",
-                                        color = Color.White
-                                    )
-                                },
+                            CinemaActionPill(
+                                label = "${playbackState.playbackSpeed}x",
+                                isHighlighted = abs(playbackState.playbackSpeed - 1.0f) > 0.04f,
+                                onClick = cycleSpeedQuick,
                                 leadingIcon = {
                                     Icon(
-                                        if (playbackState.isFullscreenVideo) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                        imageVector = Icons.Default.Speed,
                                         contentDescription = null,
                                         tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 },
-                                modifier = Modifier.testTag("video_fullscreen_chip")
+                                modifier = Modifier.testTag("video_speed_pill")
                             )
                         }
+
+                        // Pill 2: Aspect Ratio (Fit Screen -> Fill (Zoom) -> Original -> 16:9 -> 4:3)
                         item {
-                            AssistChip(
+                            CinemaActionPill(
+                                label = playbackState.videoAspectMode.label,
+                                isHighlighted = playbackState.videoAspectMode != VideoAspectMode.FIT,
                                 onClick = {
-                                    val nextPref = when (userPreferences.videoOrientationPreference) {
-                                        VideoOrientationPreference.AUTO -> VideoOrientationPreference.LANDSCAPE
-                                        VideoOrientationPreference.LANDSCAPE -> VideoOrientationPreference.PORTRAIT
-                                        VideoOrientationPreference.PORTRAIT -> VideoOrientationPreference.AUTO
-                                    }
-                                    onSelectVideoOrientation(nextPref)
+                                    onCycleAspectMode()
                                 },
-                                label = { Text(userPreferences.videoOrientationPreference.label, color = Color.White) },
                                 leadingIcon = {
                                     Icon(
-                                        Icons.Default.ScreenRotation,
+                                        imageVector = Icons.Default.AspectRatio,
                                         contentDescription = null,
                                         tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                modifier = Modifier.testTag("video_orientation_mode_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = onRotateVideo90,
-                                label = { Text("Rotate (${playbackState.videoRotationDegrees}°)", color = Color.White) },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.ScreenRotation,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                },
-                                modifier = Modifier.testTag("video_rotate_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = onCycleAspectMode,
-                                label = { Text(playbackState.videoAspectMode.label, color = Color.White) },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.AspectRatio,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 },
                                 modifier = Modifier.testTag("video_aspect_ratio_chip")
                             )
                         }
+
+                        // Pill 3: Audio Track / Sound Mode (♪ Original HD Audio)
                         item {
-                            AssistChip(
-                                onClick = onToggleSubtitleSettings,
-                                label = {
-                                    Text(
-                                        playbackState.loadedSubtitleFormat?.name ?: "Subtitles",
-                                        color = Color.White
-                                    )
-                                },
+                            CinemaActionPill(
+                                label = activeAudioTrackLabel,
+                                isHighlighted = showAudioTrackSheet,
+                                onClick = { showAudioTrackSheet = !showAudioTrackSheet },
                                 leadingIcon = {
                                     Icon(
-                                        Icons.Default.Subtitles,
+                                        imageVector = Icons.Default.MusicNote,
                                         contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
+                                        tint = CinemaNeonGreen,
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 },
-                                modifier = Modifier.testTag("video_subtitles_chip")
+                                modifier = Modifier.testTag("video_audio_track_pill")
                             )
                         }
+
+                        // Pill 4: 1-Tap Orientation Toggle (Portrait / Landscape)
                         item {
-                            AssistChip(
-                                onClick = { onToggleControlsLock(true) },
-                                label = { Text("Lock", color = Color.White) },
+                            CinemaActionPill(
+                                label = if (isCurrentlyLandscapeMode) "Landscape" else "Portrait",
+                                isHighlighted = isCurrentlyLandscapeMode,
+                                onClick = toggleLandscapePortraitQuick,
                                 leadingIcon = {
                                     Icon(
-                                        Icons.Default.Lock,
+                                        imageVector = if (isCurrentlyLandscapeMode) {
+                                            Icons.Default.ScreenLockLandscape
+                                        } else {
+                                            Icons.Default.ScreenLockPortrait
+                                        },
                                         contentDescription = null,
                                         tint = Color.White,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(16.dp)
                                     )
                                 },
-                                modifier = Modifier.testTag("video_lock_chip")
+                                modifier = Modifier.testTag("video_orientation_mode_chip")
+                            )
+                        }
+
+                        // Pill 5: Repeat Mode Toggle (Repeat Off / All / One)
+                        item {
+                            val repeatLabel = when (playbackState.repeatMode) {
+                                RepeatModeState.OFF -> "Repeat"
+                                RepeatModeState.ALL -> "Repeat All"
+                                RepeatModeState.ONE -> "Repeat One"
+                            }
+                            CinemaActionPill(
+                                label = repeatLabel,
+                                isHighlighted = playbackState.repeatMode != RepeatModeState.OFF,
+                                onClick = onCycleRepeat,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (playbackState.repeatMode == RepeatModeState.ONE) {
+                                            Icons.Default.RepeatOne
+                                        } else {
+                                            Icons.Default.Repeat
+                                        },
+                                        contentDescription = null,
+                                        tint = if (playbackState.repeatMode != RepeatModeState.OFF) CinemaNeonGreen else Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_repeat_pill")
+                            )
+                        }
+
+                        // Pill 6: Frame Rotate 90°
+                        item {
+                            CinemaActionPill(
+                                label = "Rotate (${playbackState.videoRotationDegrees}°)",
+                                isHighlighted = playbackState.videoRotationDegrees != 0,
+                                onClick = onRotateVideo90,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.ScreenRotation,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("video_rotate_chip")
+                            )
+                        }
+
+                        // Pill 7: Favorite toggle
+                        item {
+                            CinemaActionPill(
+                                label = if (isFavorite) "Saved" else "Favorite",
+                                isHighlighted = isFavorite,
+                                onClick = onToggleFavorite,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                        contentDescription = null,
+                                        tint = if (isFavorite) CinemaNeonGreen else Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            )
+                        }
+
+                        // Pill 8: Media Studio / Cut
+                        item {
+                            CinemaActionPill(
+                                label = "Studio",
+                                isHighlighted = false,
+                                onClick = onOpenStudio,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCut,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("now_playing_studio_button")
+                            )
+                        }
+
+                        // Pill 9: Video Settings Drawer
+                        item {
+                            CinemaActionPill(
+                                label = "Settings",
+                                isHighlighted = showVideoSettings,
+                                onClick = onToggleVideoSettings,
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Settings,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                },
+                                modifier = Modifier.testTag("now_playing_video_settings_button")
                             )
                         }
                     }
                 }
 
-                // Floating Video Settings / Subtitle Drawer in Fullscreen
+                // Quick Audio Track & Sound Mode selector popup when "♪ Original HD Audio" pill is tapped
+                if (showAudioTrackSheet) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF14181F).copy(alpha = 0.96f)
+                        ),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 112.dp)
+                            .width(320.dp)
+                            .border(1.dp, CinemaPillBorder, RoundedCornerShape(16.dp))
+                    ) {
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Audio Track & Sound Profile",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                OutlinedButton(
+                                    onClick = {
+                                        showAudioTrackSheet = false
+                                        onOpenEqualizer()
+                                    },
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text("5-Band EQ", color = CinemaNeonGreen, style = MaterialTheme.typography.labelSmall)
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            val profiles = listOf(
+                                "Original HD Audio",
+                                "Cinema Surround Boost",
+                                "Clear Dialogue / Vocal",
+                                "Deep Bass Theater"
+                            )
+                            profiles.forEach { profile ->
+                                val selected = activeAudioTrackLabel == profile
+                                Surface(
+                                    color = if (selected) CinemaNeonGreen.copy(alpha = 0.18f) else Color.Transparent,
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            activeAudioTrackLabel = profile
+                                            showAudioTrackSheet = false
+                                            gestureFeedbackBanner = profile
+                                        }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = profile,
+                                            color = if (selected) CinemaNeonGreen else Color.White,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                        )
+                                        if (selected) {
+                                            Text(
+                                                text = "ACTIVE",
+                                                color = CinemaNeonGreen,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Floating Video Settings / Subtitle Drawer in Cinema Mode
                 if (showVideoSettings || showSubtitleSettings) {
                     Box(
                         modifier = Modifier
@@ -1697,6 +2109,43 @@ private fun ImmersiveVideoCinemaLayout(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CinemaActionPill(
+    label: String,
+    isHighlighted: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    leadingIcon: (@Composable () -> Unit)? = null
+) {
+    val borderColor = if (isHighlighted) CinemaNeonGreen.copy(alpha = 0.75f) else CinemaPillBorder
+    val bgColor = if (isHighlighted) Color(0xFF0E291C).copy(alpha = 0.88f) else CinemaPillBackground
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(50),
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .border(1.dp, borderColor, RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (leadingIcon != null) {
+                leadingIcon()
+            }
+            Text(
+                text = label,
+                color = if (isHighlighted) CinemaNeonGreen else Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
         }
     }
 }

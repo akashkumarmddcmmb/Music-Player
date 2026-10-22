@@ -49,6 +49,25 @@ class IsoMp4Muxer(
             }
         }
 
+        fun updateFormat(fmt: MediaFormat) {
+            if (isVideo) {
+                extractAvcCsdFromFormat(fmt)
+            } else {
+                extractAacCsdFromFormat(fmt)
+            }
+        }
+
+        fun extractAvcCsdFromBytes(data: ByteArray) {
+            val nals = splitAnnexBNals(data)
+            for (nal in nals) {
+                if (nal.isEmpty()) continue
+                when (nal[0].toInt() and 0x1F) {
+                    7 -> if (spsNal == null || spsNal!!.size < 8) spsNal = nal
+                    8 -> if (ppsNal == null || ppsNal!!.size < 4) ppsNal = nal
+                }
+            }
+        }
+
         private fun extractAvcCsdFromFormat(fmt: MediaFormat) {
             val csd0 = fmt.getByteBuffer("csd-0")?.toByteArray()
             val csd1 = fmt.getByteBuffer("csd-1")?.toByteArray()
@@ -58,8 +77,8 @@ class IsoMp4Muxer(
             for (nal in nals) {
                 if (nal.isEmpty()) continue
                 when (nal[0].toInt() and 0x1F) {
-                    7 -> if (spsNal == null) spsNal = nal
-                    8 -> if (ppsNal == null) ppsNal = nal
+                    7 -> if (spsNal == null || spsNal!!.size < 8) spsNal = nal
+                    8 -> if (ppsNal == null || ppsNal!!.size < 4) ppsNal = nal
                 }
             }
         }
@@ -134,6 +153,10 @@ class IsoMp4Muxer(
         started = true
     }
 
+    fun updateTrackFormat(trackIndex: Int, format: MediaFormat) {
+        tracks.getOrNull(trackIndex)?.updateFormat(format)
+    }
+
     fun writeSampleData(
         trackIndex: Int,
         byteBuf: ByteBuffer,
@@ -141,7 +164,6 @@ class IsoMp4Muxer(
     ) {
         check(started && !stopped) { "Muxer is not in started state." }
         if (bufferInfo.size <= 0) return
-        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) return
 
         val track = tracks.getOrNull(trackIndex) ?: return
         val file = raf ?: return
@@ -151,6 +173,15 @@ class IsoMp4Muxer(
         dup.position(bufferInfo.offset)
         dup.limit(bufferInfo.offset + bufferInfo.size)
         dup.get(rawBytes)
+
+        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+            if (track.isVideo) {
+                track.extractAvcCsdFromBytes(rawBytes)
+            } else if (rawBytes.isNotEmpty()) {
+                track.aacCsd = rawBytes
+            }
+            return
+        }
 
         val payloadBytes = if (track.isVideo) {
             convertAvcSampleToLengthPrefixed(rawBytes, track)
@@ -482,8 +513,8 @@ class IsoMp4Muxer(
 
     private fun buildStsdBox(track: TrackState, width: Int, height: Int): ByteArray {
         val entryBox = if (track.isVideo) {
-            val sps = track.spsNal ?: byteArrayOf(0x67, 0x42, 0xC0.toByte(), 0x1E)
-            val pps = track.ppsNal ?: byteArrayOf(0x68, 0xCE.toByte(), 0x3C, 0x80.toByte())
+            val sps = track.spsNal?.takeIf { it.size >= 8 } ?: DEFAULT_VALID_AVC_SPS_640X360
+            val pps = track.ppsNal?.takeIf { it.size >= 4 } ?: DEFAULT_VALID_AVC_PPS
             val profileIdc = if (sps.size > 1) sps[1].toInt() and 0xFF else 0x42
             val profileCompat = if (sps.size > 2) sps[2].toInt() and 0xFF else 0xC0
             val levelIdc = if (sps.size > 3) sps[3].toInt() and 0xFF else 0x1E
@@ -625,6 +656,29 @@ class IsoMp4Muxer(
     }
 
     companion object {
+        /**
+         * Complete, standards-compliant H.264 Baseline Profile Level 3.0 SPS NAL unit (640x360)
+         * that passes Media3 NalUnitUtil.parseSpsNalUnit / AvcConfig.parse without error.
+         */
+        val DEFAULT_VALID_AVC_SPS_640X360 = byteArrayOf(
+            0x67.toByte(),
+            0x42.toByte(),
+            0xC0.toByte(),
+            0x1E.toByte(),
+            0xDA.toByte(),
+            0x02.toByte(),
+            0x80.toByte(),
+            0xBE.toByte(),
+            0x40.toByte()
+        )
+
+        val DEFAULT_VALID_AVC_PPS = byteArrayOf(
+            0x68.toByte(),
+            0xCE.toByte(),
+            0x3C.toByte(),
+            0x80.toByte()
+        )
+
         private fun buildBox(type: String, writer: (DataOutputStream) -> Unit): ByteArray {
             val payloadBaos = ByteArrayOutputStream()
             val payloadDos = DataOutputStream(payloadBaos)

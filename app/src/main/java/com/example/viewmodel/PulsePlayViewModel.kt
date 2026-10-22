@@ -88,7 +88,8 @@ enum class RepeatModeState {
 
 enum class VideoAspectMode(val label: String) {
     FIT("Fit Screen"),
-    FILL("Crop / Fill"),
+    FILL("Fill (Zoom)"),
+    ORIGINAL("Original"),
     SIXTEEN_NINE("16:9 Widescreen"),
     FOUR_THREE("4:3 Classic")
 }
@@ -705,6 +706,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     // --- Playback Controls ---
     fun playMedia(media: MediaEntity, queueContext: List<MediaEntity> = emptyList()) {
         viewModelScope.launch {
+            if (media.isGeneratedSample || media.uriString.contains("Pulse_Cinema_Test_Reel")) {
+                runCatching { sampleGenerator.ensureLegalSampleMediaGenerated() }
+            }
             val isAvailable = mediaRepository.verifyUriAvailability(media.uriString)
             if (!isAvailable) {
                 _playbackState.value = _playbackState.value.copy(

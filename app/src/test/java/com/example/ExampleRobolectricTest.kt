@@ -1141,5 +1141,63 @@ class ExampleRobolectricTest {
         assertFalse(viewModel.canPopPrimaryTab())
         assertFalse(viewModel.popPrimaryTab())
     }
+
+    @Test
+    fun `IsoMp4Muxer writes valid avcC box that Media3 AvcConfig parses without ParserException`() {
+        val outMp4 = File(context.cacheDir, "avcc_verify_test.mp4")
+        if (outMp4.exists()) outMp4.delete()
+
+        val videoFormat = android.media.MediaFormat.createVideoFormat(
+            android.media.MediaFormat.MIMETYPE_VIDEO_AVC,
+            640,
+            360
+        ).apply {
+            setInteger(android.media.MediaFormat.KEY_FRAME_RATE, 15)
+        }
+        val muxer = com.example.media.IsoMp4Muxer(outMp4)
+        val vTrack = muxer.addTrack(videoFormat)
+        muxer.start()
+
+        val fakeIdrNal = ByteArray(64) { idx -> if (idx == 0) 0x65.toByte() else (idx and 0xFF).toByte() }
+        val info = android.media.MediaCodec.BufferInfo().apply {
+            set(0, fakeIdrNal.size, 0L, android.media.MediaCodec.BUFFER_FLAG_KEY_FRAME)
+        }
+        muxer.writeSampleData(vTrack, java.nio.ByteBuffer.wrap(fakeIdrNal), info)
+        muxer.stop()
+        muxer.release()
+
+        val generator = SampleMediaGenerator(context)
+        assertTrue("Generated MP4 must pass hasValidAvcConfig check", generator.hasValidAvcConfig(outMp4))
+
+        val bytes = outMp4.readBytes()
+        var avcCPayloadOffset = -1
+        var avcCPayloadLen = 0
+        for (i in 4..(bytes.size - 16)) {
+            if (bytes[i] == 'a'.code.toByte() &&
+                bytes[i + 1] == 'v'.code.toByte() &&
+                bytes[i + 2] == 'c'.code.toByte() &&
+                bytes[i + 3] == 'C'.code.toByte()
+            ) {
+                val boxSize = ((bytes[i - 4].toInt() and 0xFF) shl 24) or
+                    ((bytes[i - 3].toInt() and 0xFF) shl 16) or
+                    ((bytes[i - 2].toInt() and 0xFF) shl 8) or
+                    (bytes[i - 1].toInt() and 0xFF)
+                avcCPayloadOffset = i + 4
+                avcCPayloadLen = boxSize - 8
+                break
+            }
+        }
+        assertTrue("MP4 must contain avcC box", avcCPayloadOffset > 0 && avcCPayloadLen > 12)
+
+        val avcCData = bytes.copyOfRange(avcCPayloadOffset, avcCPayloadOffset + avcCPayloadLen)
+        val parsable = androidx.media3.common.util.ParsableByteArray(avcCData)
+        val parsedAvcConfig = androidx.media3.extractor.AvcConfig.parse(parsable)
+        assertNotNull(parsedAvcConfig)
+        assertEquals(640, parsedAvcConfig.width)
+        assertEquals(4, parsedAvcConfig.nalUnitLengthFieldLength)
+        assertTrue(parsedAvcConfig.initializationData.size >= 2)
+
+        outMp4.delete()
+    }
 }
 

@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -228,11 +229,16 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     DisposableEffect(lifecycleOwner, activity) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> isActivityResumed = true
+                Lifecycle.Event.ON_START,
+                Lifecycle.Event.ON_RESUME -> {
+                    isActivityResumed = true
+                    viewModel.onAppForegrounded()
+                }
                 Lifecycle.Event.ON_PAUSE,
                 Lifecycle.Event.ON_STOP,
                 Lifecycle.Event.ON_DESTROY -> {
                     isActivityResumed = false
+                    viewModel.onAppBackgrounded()
                     PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(activity?.window, false)
                 }
                 else -> Unit
@@ -596,6 +602,19 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         return
     }
 
+    // Step-by-step back navigation unwinding: dialogs -> search query -> primary tab backstack
+    val canPopTab = viewModel.canPopPrimaryTab()
+    val hasPendingDialog = pendingPlaylistAddMedia != null
+    val hasSearch = searchQuery.isNotEmpty()
+
+    BackHandler(enabled = hasPendingDialog || hasSearch || canPopTab) {
+        when {
+            hasPendingDialog -> pendingPlaylistAddMedia = null
+            hasSearch -> viewModel.updateSearchQuery("")
+            canPopTab -> viewModel.popPrimaryTab()
+        }
+    }
+
     // Adaptive Layout using BoxWithConstraints (NavigationRail on >= 600.dp, NavigationBar on Compact)
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val isExpandedScreen = maxWidth >= 600.dp
@@ -718,6 +737,29 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                         )
                     }
 
+                    val currentlyPlayingUri = playbackState.currentMedia?.uriString
+                    val onPlayMediaCallback: (MediaEntity, List<MediaEntity>) -> Unit = remember(viewModel) {
+                        { item, queue -> viewModel.playMedia(item, queue) }
+                    }
+                    val onPlayVideoCallback: (MediaEntity, List<MediaEntity>) -> Unit = remember(viewModel) {
+                        { item, queue ->
+                            viewModel.playMedia(item, queue)
+                            viewModel.setNowPlayingExpanded(true)
+                        }
+                    }
+                    val onToggleFavoriteCallback: (MediaEntity) -> Unit = remember(viewModel) {
+                        { viewModel.toggleFavorite(it) }
+                    }
+                    val onAddToPlaylistRequestCallback: (MediaEntity) -> Unit = remember {
+                        { pendingPlaylistAddMedia = it }
+                    }
+                    val onOpenStudioForMediaCallback: (MediaEntity?) -> Unit = remember(viewModel) {
+                        { viewModel.openStudioForMedia(it) }
+                    }
+                    val onOpenEqualizerCallback: () -> Unit = remember(viewModel) {
+                        { viewModel.setEqualizerSheetOpen(true) }
+                    }
+
                     Box(modifier = Modifier.weight(1f)) {
                         when (selectedTab) {
                             PrimaryTab.HOME -> {
@@ -728,7 +770,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     playlistsCount = playlists.size,
                                     recentHistory = history,
                                     favoriteUris = favoriteUris,
-                                    currentlyPlayingUri = playbackState.currentMedia?.uriString,
+                                    currentlyPlayingUri = currentlyPlayingUri,
                                     hasMediaPermission = hasMediaPermission,
                                     permissionPermanentlyDenied = permissionPermanentlyDenied,
                                     userPreferences = userPreferences,
@@ -753,13 +795,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                         viewModel.selectPrimaryTab(PrimaryTab.LIBRARY)
                                         viewModel.selectLibrarySubTab(LibrarySubTab.FAVORITES)
                                     },
-                                    onPlayMedia = { item, queue ->
-                                        viewModel.playMedia(item, queue)
-                                    },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onAddToPlaylistRequest = { pendingPlaylistAddMedia = it },
-                                    onOpenStudioForMedia = { viewModel.openStudioForMedia(it) },
-                                    onOpenEqualizer = { viewModel.setEqualizerSheetOpen(true) }
+                                    onPlayMedia = onPlayMediaCallback,
+                                    onToggleFavorite = onToggleFavoriteCallback,
+                                    onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
+                                    onOpenStudioForMedia = onOpenStudioForMediaCallback,
+                                    onOpenEqualizer = onOpenEqualizerCallback
                                 )
                             }
 
@@ -769,19 +809,18 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     subtitle = "Hardware-accelerated Media3 ExoPlayer with SRT/WebVTT subtitles, orientation controls & gesture telemetry",
                                     mediaList = videoMedia,
                                     favoriteUris = favoriteUris,
-                                    currentlyPlayingUri = playbackState.currentMedia?.uriString,
+                                    currentlyPlayingUri = currentlyPlayingUri,
                                     emptyTitle = "No Videos Found",
                                     emptySubtitle = "Open any MP4/MKV/WebM file via Storage Access Framework or generate the built-in 640x360 MP4 test reel.",
-                                    onPlayMedia = { item, queue ->
-                                        viewModel.playMedia(item, queue)
-                                        viewModel.setNowPlayingExpanded(true)
-                                    },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onAddToPlaylistRequest = { pendingPlaylistAddMedia = it },
-                                    onOpenStudioForMedia = { viewModel.openStudioForMedia(it) },
+                                    onPlayMedia = onPlayVideoCallback,
+                                    onToggleFavorite = onToggleFavoriteCallback,
+                                    onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
+                                    onOpenStudioForMedia = onOpenStudioForMediaCallback,
                                     onPickSafFileClick = {
                                         safMediaLauncher.launch(arrayOf("video/*"))
-                                    }
+                                    },
+                                    searchQuery = searchQuery,
+                                    onClearSearch = { viewModel.updateSearchQuery("") }
                                 )
                             }
 
@@ -791,18 +830,18 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     subtitle = "Gapless queue, background MediaSessionService, multi-band Equalizer & lossless WAV/AAC editor",
                                     mediaList = audioMedia,
                                     favoriteUris = favoriteUris,
-                                    currentlyPlayingUri = playbackState.currentMedia?.uriString,
+                                    currentlyPlayingUri = currentlyPlayingUri,
                                     emptyTitle = "No Audio Tracks Found",
                                     emptySubtitle = "Open any local audio file via SAF or use the built-in synthesized studio WAV & M4A tracks.",
-                                    onPlayMedia = { item, queue ->
-                                        viewModel.playMedia(item, queue)
-                                    },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onAddToPlaylistRequest = { pendingPlaylistAddMedia = it },
-                                    onOpenStudioForMedia = { viewModel.openStudioForMedia(it) },
+                                    onPlayMedia = onPlayMediaCallback,
+                                    onToggleFavorite = onToggleFavoriteCallback,
+                                    onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
+                                    onOpenStudioForMedia = onOpenStudioForMediaCallback,
                                     onPickSafFileClick = {
                                         safMediaLauncher.launch(arrayOf("audio/*"))
-                                    }
+                                    },
+                                    searchQuery = searchQuery,
+                                    onClearSearch = { viewModel.updateSearchQuery("") }
                                 )
                             }
 
@@ -828,15 +867,17 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     favoriteMedia = favoriteMedia,
                                     favoriteUris = favoriteUris,
                                     historyItems = history,
-                                    currentlyPlayingUri = playbackState.currentMedia?.uriString,
-                                    onPlayMedia = { item, queue ->
-                                        viewModel.playMedia(item, queue)
-                                    },
-                                    onToggleFavorite = { viewModel.toggleFavorite(it) },
-                                    onAddToPlaylistRequest = { pendingPlaylistAddMedia = it },
-                                    onOpenStudioForMedia = { viewModel.openStudioForMedia(it) },
-                                    onOpenEqualizer = { viewModel.setEqualizerSheetOpen(true) },
-                                    onClearHistoryOnly = { viewModel.clearPlaybackHistoryOnly() }
+                                    currentlyPlayingUri = currentlyPlayingUri,
+                                    onPlayMedia = onPlayMediaCallback,
+                                    onToggleFavorite = onToggleFavoriteCallback,
+                                    onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
+                                    onOpenStudioForMedia = onOpenStudioForMediaCallback,
+                                    onOpenEqualizer = onOpenEqualizerCallback,
+                                    onClearHistoryOnly = { viewModel.clearPlaybackHistoryOnly() },
+                                    canPopSubTab = viewModel.canPopLibrarySubTab(),
+                                    onPopSubTab = { viewModel.popLibrarySubTab() },
+                                    searchQuery = searchQuery,
+                                    onClearSearch = { viewModel.updateSearchQuery("") }
                                 )
                             }
 

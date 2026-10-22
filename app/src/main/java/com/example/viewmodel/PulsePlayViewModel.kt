@@ -143,6 +143,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     val equalizerController = EqualizerController()
 
     // Navigation & Overlay States
+    private val tabBackStack = ArrayDeque<PrimaryTab>()
+    private val librarySubTabBackStack = ArrayDeque<LibrarySubTab>()
+
     private val _selectedTab = MutableStateFlow(PrimaryTab.HOME)
     val selectedTab: StateFlow<PrimaryTab> = _selectedTab.asStateFlow()
 
@@ -264,6 +267,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 startProgressPolling()
             } else {
+                stopProgressPolling()
                 persistCurrentPlaybackPosition(force = true)
             }
         }
@@ -455,10 +459,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }.onFailure {
             ensureFallbackLocalExoPlayer()
         }
-
-        if (activePlayer == null) {
-            ensureFallbackLocalExoPlayer()
-        }
     }
 
     @OptIn(UnstableApi::class)
@@ -542,15 +542,70 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun getPlayerInstanceForVideoSurface(): Player? = activePlayer
+    fun getPlayerInstanceForVideoSurface(): Player? {
+        if (activePlayer == null) {
+            ensureFallbackLocalExoPlayer()
+        }
+        return activePlayer
+    }
 
     // --- Navigation & UI Actions ---
     fun selectPrimaryTab(tab: PrimaryTab) {
+        val current = _selectedTab.value
+        if (current == tab) return
+        if (tab == PrimaryTab.HOME) {
+            tabBackStack.clear()
+        } else {
+            tabBackStack.remove(tab)
+            tabBackStack.addLast(current)
+        }
         _selectedTab.value = tab
     }
 
+    fun popPrimaryTab(): Boolean {
+        if (tabBackStack.isNotEmpty()) {
+            val prev = tabBackStack.removeLast()
+            _selectedTab.value = prev
+            return true
+        }
+        if (_selectedTab.value != PrimaryTab.HOME) {
+            _selectedTab.value = PrimaryTab.HOME
+            return true
+        }
+        return false
+    }
+
+    fun canPopPrimaryTab(): Boolean {
+        return tabBackStack.isNotEmpty() || _selectedTab.value != PrimaryTab.HOME
+    }
+
     fun selectLibrarySubTab(subTab: LibrarySubTab) {
+        val current = _selectedLibrarySubTab.value
+        if (current == subTab) return
+        if (subTab == LibrarySubTab.FOLDERS) {
+            librarySubTabBackStack.clear()
+        } else {
+            librarySubTabBackStack.remove(subTab)
+            librarySubTabBackStack.addLast(current)
+        }
         _selectedLibrarySubTab.value = subTab
+    }
+
+    fun popLibrarySubTab(): Boolean {
+        if (librarySubTabBackStack.isNotEmpty()) {
+            val prev = librarySubTabBackStack.removeLast()
+            _selectedLibrarySubTab.value = prev
+            return true
+        }
+        if (_selectedLibrarySubTab.value != LibrarySubTab.FOLDERS) {
+            _selectedLibrarySubTab.value = LibrarySubTab.FOLDERS
+            return true
+        }
+        return false
+    }
+
+    fun canPopLibrarySubTab(): Boolean {
+        return librarySubTabBackStack.isNotEmpty() || _selectedLibrarySubTab.value != LibrarySubTab.FOLDERS
     }
 
     fun selectFolderFilter(folderName: String?) {
@@ -571,6 +626,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setNowPlayingExpanded(expanded: Boolean) {
         _isNowPlayingExpanded.value = expanded
+        if (expanded && activePlayer?.isPlaying == true && isAppInForeground) {
+            startProgressPolling()
+        }
     }
 
     fun openStudioForMedia(media: MediaEntity?) {
@@ -1084,7 +1142,31 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             .build()
     }
 
+    private var isAppInForeground: Boolean = true
+ 
+    fun onAppForegrounded() {
+        isAppInForeground = true
+        if (activePlayer?.isPlaying == true) {
+            startProgressPolling()
+        }
+    }
+
+    fun onAppBackgrounded() {
+        isAppInForeground = false
+        stopProgressPolling()
+        persistCurrentPlaybackPosition(force = true)
+    }
+
+    private fun stopProgressPolling() {
+        progressPollingJob?.cancel()
+        progressPollingJob = null
+    }
+
     private fun startProgressPolling() {
+        if (!isAppInForeground) {
+            // When app is in background, do not run high-frequency UI polling
+            return
+        }
         progressPollingJob?.cancel()
         progressPollingJob = viewModelScope.launch {
             while (isActive) {
@@ -1104,9 +1186,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         persistCurrentPlaybackPosition(force = false)
                         lastHistoryWriteTimeMs = now
                     }
+                } else {
+                    break
                 }
-                delay(250L)
+                // Throttle: 350ms for smooth seekbar/subtitles when expanded; 750ms for mini-player
+                val intervalMs = if (_isNowPlayingExpanded.value) 350L else 750L
+                delay(intervalMs)
             }
+            progressPollingJob = null
         }
     }
 

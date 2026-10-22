@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +62,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,6 +76,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.ads.OptionalAdManager
 import com.example.data.local.MediaEntity
+import com.example.data.local.MediaType
 import com.example.data.local.PlaybackHistoryEntity
 import com.example.data.local.PlaylistWithCount
 import com.example.data.preferences.SortOption
@@ -99,7 +102,8 @@ fun SearchAndActionHeader(
     onPickSafFileClick: () -> Unit,
     onRescanClick: () -> Unit,
     onOpenEqualizerClick: () -> Unit,
-    onOpenStudioClick: () -> Unit
+    onOpenStudioClick: () -> Unit,
+    showActionChips: Boolean = false
 ) {
     var sortMenuExpanded by remember { mutableStateOf(false) }
 
@@ -156,51 +160,53 @@ fun SearchAndActionHeader(
             shape = RoundedCornerShape(16.dp)
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        if (showActionChips) {
+            Spacer(modifier = Modifier.height(8.dp))
 
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            item {
-                AssistChip(
-                    onClick = onPickSafFileClick,
-                    label = { Text("Open File (SAF)") },
-                    leadingIcon = {
-                        Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
-                    },
-                    modifier = Modifier.testTag("saf_open_file_chip")
-                )
-            }
-            item {
-                AssistChip(
-                    onClick = onOpenStudioClick,
-                    label = { Text("Media Studio & Converter") },
-                    leadingIcon = {
-                        Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
-                    },
-                    modifier = Modifier.testTag("open_studio_chip")
-                )
-            }
-            item {
-                AssistChip(
-                    onClick = onOpenEqualizerClick,
-                    label = { Text("Equalizer DSP") },
-                    leadingIcon = {
-                        Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(18.dp))
-                    },
-                    modifier = Modifier.testTag("open_equalizer_chip")
-                )
-            }
-            item {
-                AssistChip(
-                    onClick = onRescanClick,
-                    label = { Text("Rescan") },
-                    leadingIcon = {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                    },
-                    modifier = Modifier.testTag("rescan_library_chip")
-                )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                item {
+                    AssistChip(
+                        onClick = onPickSafFileClick,
+                        label = { Text("Open File (SAF)") },
+                        leadingIcon = {
+                            Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        modifier = Modifier.testTag("saf_open_file_chip")
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenStudioClick,
+                        label = { Text("Media Studio & Converter") },
+                        leadingIcon = {
+                            Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        modifier = Modifier.testTag("open_studio_chip")
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onOpenEqualizerClick,
+                        label = { Text("Equalizer DSP") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        modifier = Modifier.testTag("open_equalizer_chip")
+                    )
+                }
+                item {
+                    AssistChip(
+                        onClick = onRescanClick,
+                        label = { Text("Rescan") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        },
+                        modifier = Modifier.testTag("rescan_library_chip")
+                    )
+                }
             }
         }
     }
@@ -333,81 +339,6 @@ fun HomeDashboardScreen(
             }
         }
 
-        // Studio & Audio Tools Hub (Media Editor, Equalizer DSP, Audio Converter, Audio Cutter)
-        item {
-            Text(
-                text = "Studio & Audio Tools",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onOpenStudioForMedia(null) }
-                        .testTag("quick_action_studio_card"),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.ContentCut,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Media Editor",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Trim, Rotate, Extract Audio & Convert",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                Card(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clickable { onOpenEqualizer() }
-                        .testTag("quick_action_eq_card"),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.6f)
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.Equalizer,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Equalizer DSP",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "5-Band Biquad EQ & Bass Boost",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        }
 
         // Recently Played / Continue Listening Section
         if (recentHistory.isNotEmpty()) {
@@ -476,7 +407,7 @@ fun HomeDashboardScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "Studio & Device Media (${allMedia.size})",
+                    text = "Media Library (${allMedia.size})",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -484,7 +415,7 @@ fun HomeDashboardScreen(
                     onClick = onGenerateSamplesClick,
                     modifier = Modifier.testTag("regenerate_samples_button")
                 ) {
-                    Text("Verify Samples")
+                    Text("Refresh")
                 }
             }
         }
@@ -580,8 +511,30 @@ fun MediaCatalogScreen(
     onToggleFavorite: (MediaEntity) -> Unit,
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
     onOpenStudioForMedia: (MediaEntity) -> Unit,
-    onPickSafFileClick: () -> Unit
+    onPickSafFileClick: () -> Unit,
+    searchQuery: String = "",
+    onClearSearch: () -> Unit = {}
 ) {
+    var showFavoritesOnly by rememberSaveable { mutableStateOf(false) }
+    val favCount = remember(mediaList, favoriteUris) {
+        mediaList.count { favoriteUris.contains(it.uriString) }
+    }
+    val displayedMedia = remember(mediaList, favoriteUris, showFavoritesOnly) {
+        if (showFavoritesOnly) {
+            mediaList.filter { favoriteUris.contains(it.uriString) }
+        } else {
+            mediaList
+        }
+    }
+
+    val hasSearch = searchQuery.isNotEmpty()
+    BackHandler(enabled = hasSearch || showFavoritesOnly) {
+        when {
+            hasSearch -> onClearSearch()
+            showFavoritesOnly -> showFavoritesOnly = false
+        }
+    }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -604,22 +557,49 @@ fun MediaCatalogScreen(
             }
         }
 
-        if (mediaList.isEmpty()) {
+        if (mediaList.isNotEmpty()) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !showFavoritesOnly,
+                        onClick = { showFavoritesOnly = false },
+                        label = { Text("All (${mediaList.size})") }
+                    )
+                    FilterChip(
+                        selected = showFavoritesOnly,
+                        onClick = { showFavoritesOnly = true },
+                        label = { Text("Favorites ($favCount)") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Favorite,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    )
+                }
+            }
+        }
+
+        if (displayedMedia.isEmpty()) {
             item {
                 EmptyLibraryPlaceholder(
-                    title = emptyTitle,
-                    subtitle = emptySubtitle,
-                    onActionClick = onPickSafFileClick,
-                    actionLabel = "Open Local File (SAF)"
+                    title = if (showFavoritesOnly) "No Favorites Found" else emptyTitle,
+                    subtitle = if (showFavoritesOnly) "Tap the heart icon on any file to bookmark it as favorite." else emptySubtitle,
+                    onActionClick = if (showFavoritesOnly) { { showFavoritesOnly = false } } else onPickSafFileClick,
+                    actionLabel = if (showFavoritesOnly) "View All Media" else "Open Local File (SAF)"
                 )
             }
         } else {
-            items(mediaList, key = { it.uriString }) { item ->
+            items(displayedMedia, key = { it.uriString }) { item ->
                 MediaItemCard(
                     media = item,
                     isCurrentlyPlaying = currentlyPlayingUri == item.uriString,
                     isFavorite = favoriteUris.contains(item.uriString),
-                    onPlayClick = { onPlayMedia(item, mediaList) },
+                    onPlayClick = { onPlayMedia(item, displayedMedia) },
                     onFavoriteToggle = { onToggleFavorite(item) },
                     onAddToPlaylistClick = { onAddToPlaylistRequest(item) },
                     onOpenInStudioClick = { onOpenStudioForMedia(item) }
@@ -627,6 +607,12 @@ fun MediaCatalogScreen(
             }
         }
     }
+}
+
+enum class FavoriteTypeFilter {
+    ALL,
+    AUDIO,
+    VIDEO
 }
 
 @Composable
@@ -655,11 +641,51 @@ fun LibraryAndFoldersScreen(
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
     onOpenStudioForMedia: (MediaEntity?) -> Unit,
     onOpenEqualizer: () -> Unit = {},
-    onClearHistoryOnly: () -> Unit
+    onClearHistoryOnly: () -> Unit,
+    canPopSubTab: Boolean = false,
+    onPopSubTab: () -> Unit = {},
+    searchQuery: String = "",
+    onClearSearch: () -> Unit = {}
 ) {
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
     var newPlaylistDesc by remember { mutableStateOf("") }
+    var selectedFavoriteFilter by rememberSaveable { mutableStateOf(FavoriteTypeFilter.ALL) }
+    val favoriteAudio = remember(favoriteMedia) {
+        favoriteMedia.filter { it.mediaType == MediaType.AUDIO }
+    }
+    val favoriteVideos = remember(favoriteMedia) {
+        favoriteMedia.filter { it.mediaType == MediaType.VIDEO }
+    }
+
+    val hasPlaylistDetail = selectedPlaylistId != null
+    val hasAlbumDetail = selectedAlbum != null
+    val hasArtistDetail = selectedArtist != null
+    val hasFolderDetail = selectedFolder != null
+    val hasFavoriteFilter = selectedSubTab == LibrarySubTab.FAVORITES && selectedFavoriteFilter != FavoriteTypeFilter.ALL
+    val hasSearch = searchQuery.isNotEmpty()
+
+    BackHandler(
+        enabled = showCreatePlaylistDialog ||
+            hasSearch ||
+            hasPlaylistDetail ||
+            hasAlbumDetail ||
+            hasArtistDetail ||
+            hasFolderDetail ||
+            hasFavoriteFilter ||
+            canPopSubTab
+    ) {
+        when {
+            showCreatePlaylistDialog -> showCreatePlaylistDialog = false
+            hasSearch -> onClearSearch()
+            hasPlaylistDetail -> onSelectPlaylist(null)
+            hasAlbumDetail -> onSelectAlbum(null)
+            hasArtistDetail -> onSelectArtist(null)
+            hasFolderDetail -> onSelectFolder(null)
+            hasFavoriteFilter -> selectedFavoriteFilter = FavoriteTypeFilter.ALL
+            canPopSubTab -> onPopSubTab()
+        }
+    }
 
     if (showCreatePlaylistDialog) {
         AlertDialog(
@@ -1104,12 +1130,60 @@ fun LibraryAndFoldersScreen(
 
                 LibrarySubTab.FAVORITES -> {
                     item {
-                        Text(
-                            text = "Favorite Media (${favoriteMedia.size})",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Column {
+                            Text(
+                                text = "Favorite Media (${favoriteMedia.size})",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                FilterChip(
+                                    selected = selectedFavoriteFilter == FavoriteTypeFilter.ALL,
+                                    onClick = { selectedFavoriteFilter = FavoriteTypeFilter.ALL },
+                                    label = { Text("All (${favoriteMedia.size})") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Favorite,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("favorite_filter_all")
+                                )
+                                FilterChip(
+                                    selected = selectedFavoriteFilter == FavoriteTypeFilter.AUDIO,
+                                    onClick = { selectedFavoriteFilter = FavoriteTypeFilter.AUDIO },
+                                    label = { Text("Audio (${favoriteAudio.size})") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.LibraryMusic,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("favorite_filter_audio")
+                                )
+                                FilterChip(
+                                    selected = selectedFavoriteFilter == FavoriteTypeFilter.VIDEO,
+                                    onClick = { selectedFavoriteFilter = FavoriteTypeFilter.VIDEO },
+                                    label = { Text("Videos (${favoriteVideos.size})") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Movie,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    modifier = Modifier.testTag("favorite_filter_video")
+                                )
+                            }
+                        }
                     }
+
                     if (favoriteMedia.isEmpty()) {
                         item {
                             EmptyLibraryPlaceholder(
@@ -1120,16 +1194,124 @@ fun LibraryAndFoldersScreen(
                             )
                         }
                     } else {
-                        items(favoriteMedia, key = { it.uriString }) { media ->
-                            MediaItemCard(
-                                media = media,
-                                isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
-                                isFavorite = true,
-                                onPlayClick = { onPlayMedia(media, favoriteMedia) },
-                                onFavoriteToggle = { onToggleFavorite(media) },
-                                onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
-                            )
+                        when (selectedFavoriteFilter) {
+                            FavoriteTypeFilter.ALL -> {
+                                if (favoriteAudio.isNotEmpty()) {
+                                    item {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.LibraryMusic,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Favorite Audio Songs (${favoriteAudio.size})",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    items(favoriteAudio, key = { it.uriString }) { media ->
+                                        MediaItemCard(
+                                            media = media,
+                                            isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                            isFavorite = true,
+                                            onPlayClick = { onPlayMedia(media, favoriteAudio) },
+                                            onFavoriteToggle = { onToggleFavorite(media) },
+                                            onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                        )
+                                    }
+                                }
+
+                                if (favoriteVideos.isNotEmpty()) {
+                                    item {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.padding(top = 16.dp, bottom = 4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Movie,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.secondary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                text = "Favorite Videos (${favoriteVideos.size})",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                    items(favoriteVideos, key = { it.uriString }) { media ->
+                                        MediaItemCard(
+                                            media = media,
+                                            isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                            isFavorite = true,
+                                            onPlayClick = { onPlayMedia(media, favoriteVideos) },
+                                            onFavoriteToggle = { onToggleFavorite(media) },
+                                            onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                        )
+                                    }
+                                }
+                            }
+
+                            FavoriteTypeFilter.AUDIO -> {
+                                if (favoriteAudio.isEmpty()) {
+                                    item {
+                                        EmptyLibraryPlaceholder(
+                                            title = "No Favorite Audio Songs",
+                                            subtitle = "Tap the heart icon on any music or audio track to add it here.",
+                                            onActionClick = {},
+                                            actionLabel = null
+                                        )
+                                    }
+                                } else {
+                                    items(favoriteAudio, key = { it.uriString }) { media ->
+                                        MediaItemCard(
+                                            media = media,
+                                            isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                            isFavorite = true,
+                                            onPlayClick = { onPlayMedia(media, favoriteAudio) },
+                                            onFavoriteToggle = { onToggleFavorite(media) },
+                                            onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                        )
+                                    }
+                                }
+                            }
+
+                            FavoriteTypeFilter.VIDEO -> {
+                                if (favoriteVideos.isEmpty()) {
+                                    item {
+                                        EmptyLibraryPlaceholder(
+                                            title = "No Favorite Videos",
+                                            subtitle = "Tap the heart icon on any video to add it here.",
+                                            onActionClick = {},
+                                            actionLabel = null
+                                        )
+                                    }
+                                } else {
+                                    items(favoriteVideos, key = { it.uriString }) { media ->
+                                        MediaItemCard(
+                                            media = media,
+                                            isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
+                                            isFavorite = true,
+                                            onPlayClick = { onPlayMedia(media, favoriteVideos) },
+                                            onFavoriteToggle = { onToggleFavorite(media) },
+                                            onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }

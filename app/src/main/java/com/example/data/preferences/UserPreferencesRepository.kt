@@ -33,7 +33,7 @@ enum class VideoOrientationPreference(val label: String) {
 
 data class UserPreferencesState(
     val themeMode: AppThemeMode = AppThemeMode.DARK,
-    val dynamicColor: Boolean = false,
+    val dynamicColor: Boolean = true,
     val defaultPlaybackSpeed: Float = 1.0f,
     val resumePlaybackEnabled: Boolean = true,
     val recordPlaybackHistory: Boolean = true,
@@ -100,7 +100,7 @@ class UserPreferencesRepository(private val context: Context) {
 
         UserPreferencesState(
             themeMode = theme,
-            dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: false,
+            dynamicColor = prefs[Keys.DYNAMIC_COLOR] ?: true,
             defaultPlaybackSpeed = (prefs[Keys.DEFAULT_SPEED] ?: 1.0f).coerceIn(0.25f, 3.0f),
             resumePlaybackEnabled = prefs[Keys.RESUME_ENABLED] ?: true,
             recordPlaybackHistory = prefs[Keys.RECORD_HISTORY] ?: true,

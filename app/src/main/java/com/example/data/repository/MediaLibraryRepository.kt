@@ -80,15 +80,30 @@ class MediaLibraryRepository(
         val audioExts = setOf("mp3", "wav", "m4a", "aac", "flac", "ogg", "opus")
         val videoExts = setOf("mp4", "mkv", "webm", "3gp", "mov", "avi")
 
+        val standardDirNames = listOf(
+            Environment.DIRECTORY_MUSIC,
+            Environment.DIRECTORY_MOVIES,
+            Environment.DIRECTORY_DOWNLOADS,
+            Environment.DIRECTORY_DCIM,
+            Environment.DIRECTORY_PODCASTS
+        )
+        val candidateDirs = standardDirNames.mapNotNull { name ->
+            runCatching { Environment.getExternalStoragePublicDirectory(name) }.getOrNull()
+        }.filter { it.exists() && it.canRead() }
+
+        val searchDirs = if (candidateDirs.isNotEmpty()) candidateDirs else listOf(rootDir)
+
         runCatching {
-            rootDir.walkTopDown()
-                .onEnter { dir ->
-                    !dir.name.startsWith(".") &&
-                        !dir.absolutePath.contains("/Android/data") &&
-                        !dir.absolutePath.contains("/Android/obb")
-                }
-                .maxDepth(5)
-                .forEach { file ->
+            for (searchDir in searchDirs) {
+                if (results.size >= 300) break
+                searchDir.walkTopDown()
+                    .onEnter { dir ->
+                        !dir.name.startsWith(".") &&
+                            !dir.absolutePath.contains("/Android/data") &&
+                            !dir.absolutePath.contains("/Android/obb")
+                    }
+                    .maxDepth(3)
+                    .forEach { file ->
                     if (results.size >= 300) return@forEach
                     if (!file.isFile || file.length() < 4096L) return@forEach
                     if (existingPaths.contains(file.absolutePath)) return@forEach
@@ -126,6 +141,7 @@ class MediaLibraryRepository(
                         )
                     )
                 }
+            }
         }
         return results
     }

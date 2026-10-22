@@ -405,6 +405,8 @@ class MultiBandBiquadFilterBank(
         }
 
         val channels = currentChannelCount
+        val g0 = channelGainFor(0, channels)
+        val g1 = if (channels > 1) channelGainFor(1, channels) else g0
 
         when (encoding) {
             C.ENCODING_PCM_16BIT -> {
@@ -412,7 +414,8 @@ class MultiBandBiquadFilterBank(
                 while (inputBuffer.remaining() >= frameBytes) {
                     for (ch in 0 until channels) {
                         val rawShort = inputBuffer.short
-                        var x = (rawShort.toDouble() / 32768.0) * channelGainFor(ch, channels)
+                        val chGain = if (ch == 0) g0 else if (ch == 1) g1 else preampLinearGain
+                        var x = (rawShort.toDouble() / 32768.0) * chGain
                         for (sec in 0 until TOTAL_SECTIONS) {
                             val c = sectionCoeffs[sec]
                             if (c !== BiquadCoefficients.IDENTITY) {
@@ -439,7 +442,8 @@ class MultiBandBiquadFilterBank(
                 while (inputBuffer.remaining() >= frameBytes) {
                     for (ch in 0 until channels) {
                         val rawFloat = inputBuffer.float
-                        var x = (if (rawFloat.isFinite()) rawFloat.toDouble() else 0.0) * channelGainFor(ch, channels)
+                        val chGain = if (ch == 0) g0 else if (ch == 1) g1 else preampLinearGain
+                        var x = (if (rawFloat.isFinite()) rawFloat.toDouble() else 0.0) * chGain
                         for (sec in 0 until TOTAL_SECTIONS) {
                             val c = sectionCoeffs[sec]
                             if (c !== BiquadCoefficients.IDENTITY) {
@@ -470,8 +474,8 @@ class MultiBandBiquadFilterBank(
         const val TOTAL_SECTIONS = 6
 
         /**
-         * Transparent up to |x| <= 0.85, then smooth hyperbolic tangent knee approaching +/-1.0
-         * to prevent hard digital clipping on transient peaks.
+         * Transparent up to |x| <= 0.85, then smooth algebraic soft knee approaching +/-1.0
+         * to prevent hard digital clipping on transient peaks without expensive Math.tanh() transcendental calls.
          */
         fun softLimitSample(sample: Double): Double {
             if (!sample.isFinite()) return 0.0
@@ -479,7 +483,7 @@ class MultiBandBiquadFilterBank(
             if (absX <= 0.85) return sample
             val sign = if (sample >= 0.0) 1.0 else -1.0
             val excess = (absX - 0.85) / 0.15
-            val compressed = 0.85 + 0.15 * tanh(excess)
+            val compressed = 0.85 + 0.15 * (excess / (1.0 + excess))
             return (sign * compressed).coerceIn(-0.9999, 0.9999)
         }
     }

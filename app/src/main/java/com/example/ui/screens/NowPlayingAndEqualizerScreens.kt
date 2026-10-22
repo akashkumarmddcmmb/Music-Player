@@ -166,19 +166,22 @@ fun NowPlayingOverlayScreen(
     onSaveQueueAsPlaylist: (String) -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
-    BackHandler {
-        when {
-            playbackState.isVideoControlsLocked -> onToggleControlsLock(false)
-            playbackState.isFullscreenVideo -> onToggleFullscreen(false)
-            else -> onCollapse()
-        }
-    }
-
     val currentMedia = playbackState.currentMedia
     var showSubtitleSettings by remember { mutableStateOf(false) }
     var showVideoSettingsSheet by remember { mutableStateOf(false) }
     var showSleepTimerPanel by remember { mutableStateOf(false) }
     var fullscreenControlsVisible by remember { mutableStateOf(true) }
+
+    BackHandler {
+        when {
+            showSubtitleSettings -> showSubtitleSettings = false
+            showVideoSettingsSheet -> showVideoSettingsSheet = false
+            showSleepTimerPanel -> showSleepTimerPanel = false
+            playbackState.isVideoControlsLocked -> onToggleControlsLock(false)
+            playbackState.isFullscreenVideo -> onToggleFullscreen(false)
+            else -> onCollapse()
+        }
+    }
 
     val shouldKeepVideoAwake = PlayerHandoffAndVideoPolicy.shouldKeepVideoScreenAwake(
         isActivityResumed = true,
@@ -969,6 +972,12 @@ private fun PortraitVideoSurfaceSection(
                             else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                         }
                     },
+                    onReset = { view ->
+                        view.player = null
+                    },
+                    onRelease = { view ->
+                        view.player = null
+                    },
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
@@ -1275,6 +1284,12 @@ private fun ImmersiveVideoCinemaLayout(
                         VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                         else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                     }
+                },
+                onReset = { view ->
+                    view.player = null
+                },
+                onRelease = { view ->
+                    view.player = null
                 },
                 modifier = Modifier
                     .fillMaxSize()

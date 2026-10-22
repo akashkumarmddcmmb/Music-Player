@@ -1,6 +1,7 @@
 package com.example
 
 import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
@@ -47,6 +48,9 @@ import com.example.media.SubtitleFormat
 import com.example.media.SubtitleLoadResult
 import com.example.media.SubtitleParser
 import com.example.service.PulsePlaybackService
+import com.example.viewmodel.LibrarySubTab
+import com.example.viewmodel.PrimaryTab
+import com.example.viewmodel.PulsePlayViewModel
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -998,4 +1002,144 @@ class ExampleRobolectricTest {
         val power = s1 * s1 + s2 * s2 - coeff * s1 * s2
         return sqrt(power.coerceAtLeast(0.0)) / nFrames
     }
+
+    @Test
+    fun `favorites segregation partitions audio tracks and videos independently`() {
+        val audio1 = MediaEntity(
+            uriString = "content://audio/1",
+            mediaStoreId = 1L,
+            title = "Acoustic Song 1",
+            artist = "Studio Artist",
+            album = "Album 1",
+            folderName = "Music",
+            durationMs = 180_000L,
+            sizeBytes = 5_000_000L,
+            mimeType = "audio/mp3",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1000L
+        )
+        val audio2 = MediaEntity(
+            uriString = "content://audio/2",
+            mediaStoreId = 2L,
+            title = "Acoustic Song 2",
+            artist = "Studio Artist",
+            album = "Album 2",
+            folderName = "Music",
+            durationMs = 210_000L,
+            sizeBytes = 6_000_000L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 2000L
+        )
+        val video1 = MediaEntity(
+            uriString = "content://video/1",
+            mediaStoreId = 3L,
+            title = "Cinema Video 1",
+            artist = "Video Lab",
+            album = "Cinema",
+            folderName = "Movies",
+            durationMs = 300_000L,
+            sizeBytes = 50_000_000L,
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            dateAddedEpochSec = 3000L
+        )
+
+        val allFavorites = listOf(audio1, video1, audio2)
+        val favAudio = allFavorites.filter { it.mediaType == MediaType.AUDIO }
+        val favVideos = allFavorites.filter { it.mediaType == MediaType.VIDEO }
+
+        assertEquals(2, favAudio.size)
+        assertEquals(1, favVideos.size)
+        assertTrue(favAudio.all { it.mediaType == MediaType.AUDIO })
+        assertTrue(favVideos.all { it.mediaType == MediaType.VIDEO })
+        assertEquals("Cinema Video 1", favVideos.first().title)
+    }
+
+    @Test
+    fun `step by step primary tab backstack unwinds in reverse order until root Home`() {
+        val viewModel = PulsePlayViewModel(context as Application)
+
+        // Initially on HOME: backstack is empty, cannot pop
+        assertEquals(PrimaryTab.HOME, viewModel.selectedTab.value)
+        assertFalse(viewModel.canPopPrimaryTab())
+        assertFalse(viewModel.popPrimaryTab())
+
+        // Navigate step 1: HOME -> VIDEOS
+        viewModel.selectPrimaryTab(PrimaryTab.VIDEOS)
+        assertEquals(PrimaryTab.VIDEOS, viewModel.selectedTab.value)
+        assertTrue(viewModel.canPopPrimaryTab())
+
+        // Navigate step 2: VIDEOS -> MUSIC
+        viewModel.selectPrimaryTab(PrimaryTab.MUSIC)
+        assertEquals(PrimaryTab.MUSIC, viewModel.selectedTab.value)
+
+        // Navigate step 3: MUSIC -> SETTINGS
+        viewModel.selectPrimaryTab(PrimaryTab.SETTINGS)
+        assertEquals(PrimaryTab.SETTINGS, viewModel.selectedTab.value)
+
+        // Unwind step 1: Back from SETTINGS -> MUSIC
+        assertTrue(viewModel.popPrimaryTab())
+        assertEquals(PrimaryTab.MUSIC, viewModel.selectedTab.value)
+        assertTrue(viewModel.canPopPrimaryTab())
+
+        // Unwind step 2: Back from MUSIC -> VIDEOS
+        assertTrue(viewModel.popPrimaryTab())
+        assertEquals(PrimaryTab.VIDEOS, viewModel.selectedTab.value)
+        assertTrue(viewModel.canPopPrimaryTab())
+
+        // Unwind step 3: Back from VIDEOS -> HOME
+        assertTrue(viewModel.popPrimaryTab())
+        assertEquals(PrimaryTab.HOME, viewModel.selectedTab.value)
+
+        // Root reached: on HOME, no more tabs to pop -> system can finish app cleanly
+        assertFalse(viewModel.canPopPrimaryTab())
+        assertFalse(viewModel.popPrimaryTab())
+        assertEquals(PrimaryTab.HOME, viewModel.selectedTab.value)
+    }
+
+    @Test
+    fun `step by step library subtab backstack unwinds to previous subtab before popping primary tab`() {
+        val viewModel = PulsePlayViewModel(context as Application)
+
+        assertEquals(LibrarySubTab.FOLDERS, viewModel.selectedLibrarySubTab.value)
+        assertFalse(viewModel.canPopLibrarySubTab())
+
+        // Navigate subtab 1: FOLDERS -> PLAYLISTS
+        viewModel.selectLibrarySubTab(LibrarySubTab.PLAYLISTS)
+        assertEquals(LibrarySubTab.PLAYLISTS, viewModel.selectedLibrarySubTab.value)
+        assertTrue(viewModel.canPopLibrarySubTab())
+
+        // Navigate subtab 2: PLAYLISTS -> FAVORITES
+        viewModel.selectLibrarySubTab(LibrarySubTab.FAVORITES)
+        assertEquals(LibrarySubTab.FAVORITES, viewModel.selectedLibrarySubTab.value)
+
+        // Unwind subtab 1: Back from FAVORITES -> PLAYLISTS
+        assertTrue(viewModel.popLibrarySubTab())
+        assertEquals(LibrarySubTab.PLAYLISTS, viewModel.selectedLibrarySubTab.value)
+
+        // Unwind subtab 2: Back from PLAYLISTS -> FOLDERS
+        assertTrue(viewModel.popLibrarySubTab())
+        assertEquals(LibrarySubTab.FOLDERS, viewModel.selectedLibrarySubTab.value)
+
+        // Root subtab reached: on FOLDERS, cannot pop subtab further
+        assertFalse(viewModel.canPopLibrarySubTab())
+        assertFalse(viewModel.popLibrarySubTab())
+    }
+
+    @Test
+    fun `selecting Home bottom tab resets backstack to root cleanly without cycles`() {
+        val viewModel = PulsePlayViewModel(context as Application)
+
+        viewModel.selectPrimaryTab(PrimaryTab.VIDEOS)
+        viewModel.selectPrimaryTab(PrimaryTab.MUSIC)
+        assertEquals(PrimaryTab.MUSIC, viewModel.selectedTab.value)
+
+        // Explicitly clicking HOME tab in bottom bar resets user to root Home
+        viewModel.selectPrimaryTab(PrimaryTab.HOME)
+        assertEquals(PrimaryTab.HOME, viewModel.selectedTab.value)
+        assertFalse(viewModel.canPopPrimaryTab())
+        assertFalse(viewModel.popPrimaryTab())
+    }
 }
+

@@ -114,10 +114,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.view.LayoutInflater
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.example.R
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
 import com.example.data.preferences.UserPreferencesState
@@ -978,7 +980,10 @@ private fun PortraitVideoSurfaceSection(
             if (playerInstance != null) {
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
+                        val pv = runCatching {
+                            LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
+                        }.getOrElse { PlayerView(ctx) }
+                        pv.apply {
                             useController = false
                             player = playerInstance
                             keepScreenOn = shouldKeepVideoAwake
@@ -1326,10 +1331,14 @@ private fun ImmersiveVideoCinemaLayout(
         gestureFeedbackBanner = "Speed ${nextSpeed}x"
     }
 
-    val resolutionTag = remember(currentMedia.sizeBytes, currentMedia.mimeType) {
+    val resolutionTag = remember(currentMedia.width, currentMedia.height, currentMedia.sizeBytes, currentMedia.mimeType) {
+        val maxDim = maxOf(currentMedia.width, currentMedia.height)
+        val minDim = minOf(currentMedia.width, currentMedia.height)
         when {
-            currentMedia.sizeBytes >= 25_000_000L -> "FHD 1080p"
-            currentMedia.sizeBytes >= 8_000_000L -> "HD 720p"
+            maxDim >= 3800 || minDim >= 2100 -> "4K UHD 2160p"
+            maxDim >= 2500 || minDim >= 1400 -> "2K QHD 1440p"
+            maxDim >= 1900 || minDim >= 1000 || currentMedia.sizeBytes >= 25_000_000L -> "FHD 1080p"
+            maxDim >= 1200 || minDim >= 700 || currentMedia.sizeBytes >= 8_000_000L -> "HD 720p"
             else -> "HD Video"
         }
     }
@@ -1407,7 +1416,10 @@ private fun ImmersiveVideoCinemaLayout(
             if (playerInstance != null) {
                 AndroidView(
                     factory = { ctx ->
-                        PlayerView(ctx).apply {
+                        val pv = runCatching {
+                            LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
+                        }.getOrElse { PlayerView(ctx) }
+                        pv.apply {
                             useController = false
                             player = playerInstance
                             keepScreenOn = shouldKeepVideoAwake

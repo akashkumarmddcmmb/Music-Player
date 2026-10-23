@@ -41,6 +41,7 @@ import com.example.media.HardwareEqualizerState
 import com.example.media.MediaProcessorEngine
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
+import com.example.media.Resilient4KMediaCodecAdapterFactory
 import com.example.media.SampleMediaGenerator
 import com.example.media.SubtitleCueItem
 import com.example.media.SubtitleFormat
@@ -252,6 +253,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private var sleepTimerJob: Job? = null
     private var activeProcessingJob: Job? = null
     private var lastHistoryWriteTimeMs: Long = 0L
+    private var hasAttemptedSoftwareFallbackForCurrentTrack: Boolean = false
 
     private val _playbackState = MutableStateFlow(PlaybackUiState())
     val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
@@ -340,6 +342,36 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            val isDecoderFailure =
+                error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
+
+            if (isDecoderFailure && !hasAttemptedSoftwareFallbackForCurrentTrack) {
+                hasAttemptedSoftwareFallbackForCurrentTrack = true
+                Resilient4KMediaCodecAdapterFactory.preferSoftwareForHighRes = true
+                val player = activePlayer
+                if (player != null) {
+                    val savedIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+                    val savedPos = player.currentPosition.coerceAtLeast(0L)
+                    viewModelScope.launch {
+                        delay(120L)
+                        runCatching {
+                            player.stop()
+                            player.seekTo(savedIndex, savedPos)
+                            player.prepare()
+                            player.playWhenReady = true
+                            player.play()
+                            _playbackState.value = _playbackState.value.copy(
+                                isPlaying = true,
+                                playbackError = null
+                            )
+                        }
+                    }
+                    return
+                }
+            }
+
             val friendlyMsg = "Playback error (${error.errorCodeName}): The file may be corrupt, moved, or use an unsupported codec."
             _playbackState.value = _playbackState.value.copy(
                 isPlaying = false,
@@ -766,6 +798,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 ensureFallbackLocalExoPlayer()
                 activePlayer
             } ?: return@launch
+
+            hasAttemptedSoftwareFallbackForCurrentTrack = false
+            // Synchronously release any active hardware video decoder instance from the previous item
+            // before initializing a new (potentially 4K 3840x2160) video decoder.
+            runCatching {
+                player.stop()
+                player.clearMediaItems()
+            }
 
             player.setMediaItems(mediaItems, startIndex, initialSeekMs)
             player.playbackParameters = PlaybackParameters(prefs.defaultPlaybackSpeed)

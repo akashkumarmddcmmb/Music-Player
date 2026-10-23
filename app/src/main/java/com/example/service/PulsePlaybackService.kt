@@ -13,6 +13,8 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionCommand
@@ -23,6 +25,8 @@ import com.example.media.EqualizerController
 import com.example.media.EqualizerDspConfig
 import com.example.media.HardwareEqualizerState
 import com.example.media.PulseEqualizerAudioProcessor
+import com.example.media.Resilient4KMediaCodecAdapterFactory
+import com.example.media.Resilient4KMediaCodecSelector
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CoroutineScope
@@ -224,7 +228,13 @@ class PulsePlaybackService : MediaSessionService() {
                 .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
                 .build()
 
+            val resilientCodecFactory = Resilient4KMediaCodecAdapterFactory(context)
+
             val renderersFactory = object : DefaultRenderersFactory(context) {
+                override fun getCodecAdapterFactory(): MediaCodecAdapter.Factory {
+                    return resilientCodecFactory
+                }
+
                 override fun buildAudioSink(
                     context: Context,
                     enableFloatOutput: Boolean,
@@ -237,10 +247,25 @@ class PulsePlaybackService : MediaSessionService() {
                         .build()
                 }
             }
+                .setEnableDecoderFallback(true)
+                .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+                .setMediaCodecSelector(Resilient4KMediaCodecSelector)
+                .setAllowedVideoJoiningTimeMs(5000L)
+
+            val trackSelector = DefaultTrackSelector(context).apply {
+                parameters = buildUponParameters()
+                    .setExceedVideoConstraintsIfNecessary(true)
+                    .setExceedRendererCapabilitiesIfNecessary(true)
+                    .setExceedAudioConstraintsIfNecessary(true)
+                    .setTunnelingEnabled(false)
+                    .build()
+            }
 
             return ExoPlayer.Builder(context, renderersFactory)
+                .setTrackSelector(trackSelector)
                 .setAudioAttributes(audioAttributes, /* handleAudioFocus = */ true)
                 .setHandleAudioBecomingNoisy(true)
+                .setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
                 .setWakeMode(C.WAKE_MODE_LOCAL)
                 .build()
         }

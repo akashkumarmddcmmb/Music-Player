@@ -36,6 +36,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -142,9 +143,13 @@ fun MediaItemCard(
 
             Spacer(modifier = Modifier.width(12.dp))
 
+            val cleanTitle = remember(media.title) {
+                media.title.replace(Regex("\\s*\\(\\d+x\\d+[^)]*\\)"), "").trim()
+            }
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = media.title,
+                    text = cleanTitle,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -152,7 +157,7 @@ fun MediaItemCard(
                     color = MaterialTheme.colorScheme.onSurface
                 )
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
 
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -161,66 +166,37 @@ fun MediaItemCard(
                     Text(
                         text = formatDurationMillis(media.durationMs),
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1
                     )
                     Text(
                         text = "•",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
                     Text(
                         text = formatFileSize(media.sizeBytes),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
                     )
                     if (media.width > 0 && media.height > 0) {
                         Text(
-                            text = "• ${media.width}x${media.height}",
+                            text = "•",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.secondary
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = "${media.width}x${media.height}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
-            }
-
-            // Accessible Action Buttons (minimum 48dp touch targets)
-            IconButton(
-                onClick = onFavoriteToggle,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("fav_button_${media.title.take(8).replace(" ", "_")}")
-            ) {
-                Icon(
-                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                    contentDescription = if (isFavorite) "Remove from favorites" else "Add to favorites",
-                    tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            IconButton(
-                onClick = onAddToPlaylistClick,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("playlist_add_button")
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                    contentDescription = "Add to playlist",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-
-            IconButton(
-                onClick = onOpenInStudioClick,
-                modifier = Modifier
-                    .minimumInteractiveComponentSize()
-                    .testTag("open_studio_item_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ContentCut,
-                    contentDescription = "Edit or convert in Studio",
-                    tint = MaterialTheme.colorScheme.secondary
-                )
             }
         }
     }

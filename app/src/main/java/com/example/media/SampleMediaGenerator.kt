@@ -172,7 +172,7 @@ class SampleMediaGenerator(private val context: Context) {
                 MediaEntity(
                     uriString = Uri.fromFile(mp4File).toString(),
                     mediaStoreId = null,
-                    title = "Cinema Calibration Reel (640x360 MP4)",
+                    title = "Cinema Calibration Reel",
                     artist = "",
                     album = "Studio Samples",
                     folderName = "Videos",

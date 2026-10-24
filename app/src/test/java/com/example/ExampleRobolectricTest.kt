@@ -1654,6 +1654,331 @@ class ExampleRobolectricTest {
             com.example.media.Resilient4KCodecEngine.formatVerifiedResolutionBadge(3840, 2160)
         )
     }
+
+    @Test
+    fun safMediaClassification_classifiesVideoAudioAndRejectsUnsupportedOrEmptyFiles() = runBlocking<Unit> {
+        val repo = com.example.data.repository.MediaLibraryRepository(
+            context = context,
+            dao = database.pulseDao(),
+            sampleGenerator = SampleMediaGenerator(context)
+        )
+
+        // 1. Explicit video/* MIME from ContentResolver
+        val explicitVideo = repo.classifyMediaTypeAndMime(
+            resolverMime = "video/mp4",
+            displayName = "clip",
+            uriString = "content://media/external/video/123",
+            retrieverMime = null,
+            hasVideoTrackMetadata = false,
+            hasAudioTrackMetadata = false,
+            videoWidth = 0,
+            videoHeight = 0
+        )
+        assertNotNull(explicitVideo)
+        assertEquals(MediaType.VIDEO, explicitVideo!!.first)
+        assertEquals("video/mp4", explicitVideo.second)
+
+        // 2. Null ContentResolver MIME with .mp4 / .mkv / .webm extension -> VIDEO (never defaults to audio/*)
+        val nullMimeMp4 = repo.classifyMediaTypeAndMime(
+            resolverMime = null,
+            displayName = "cinema_4k_sample.mp4",
+            uriString = "file:///storage/emulated/0/Movies/cinema_4k_sample.mp4",
+            retrieverMime = null,
+            hasVideoTrackMetadata = false,
+            hasAudioTrackMetadata = false,
+            videoWidth = 0,
+            videoHeight = 0
+        )
+        assertNotNull(nullMimeMp4)
+        assertEquals(MediaType.VIDEO, nullMimeMp4!!.first)
+        assertEquals("video/mp4", nullMimeMp4.second)
+
+        // 3. Generic application/octet-stream MIME with .mkv extension -> VIDEO
+        val octetStreamMkv = repo.classifyMediaTypeAndMime(
+            resolverMime = "application/octet-stream",
+            displayName = "movie_clip.mkv",
+            uriString = "content://com.android.externalstorage.documents/document/primary%3ADownload%2Fmovie_clip.mkv",
+            retrieverMime = null,
+            hasVideoTrackMetadata = false,
+            hasAudioTrackMetadata = false,
+            videoWidth = 0,
+            videoHeight = 0
+        )
+        assertNotNull(octetStreamMkv)
+        assertEquals(MediaType.VIDEO, octetStreamMkv!!.first)
+        assertEquals("video/x-matroska", octetStreamMkv.second)
+
+        // 4. Opaque SAF URI without extension, classified via MediaMetadataRetriever video track/dimensions
+        val opaqueVideoRetriever = repo.classifyMediaTypeAndMime(
+            resolverMime = "application/octet-stream",
+            displayName = "content_100004921",
+            uriString = "content://media/picker/0/com.android.providers.media.photopicker/media/100004921",
+            retrieverMime = "video/hevc",
+            hasVideoTrackMetadata = true,
+            hasAudioTrackMetadata = true,
+            videoWidth = 3840,
+            videoHeight = 2160
+        )
+        assertNotNull(opaqueVideoRetriever)
+        assertEquals(MediaType.VIDEO, opaqueVideoRetriever!!.first)
+        assertEquals("video/hevc", opaqueVideoRetriever.second)
+
+        // 5. Unsupported file (.pdf) with no audio/video tracks -> null
+        val unsupportedPdf = repo.classifyMediaTypeAndMime(
+            resolverMime = "application/pdf",
+            displayName = "manual.pdf",
+            uriString = "content://downloads/document/manual.pdf",
+            retrieverMime = null,
+            hasVideoTrackMetadata = false,
+            hasAudioTrackMetadata = false,
+            videoWidth = 0,
+            videoHeight = 0
+        )
+        assertNull("Unsupported PDF must not be classified as audio or video", unsupportedPdf)
+
+        // 6. Test importSafMediaUriDetailed on a real generated MP4 file (file:// URI has null ContentResolver MIME)
+        val realVideoFile = File(context.cacheDir, "saf_test_reel.mp4")
+        writeMinimalTestMp4File(realVideoFile)
+        assertTrue(realVideoFile.exists() && realVideoFile.length() > 64L)
+
+        val videoImportResult = repo.importSafMediaUriDetailed(Uri.fromFile(realVideoFile))
+        assertTrue(
+            "Valid MP4 file must succeed SAF import",
+            videoImportResult is com.example.data.repository.MediaLibraryRepository.SafImportResult.Success
+        )
+        val importedVideo = (videoImportResult as com.example.data.repository.MediaLibraryRepository.SafImportResult.Success).entity
+        assertEquals("MP4 file imported with null ContentResolver MIME must be classified as VIDEO", MediaType.VIDEO, importedVideo.mediaType)
+        assertEquals("video/mp4", importedVideo.mimeType)
+
+        // 7. Test importSafMediaUriDetailed on an empty 0-byte file -> CorruptedOrEmpty
+        val emptyFile = File(context.cacheDir, "empty_broken.mp4")
+        emptyFile.writeBytes(ByteArray(0))
+        val emptyImportResult = repo.importSafMediaUriDetailed(Uri.fromFile(emptyFile))
+        assertTrue(
+            "0-byte file must be rejected as CorruptedOrEmpty",
+            emptyImportResult is com.example.data.repository.MediaLibraryRepository.SafImportResult.CorruptedOrEmpty
+        )
+
+        // 8. Test importSafMediaUriDetailed on an unsupported text/pdf file -> UnsupportedFormat
+        val fakePdfFile = File(context.cacheDir, "not_media.pdf")
+        fakePdfFile.writeText("%PDF-1.7 fake document content that is over 32 bytes long for testing")
+        val pdfImportResult = repo.importSafMediaUriDetailed(Uri.fromFile(fakePdfFile))
+        assertTrue(
+            "Non-media file must be rejected as UnsupportedFormat",
+            pdfImportResult is com.example.data.repository.MediaLibraryRepository.SafImportResult.UnsupportedFormat
+        )
+
+        realVideoFile.delete()
+        emptyFile.delete()
+        fakePdfFile.delete()
+    }
+
+    @Test
+    fun midPlaybackRotationAndSurfacePolicy_switchesSurfaceViewAndTextureViewAndCyclesRotation() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        // Initial rotation is 0° (uses SurfaceView)
+        assertEquals(0, vm.playbackState.value.videoRotationDegrees)
+        assertEquals(0, PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(vm.playbackState.value.videoRotationDegrees, 1920, 1080).rotationDegrees)
+
+        // Rotate 0° -> 90° (switches to TextureView via R.layout.pulse_texture_player_view)
+        vm.rotateVideoView90Degrees()
+        assertEquals(90, vm.playbackState.value.videoRotationDegrees)
+        val transform90 = PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(vm.playbackState.value.videoRotationDegrees, 1920, 1080)
+        assertEquals(90, transform90.rotationDegrees)
+        assertEquals(1080f / 1920f, transform90.scaleX, 0.001f)
+
+        // Rotate 90° -> 180° (uses TextureView)
+        vm.rotateVideoView90Degrees()
+        assertEquals(180, vm.playbackState.value.videoRotationDegrees)
+        assertEquals(180, PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(vm.playbackState.value.videoRotationDegrees, 1920, 1080).rotationDegrees)
+
+        // Rotate 180° -> 270° (uses TextureView)
+        vm.rotateVideoView90Degrees()
+        assertEquals(270, vm.playbackState.value.videoRotationDegrees)
+        assertEquals(270, PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(vm.playbackState.value.videoRotationDegrees, 1920, 1080).rotationDegrees)
+
+        // Rotate 270° -> 0° (returns to SurfaceView)
+        vm.rotateVideoView90Degrees()
+        assertEquals(0, vm.playbackState.value.videoRotationDegrees)
+        assertEquals(0, PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(vm.playbackState.value.videoRotationDegrees, 1920, 1080).rotationDegrees)
+
+        // Verify TextureView PlayerView XML inflation and rotation transform application
+        val activity = Robolectric.buildActivity(Activity::class.java).create().get()
+        val playerView = android.view.LayoutInflater.from(activity)
+            .inflate(R.layout.pulse_texture_player_view, null, false) as androidx.media3.ui.PlayerView
+        assertTrue(playerView.videoSurfaceView is android.view.TextureView)
+        playerView.videoSurfaceView!!.rotation = transform90.rotationDegrees.toFloat()
+        assertEquals(90f, playerView.videoSurfaceView!!.rotation, 0.01f)
+    }
+
+    @Test
+    fun decoderRecoveryAndErrorHandling_neverSetsIsPlayingTruePrematurelyAndBoundsRetries() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        val videoFile = File(context.cacheDir, "recovery_test_video.mp4")
+        writeMinimalTestMp4File(videoFile)
+        val videoEntity = MediaEntity(
+            uriString = Uri.fromFile(videoFile).toString(),
+            mediaStoreId = null,
+            title = "4K Recovery Test Video",
+            artist = "PulsePlay QA",
+            album = "Video Cinema",
+            folderName = "Movies",
+            durationMs = 6000L,
+            sizeBytes = videoFile.length(),
+            mimeType = "video/hevc",
+            mediaType = MediaType.VIDEO,
+            width = 3840,
+            height = 2160,
+            dateAddedEpochSec = 1700000500L
+        )
+
+        vm.setQueue(listOf(videoEntity), initialIndex = 0)
+
+        val decoderInitError = androidx.media3.common.PlaybackException(
+            "MediaCodecVideoRenderer error: decoder init failed",
+            IllegalStateException("c2.qti.hevc.decoder configure failed"),
+            androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
+        )
+
+        // 1st recoverable decoder failure -> triggers bounded retry #1 (MAX_DECODER_RECOVERY_RETRIES = 1), keeps isPlaying=false, preserves media
+        vm.handlePlayerError(decoderInitError)
+        val stateAfterRetry1 = vm.playbackState.value
+        assertFalse("isPlaying must NEVER be set to true before recovery reaches STATE_READY", stateAfterRetry1.isPlaying)
+        assertTrue("isBuffering must be true while decoder recovery is in progress", stateAfterRetry1.isBuffering)
+        assertEquals(com.example.media.Resilient4KCodecEngine.MAX_DECODER_RECOVERY_RETRIES, stateAfterRetry1.decoderRecoveryAttempts)
+        assertNull("playbackError should stay null during active recovery attempt #1", stateAfterRetry1.playbackError)
+        assertEquals(videoEntity.uriString, stateAfterRetry1.currentMedia?.uriString)
+
+        // 2nd decoder failure -> exceeds MAX_DECODER_RECOVERY_RETRIES (1), halts retry loop and surfaces diagnostic error
+        vm.handlePlayerError(decoderInitError)
+        val stateAfterExhausted = vm.playbackState.value
+        assertFalse("isPlaying must be false when decoder recovery is exhausted", stateAfterExhausted.isPlaying)
+        assertFalse("isBuffering must be false when decoder recovery is exhausted", stateAfterExhausted.isBuffering)
+        assertNotNull("Diagnostic error must be reported once retries are exhausted", stateAfterExhausted.playbackError)
+        assertTrue(
+            "Diagnostic error should include resolution or codec context",
+            stateAfterExhausted.playbackError!!.contains("3840x2160") ||
+                stateAfterExhausted.playbackError!!.contains("video/hevc")
+        )
+
+        // Verify non-decoder error (e.g., IO error) does NOT trigger decoder fallback retry
+        vm.setQueue(listOf(videoEntity), initialIndex = 0)
+        val ioError = androidx.media3.common.PlaybackException(
+            "Source file unreadable",
+            java.io.FileNotFoundException("Missing file"),
+            androidx.media3.common.PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
+        )
+        vm.handlePlayerError(ioError)
+        val stateAfterIoError = vm.playbackState.value
+        assertFalse(stateAfterIoError.isPlaying)
+        assertEquals("Non-decoder error must not increment decoder recovery attempts", 0, stateAfterIoError.decoderRecoveryAttempts)
+        assertNotNull(stateAfterIoError.playbackError)
+
+        videoFile.delete()
+    }
+
+    @Test
+    fun audioToVideoAndVideoToAudioSwitching_updatesPlaybackStateAndRejectsTruncatedFiles() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+        val generator = SampleMediaGenerator(context)
+
+        val audioFile = File(context.cacheDir, "switch_test_audio.wav")
+        val videoFile = File(context.cacheDir, "switch_test_video.mp4")
+        val truncatedFile = File(context.cacheDir, "truncated_broken.mp4")
+
+        generator.generateStereoWavFile(audioFile, durationSeconds = 3)
+        writeMinimalTestMp4File(videoFile)
+        truncatedFile.writeBytes(ByteArray(0))
+
+        val audioEntity = MediaEntity(
+            uriString = Uri.fromFile(audioFile).toString(),
+            mediaStoreId = null,
+            title = "Switch Test Audio",
+            artist = "PulsePlay",
+            album = "Audio",
+            folderName = "Music",
+            durationMs = 3000L,
+            sizeBytes = audioFile.length(),
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000600L
+        )
+        val videoEntity = MediaEntity(
+            uriString = Uri.fromFile(videoFile).toString(),
+            mediaStoreId = null,
+            title = "Switch Test Video",
+            artist = "PulsePlay",
+            album = "Video",
+            folderName = "Movies",
+            durationMs = 6000L,
+            sizeBytes = videoFile.length(),
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 640,
+            height = 360,
+            dateAddedEpochSec = 1700000601L
+        )
+        val truncatedEntity = videoEntity.copy(
+            uriString = Uri.fromFile(truncatedFile).toString(),
+            title = "Truncated Video",
+            sizeBytes = 0L
+        )
+
+        // 1. Start audio playback
+        vm.setQueue(listOf(audioEntity, videoEntity), initialIndex = 0)
+        assertEquals(MediaType.AUDIO, vm.playbackState.value.currentMedia?.mediaType)
+        assertNull(vm.playbackState.value.playbackError)
+        assertNotNull("Player instance must be available for binding", vm.getPlayerInstanceForVideoSurface())
+
+        // 2. Switch from audio to video
+        vm.setQueue(listOf(audioEntity, videoEntity), initialIndex = 1)
+        assertEquals(MediaType.VIDEO, vm.playbackState.value.currentMedia?.mediaType)
+        assertEquals(640, vm.playbackState.value.currentMedia?.width)
+        assertEquals(360, vm.playbackState.value.currentMedia?.height)
+        assertFalse(vm.playbackState.value.hasRenderedFirstFrame)
+
+        // Simulate first frame rendered callback
+        vm.onRenderedFirstFrame()
+        assertTrue(vm.playbackState.value.hasRenderedFirstFrame)
+        assertFalse(vm.playbackState.value.isBuffering)
+
+        // 3. Switch from video back to audio
+        vm.setQueue(listOf(audioEntity, videoEntity), initialIndex = 0)
+        assertEquals(MediaType.AUDIO, vm.playbackState.value.currentMedia?.mediaType)
+
+        // 4. Attempt to load truncated 0-byte video -> immediately rejected with clear error and isPlaying=false
+        vm.setQueue(listOf(truncatedEntity), initialIndex = 0)
+        assertFalse(vm.playbackState.value.isPlaying)
+        assertNotNull(vm.playbackState.value.playbackError)
+        assertTrue(vm.playbackState.value.playbackError!!.lowercase().contains("corrupted or empty"))
+
+        audioFile.delete()
+        videoFile.delete()
+        truncatedFile.delete()
+    }
+
+    private fun writeMinimalTestMp4File(outMp4: File) {
+        if (outMp4.exists()) outMp4.delete()
+        val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 640, 360).apply {
+            setInteger(MediaFormat.KEY_FRAME_RATE, 15)
+        }
+        val muxer = IsoMp4Muxer(outMp4)
+        val vTrack = muxer.addTrack(videoFormat)
+        muxer.start()
+        val fakeIdrNal = ByteArray(64) { idx -> if (idx == 0) 0x65.toByte() else (idx and 0xFF).toByte() }
+        val info = MediaCodec.BufferInfo().apply {
+            set(0, fakeIdrNal.size, 0L, MediaCodec.BUFFER_FLAG_KEY_FRAME)
+        }
+        muxer.writeSampleData(vTrack, ByteBuffer.wrap(fakeIdrNal), info)
+        muxer.stop()
+        muxer.release()
+    }
 }
+
 
 

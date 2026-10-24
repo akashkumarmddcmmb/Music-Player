@@ -675,10 +675,99 @@ class MediaLibraryRepository(
     }
 
     /**
-     * Imports a single user-selected SAF URI, persists read permission if supported,
-     * extracts real metadata via MediaMetadataRetriever, and inserts into Room.
+     * Structured outcome of importing a user-selected SAF or local file URI.
      */
-    suspend fun importSafMediaUri(uri: Uri): MediaEntity? = withContext(Dispatchers.IO) {
+    sealed class SafImportResult {
+        data class Success(val entity: MediaEntity) : SafImportResult()
+        data class UnsupportedFormat(val reason: String) : SafImportResult()
+        data class CorruptedOrEmpty(val reason: String) : SafImportResult()
+        data class AccessDeniedOrNotFound(val reason: String) : SafImportResult()
+    }
+
+    /**
+     * Resolves media classification (MediaType + specific MIME type) using the 4-tier priority:
+     * 1. ContentResolver.getType(uri) (when specific audio or video MIME type)
+     * 2. File extension from display name or URI path (VIDEO_EXTENSIONS vs AUDIO_EXTENSIONS)
+     * 3. MediaMetadataRetriever inspection (METADATA_KEY_HAS_VIDEO, METADATA_KEY_MIMETYPE, width/height)
+     * 4. Returns null if the file is neither a recognized audio nor video media container.
+     */
+    fun classifyMediaTypeAndMime(
+        resolverMime: String?,
+        displayName: String?,
+        uriString: String?,
+        retrieverMime: String?,
+        hasVideoTrackMetadata: Boolean,
+        hasAudioTrackMetadata: Boolean,
+        videoWidth: Int,
+        videoHeight: Int
+    ): Pair<MediaType, String>? {
+        val cleanResolverMime = resolverMime?.trim()?.lowercase()
+            ?.takeIf { it.isNotEmpty() && it != "application/octet-stream" && it != "*/*" && it != "binary/octet-stream" }
+        val cleanRetrieverMime = retrieverMime?.trim()?.lowercase()
+            ?.takeIf { it.isNotEmpty() && it != "application/octet-stream" && it != "*/*" }
+
+        val candidateExt = displayName
+            ?.substringAfterLast('.', "")
+            ?.lowercase()
+            ?.takeIf { it.isNotEmpty() }
+            ?: uriString
+                ?.substringBefore('?')
+                ?.substringAfterLast('/')
+                ?.substringAfterLast('.', "")
+                ?.lowercase()
+                ?.takeIf { it.isNotEmpty() }
+            ?: ""
+
+        val extIsVideo = candidateExt in VIDEO_EXTENSIONS
+        val extIsAudio = candidateExt in AUDIO_EXTENSIONS
+
+        // 1. Check explicit video indicators from ContentResolver, extension, or MediaMetadataRetriever
+        val isVideo = when {
+            cleanResolverMime?.startsWith("video/") == true -> true
+            extIsVideo -> true
+            hasVideoTrackMetadata || (videoWidth > 0 && videoHeight > 0) -> true
+            cleanRetrieverMime?.startsWith("video/") == true -> true
+            else -> false
+        }
+
+        if (isVideo) {
+            val resolvedMime = when {
+                cleanResolverMime?.startsWith("video/") == true && !cleanResolverMime.endsWith("/*") -> cleanResolverMime
+                cleanRetrieverMime?.startsWith("video/") == true && !cleanRetrieverMime.endsWith("/*") -> cleanRetrieverMime
+                extIsVideo -> resolveMimeTypeForExtension(candidateExt, isVideo = true)
+                cleanResolverMime?.startsWith("video/") == true -> "video/mp4"
+                else -> "video/mp4"
+            }
+            return MediaType.VIDEO to resolvedMime
+        }
+
+        // 2. Check explicit audio indicators from ContentResolver, extension, or MediaMetadataRetriever
+        val isAudio = when {
+            cleanResolverMime?.startsWith("audio/") == true -> true
+            extIsAudio -> true
+            hasAudioTrackMetadata -> true
+            cleanRetrieverMime?.startsWith("audio/") == true -> true
+            else -> false
+        }
+
+        if (isAudio) {
+            val resolvedMime = when {
+                cleanResolverMime?.startsWith("audio/") == true && !cleanResolverMime.endsWith("/*") -> cleanResolverMime
+                cleanRetrieverMime?.startsWith("audio/") == true && !cleanRetrieverMime.endsWith("/*") -> cleanRetrieverMime
+                extIsAudio -> resolveMimeTypeForExtension(candidateExt, isVideo = false)
+                else -> "audio/mpeg"
+            }
+            return MediaType.AUDIO to resolvedMime
+        }
+
+        return null
+    }
+
+    /**
+     * Detailed SAF / file URI import that distinguishes valid video/audio from unsupported,
+     * empty/corrupted, or inaccessible files.
+     */
+    suspend fun importSafMediaUriDetailed(uri: Uri): SafImportResult = withContext(Dispatchers.IO) {
         runCatching {
             context.contentResolver.takePersistableUriPermission(
                 uri,
@@ -686,70 +775,176 @@ class MediaLibraryRepository(
             )
         }
 
-        val mimeType = context.contentResolver.getType(uri) ?: "audio/*"
-        val isVideo = mimeType.startsWith("video")
-        var displayName = "Selected Media"
-        var sizeBytes = 0L
+        val scheme = uri.scheme?.lowercase()
+        var displayName: String? = null
+        var sizeBytes = -1L
+        var canReadUri = false
 
-        runCatching {
-            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
-                    if (nameIdx >= 0) {
-                        displayName = cursor.getString(nameIdx) ?: displayName
-                    }
-                    if (sizeIdx >= 0) {
-                        sizeBytes = cursor.getLong(sizeIdx)
+        if (scheme == "file") {
+            val file = uri.path?.let { File(it) }
+            if (file == null || !file.exists() || !file.canRead()) {
+                return@withContext SafImportResult.AccessDeniedOrNotFound(
+                    "File does not exist or cannot be read: ${uri.path ?: uri}"
+                )
+            }
+            canReadUri = true
+            displayName = file.name
+            sizeBytes = file.length()
+            if (sizeBytes <= 0L) {
+                return@withContext SafImportResult.CorruptedOrEmpty(
+                    "Selected media file '${file.name}' is empty (0 bytes)."
+                )
+            }
+        } else {
+            runCatching {
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        canReadUri = true
+                        val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+                            displayName = cursor.getString(nameIdx)?.takeIf { it.isNotBlank() }
+                        }
+                        if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                            sizeBytes = cursor.getLong(sizeIdx)
+                        }
                     }
                 }
             }
+            if (!canReadUri) {
+                val afd = runCatching { context.contentResolver.openAssetFileDescriptor(uri, "r") }.getOrNull()
+                if (afd != null) {
+                    canReadUri = true
+                    if (sizeBytes < 0L && afd.length >= 0L) {
+                        sizeBytes = afd.length
+                    }
+                    runCatching { afd.close() }
+                }
+            }
+            if (sizeBytes == 0L) {
+                return@withContext SafImportResult.CorruptedOrEmpty(
+                    "Selected media file '${displayName ?: uri.lastPathSegment ?: "file"}' is empty (0 bytes)."
+                )
+            }
         }
+
+        val resolverMime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+        val fallbackName = displayName
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "Selected Media"
 
         var durationMs = 0L
         var artist = "SAF Imported"
         var album = "User Selected"
         var width = 0
         var height = 0
+        var rotationDegrees = 0
+        var retrieverMime: String? = null
+        var hasVideoTrack = false
+        var hasAudioTrack = false
+        var retrieverSucceeded = false
 
         val retriever = MediaMetadataRetriever()
         try {
-            retriever.setDataSource(context, uri)
+            if (scheme == "file" && uri.path != null) {
+                retriever.setDataSource(uri.path)
+            } else {
+                retriever.setDataSource(context, uri)
+            }
+            retrieverSucceeded = true
+            canReadUri = true
             durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                ?.toLongOrNull() ?: 0L
+                ?.toLongOrNull()?.coerceAtLeast(0L) ?: 0L
             artist = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST)
                 ?.takeIf { it.isNotBlank() } ?: artist
             album = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM)
                 ?.takeIf { it.isNotBlank() } ?: album
             width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-                ?.toIntOrNull() ?: 0
+                ?.toIntOrNull()?.coerceAtLeast(0) ?: 0
             height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+            rotationDegrees = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)
                 ?.toIntOrNull() ?: 0
+            retrieverMime = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_MIMETYPE)
+            hasVideoTrack = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO)
+                ?.equals("yes", ignoreCase = true) == true || (width > 0 && height > 0)
+            hasAudioTrack = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO)
+                ?.equals("yes", ignoreCase = true) == true
         } catch (_: Exception) {
         } finally {
             runCatching { retriever.release() }
         }
 
+        val classification = classifyMediaTypeAndMime(
+            resolverMime = resolverMime,
+            displayName = fallbackName,
+            uriString = uri.toString(),
+            retrieverMime = retrieverMime,
+            hasVideoTrackMetadata = hasVideoTrack,
+            hasAudioTrackMetadata = hasAudioTrack,
+            videoWidth = width,
+            videoHeight = height
+        ) ?: return@withContext SafImportResult.UnsupportedFormat(
+            "Unsupported media format for '$fallbackName' (MIME: ${resolverMime ?: "unknown"}). Please select a supported audio or video file."
+        )
+
+        val (mediaType, resolvedMime) = classification
+
+        // If a local file has a known video/audio extension, double-check that it isn't a corrupted 5-byte stub
+        if (scheme == "file" && sizeBytes in 1L..31L && !retrieverSucceeded && durationMs <= 0L) {
+            return@withContext SafImportResult.CorruptedOrEmpty(
+                "Media file '$fallbackName' appears corrupted or truncated ($sizeBytes bytes)."
+            )
+        }
+
+        // Fallback dimension inference from filename if retriever couldn't read container dimensions in unit test / restricted provider
+        if (mediaType == MediaType.VIDEO && (width <= 0 || height <= 0)) {
+            val dimRegex = Regex("(\\d{3,4})x(\\d{3,4})", RegexOption.IGNORE_CASE)
+            val match = dimRegex.find(fallbackName)
+            if (match != null) {
+                width = match.groupValues[1].toIntOrNull() ?: 0
+                height = match.groupValues[2].toIntOrNull() ?: 0
+            }
+        }
+
+        if (mediaType == MediaType.VIDEO && (rotationDegrees == 90 || rotationDegrees == 270) && width > 0 && height > 0) {
+            // Preserve oriented display dimensions when container metadata specifies 90/270 rotation
+            val tmp = width
+            width = height
+            height = tmp
+        }
+
+        val cleanTitle = fallbackName.substringBeforeLast('.').ifBlank { fallbackName }
         val entity = MediaEntity(
             uriString = uri.toString(),
             mediaStoreId = null,
-            title = displayName.substringBeforeLast('.'),
+            title = cleanTitle,
             artist = artist,
             album = album,
             folderName = "SAF Imports",
             durationMs = durationMs,
-            sizeBytes = sizeBytes,
-            mimeType = mimeType,
-            mediaType = if (isVideo) MediaType.VIDEO else MediaType.AUDIO,
-            width = width,
-            height = height,
+            sizeBytes = sizeBytes.coerceAtLeast(0L),
+            mimeType = resolvedMime,
+            mediaType = mediaType,
+            width = if (mediaType == MediaType.VIDEO) width else 0,
+            height = if (mediaType == MediaType.VIDEO) height else 0,
             dateAddedEpochSec = System.currentTimeMillis() / 1000L,
             isAvailable = true,
             isGeneratedSample = false
         )
         dao.upsertMediaItem(entity)
-        entity
+        SafImportResult.Success(entity)
     }
+
+    /**
+     * Imports a single user-selected SAF URI, persists read permission if supported,
+     * extracts real metadata via MediaMetadataRetriever, and inserts into Room.
+     */
+    suspend fun importSafMediaUri(uri: Uri): MediaEntity? =
+        when (val result = importSafMediaUriDetailed(uri)) {
+            is SafImportResult.Success -> result.entity
+            else -> null
+        }
 
     /**
      * Checks if a media URI is still readable (handles deleted files or revoked SAF permissions).

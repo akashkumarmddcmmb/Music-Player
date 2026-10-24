@@ -108,6 +108,7 @@ data class PlaybackUiState(
     val queue: List<MediaEntity> = emptyList(),
     val currentQueueIndex: Int = -1,
     val isPlaying: Boolean = false,
+    val isBuffering: Boolean = false,
     val currentPositionMs: Long = 0L,
     val durationMs: Long = 0L,
     val playbackSpeed: Float = 1.0f,
@@ -136,6 +137,11 @@ data class PlaybackUiState(
     val decoderStatusLabel: String = "Decoder Unverified",
     val decodedVideoWidth: Int = 0,
     val decodedVideoHeight: Int = 0,
+    val hasRenderedFirstFrame: Boolean = false,
+    val hasVideoSurface: Boolean = false,
+    val controllerConnected: Boolean = false,
+    val playerGeneration: Int = 0,
+    val decoderRecoveryAttempts: Int = 0,
     val playbackError: String? = null
 ) {
     val isSleepTimerActive: Boolean
@@ -265,12 +271,27 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean = size > 64
     }
 
+    private val _videoSurfacePlayerFlow = MutableStateFlow<Player?>(null)
+    val videoSurfacePlayerFlow: StateFlow<Player?> = _videoSurfacePlayerFlow.asStateFlow()
+
     private val _playbackState = MutableStateFlow(PlaybackUiState())
     val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
 
     private val playerListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            _playbackState.value = _playbackState.value.copy(isPlaying = isPlaying)
+            val currentUri = _playbackState.value.currentMedia?.uriString
+                ?: activePlayer?.currentMediaItem?.mediaId
+                ?: ""
+            if (isPlaying && currentUri.isNotBlank()) {
+                decoderRecoveryAttemptsByUri[currentUri] = 0
+                Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = false
+            }
+            _playbackState.value = _playbackState.value.copy(
+                isPlaying = isPlaying,
+                isBuffering = if (isPlaying) false else _playbackState.value.isBuffering,
+                decoderRecoveryAttempts = if (isPlaying) 0 else _playbackState.value.decoderRecoveryAttempts,
+                playbackError = if (isPlaying) null else _playbackState.value.playbackError
+            )
             val player = activePlayer
             equalizerController.updatePlaybackActive(
                 isPlaying || (player != null && player.playbackState == Player.STATE_READY && player.mediaItemCount > 0)
@@ -290,9 +311,21 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             val player = activePlayer ?: return
             val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
                 ?: _playbackState.value.currentMedia?.durationMs ?: 0L
+            val currentUri = _playbackState.value.currentMedia?.uriString
+                ?: player.currentMediaItem?.mediaId
+                ?: ""
+            if (playbackState == Player.STATE_READY && currentUri.isNotBlank()) {
+                decoderRecoveryAttemptsByUri[currentUri] = 0
+                Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = false
+            }
+            val nowPlaying = player.isPlaying || (playbackState == Player.STATE_READY && player.playWhenReady)
             _playbackState.value = _playbackState.value.copy(
                 durationMs = dur,
-                currentPositionMs = player.currentPosition.coerceAtLeast(0L)
+                currentPositionMs = player.currentPosition.coerceAtLeast(0L),
+                isPlaying = nowPlaying,
+                isBuffering = playbackState == Player.STATE_BUFFERING,
+                decoderRecoveryAttempts = if (playbackState == Player.STATE_READY) 0 else _playbackState.value.decoderRecoveryAttempts,
+                playbackError = if (playbackState == Player.STATE_READY) null else _playbackState.value.playbackError
             )
             equalizerController.updatePlaybackActive(
                 player.isPlaying || (playbackState == Player.STATE_READY && player.mediaItemCount > 0)
@@ -302,6 +335,22 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             if (playbackState == Player.STATE_ENDED && _playbackState.value.sleepTimerStopAtEndOfTrack) {
                 triggerSleepTimerAutoStop("Sleep Timer: Stopped automatically at end of track.")
             }
+        }
+
+        override fun onRenderedFirstFrame() {
+            val currentUri = _playbackState.value.currentMedia?.uriString
+                ?: activePlayer?.currentMediaItem?.mediaId
+                ?: ""
+            if (currentUri.isNotBlank()) {
+                decoderRecoveryAttemptsByUri[currentUri] = 0
+            }
+            Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = false
+            _playbackState.value = _playbackState.value.copy(
+                hasRenderedFirstFrame = true,
+                isBuffering = false,
+                decoderRecoveryAttempts = 0,
+                playbackError = null
+            )
         }
 
         @OptIn(UnstableApi::class)
@@ -340,6 +389,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = nextEntity,
                 currentQueueIndex = idx,
+                hasRenderedFirstFrame = false,
                 playbackError = null
             )
             if (nextEntity != null) {
@@ -352,66 +402,152 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
 
         override fun onPlayerError(error: PlaybackException) {
-            val isDecoderFailure =
-                error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
-                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
-                    error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
+            handlePlayerError(error)
+        }
+    }
 
-            val currentUri = _playbackState.value.currentMedia?.uriString
-                ?: activePlayer?.currentMediaItem?.mediaId
-                ?: ""
-            val attemptsSoFar = decoderRecoveryAttemptsByUri[currentUri] ?: 0
+    /**
+     * Handles [PlaybackException] with bounded decoder recovery for recoverable codec/surface errors,
+     * never prematurely marking `isPlaying = true` before the player actually resumes (`STATE_READY` / `onIsPlayingChanged`).
+     */
+    fun handlePlayerError(error: PlaybackException) {
+        val isDecoderFailure =
+            error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
+                error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
 
-            if (isDecoderFailure &&
-                currentUri.isNotBlank() &&
-                attemptsSoFar < Resilient4KCodecEngine.MAX_DECODER_RECOVERY_RETRIES
-            ) {
-                decoderRecoveryAttemptsByUri[currentUri] = attemptsSoFar + 1
-                Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = true
-                val player = activePlayer
-                if (player != null) {
-                    val savedIndex = player.currentMediaItemIndex.coerceAtLeast(0)
-                    val savedPos = player.currentPosition.coerceAtLeast(
-                        _playbackState.value.currentPositionMs.coerceAtLeast(0L)
-                    )
-                    viewModelScope.launch {
-                        delay(120L)
-                        runCatching {
-                            player.stop()
-                            player.seekTo(savedIndex, savedPos)
-                            player.prepare()
-                            player.playWhenReady = true
-                            player.play()
-                            _playbackState.value = _playbackState.value.copy(
-                                isPlaying = true,
-                                currentPositionMs = savedPos,
-                                playbackError = null
-                            )
-                        }
-                    }
-                    return
-                }
-            }
+        val currentMedia = _playbackState.value.currentMedia
+        val currentUri = currentMedia?.uriString
+            ?: activePlayer?.currentMediaItem?.mediaId
+            ?: ""
+        val attemptsSoFar = decoderRecoveryAttemptsByUri[currentUri] ?: 0
+        val player = activePlayer
+        val savedIndex = (player?.currentMediaItemIndex?.takeIf { it >= 0 }
+            ?: _playbackState.value.currentQueueIndex).coerceAtLeast(0)
+        val savedPos = (player?.currentPosition?.takeIf { it > 0L }
+            ?: _playbackState.value.currentPositionMs).coerceAtLeast(0L)
 
-            val telemetryFailure = Resilient4KCodecEngine.latestTelemetry.value.failureReason
-            val friendlyMsg = if (!telemetryFailure.isNullOrBlank() && isDecoderFailure) {
-                "Playback error (${error.errorCodeName}): $telemetryFailure"
-            } else {
-                "Playback error (${error.errorCodeName}): The file may be corrupt, moved, or use an unsupported codec."
-            }
+        // Immediately reflect stopped/error state before any recovery completes
+        stopProgressPolling()
+
+        if (isDecoderFailure &&
+            currentUri.isNotBlank() &&
+            attemptsSoFar < Resilient4KCodecEngine.MAX_DECODER_RECOVERY_RETRIES
+        ) {
+            val nextAttempt = attemptsSoFar + 1
+            decoderRecoveryAttemptsByUri[currentUri] = nextAttempt
+            Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = true
+
             _playbackState.value = _playbackState.value.copy(
                 isPlaying = false,
-                isDecoderVerified = false,
-                decoderStatusLabel = "Decoder Init Failed",
-                playbackError = friendlyMsg
+                isBuffering = true,
+                currentMedia = currentMedia,
+                currentQueueIndex = savedIndex,
+                currentPositionMs = savedPos,
+                decoderRecoveryAttempts = nextAttempt,
+                decoderStatusLabel = "Recovering Decoder ($nextAttempt/${Resilient4KCodecEngine.MAX_DECODER_RECOVERY_RETRIES})",
+                playbackError = null
             )
+
+            if (player != null) {
+                viewModelScope.launch {
+                    delay(120L)
+                    runCatching {
+                        player.stop()
+                        player.seekTo(savedIndex, savedPos)
+                        player.prepare()
+                        player.playWhenReady = true
+                        player.play()
+                        // Note: Do NOT set isPlaying = true here!
+                        // isPlaying will only become true when onPlaybackStateChanged(STATE_READY)
+                        // or onIsPlayingChanged(true) confirms recovery succeeded.
+                    }.onFailure {
+                        Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = false
+                        _playbackState.value = _playbackState.value.copy(
+                            isPlaying = false,
+                            isBuffering = false,
+                            playbackError = buildDetailedPlaybackDiagnosticError(error, nextAttempt)
+                        )
+                    }
+                }
+            }
+            return
         }
+
+        // Recovery not applicable (non-decoder error) or bounded retries exhausted
+        Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = false
+        val diagnosticMsg = buildDetailedPlaybackDiagnosticError(error, attemptsSoFar)
+        _playbackState.value = _playbackState.value.copy(
+            isPlaying = false,
+            isBuffering = false,
+            currentMedia = currentMedia,
+            currentQueueIndex = savedIndex,
+            currentPositionMs = savedPos,
+            isDecoderVerified = false,
+            decoderRecoveryAttempts = attemptsSoFar,
+            decoderStatusLabel = if (isDecoderFailure) "Decoder Init Failed" else "Playback Error",
+            playbackError = diagnosticMsg
+        )
+    }
+
+    private fun buildDetailedPlaybackDiagnosticError(
+        error: PlaybackException,
+        recoveryAttempts: Int
+    ): String {
+        val state = _playbackState.value
+        val media = state.currentMedia
+        val telemetry = Resilient4KCodecEngine.latestTelemetry.value
+        val scheme = media?.uriString?.let { runCatching { Uri.parse(it).scheme }.getOrNull() } ?: "unknown"
+        val mime = media?.mimeType ?: telemetry.sourceMimeType.ifBlank { "unknown" }
+        val w = state.decodedVideoWidth.takeIf { it > 0 } ?: media?.width ?: 0
+        val h = state.decodedVideoHeight.takeIf { it > 0 } ?: media?.height ?: 0
+        val dimText = if (w > 0 && h > 0) "${w}x${h}" else "unknown-dim"
+        val fpsText = if (telemetry.sourceFrameRate > 0f) "${telemetry.sourceFrameRate.toInt()}fps" else "unknown-fps"
+        val decoderName = telemetry.selectedDecoderName ?: state.verifiedDecoderName ?: "none"
+        val hwSw = when {
+            telemetry.selectedDecoderName == null && state.verifiedDecoderName == null -> "uninitialized"
+            telemetry.isSoftwareFallbackActive -> "SW-fallback"
+            telemetry.isHardwareAccelerated -> "HW"
+            else -> "SW"
+        }
+        val surfaceInfo = "surface=${if (state.hasVideoSurface) "attached" else "detached"}, firstFrame=${state.hasRenderedFirstFrame}"
+        val telemetryFailure = telemetry.failureReason?.takeIf { it.isNotBlank() }
+
+        return buildString {
+            append("Playback error (${error.errorCodeName}): ")
+            if (telemetryFailure != null) {
+                append(telemetryFailure).append(" ")
+            } else {
+                append("The file may be corrupt, moved, or use an unsupported codec. ")
+            }
+            append("[URI=$scheme, MIME=$mime, res=$dimText@$fpsText, decoder=$decoderName ($hwSw), $surfaceInfo, retries=$recoveryAttempts]")
+        }
+    }
+
+    fun onVideoSurfaceAttached(attached: Boolean) {
+        if (_playbackState.value.hasVideoSurface != attached) {
+            _playbackState.value = _playbackState.value.copy(hasVideoSurface = attached)
+        }
+    }
+
+    fun onRenderedFirstFrame() {
+        playerListener.onRenderedFirstFrame()
     }
 
     init {
         viewModelScope.launch {
             dao.recoverInterruptedJobsOnStartup()
             refreshLibrary()
+        }
+        viewModelScope.launch {
+            PulsePlaybackService.serviceExoPlayerFlow.collect { serviceExo ->
+                val resolvedSurfacePlayer = serviceExo ?: activePlayer
+                _videoSurfacePlayerFlow.value = resolvedSurfacePlayer
+                _playbackState.value = _playbackState.value.copy(
+                    controllerConnected = serviceExo != null || activePlayer is MediaController,
+                    playerGeneration = _playbackState.value.playerGeneration + 1
+                )
+            }
         }
         viewModelScope.launch {
             val initialPrefs = preferencesRepository.preferencesFlow.first()
@@ -569,6 +705,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
         activePlayer = player
         player.addListener(playerListener)
+        _videoSurfacePlayerFlow.value = PulsePlaybackService.getAuthoritativeExoPlayerOrNull() ?: player
+        _playbackState.value = _playbackState.value.copy(
+            controllerConnected = player is MediaController || PulsePlaybackService.getAuthoritativeExoPlayerOrNull() != null,
+            playerGeneration = _playbackState.value.playerGeneration + 1
+        )
 
         viewModelScope.launch {
             val prefs = preferencesRepository.preferencesFlow.first()
@@ -623,8 +764,18 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun getPlayerInstanceForVideoSurface(): Player? {
+        val authoritativeServicePlayer = PulsePlaybackService.getAuthoritativeExoPlayerOrNull()
+        if (authoritativeServicePlayer != null) {
+            if (_videoSurfacePlayerFlow.value !== authoritativeServicePlayer) {
+                _videoSurfacePlayerFlow.value = authoritativeServicePlayer
+            }
+            return authoritativeServicePlayer
+        }
         if (activePlayer == null) {
             ensureFallbackLocalExoPlayer()
+        }
+        if (_videoSurfacePlayerFlow.value !== activePlayer) {
+            _videoSurfacePlayerFlow.value = activePlayer
         }
         return activePlayer
     }
@@ -785,13 +936,38 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun importSafUri(uri: Uri) {
         viewModelScope.launch {
-            val entity = mediaRepository.importSafMediaUri(uri)
-            if (entity != null) {
-                _statusBannerMessage.value = "Imported '${entity.title}' via Storage Access Framework."
-                playMedia(entity, listOf(entity))
-                _isNowPlayingExpanded.value = true
-            } else {
-                _statusBannerMessage.value = "Could not import selected file."
+            when (val result = mediaRepository.importSafMediaUriDetailed(uri)) {
+                is MediaLibraryRepository.SafImportResult.Success -> {
+                    val entity = result.entity
+                    val typeLabel = if (entity.mediaType == MediaType.VIDEO) "video" else "audio"
+                    _statusBannerMessage.value = "Imported $typeLabel '${entity.title}' (${entity.mimeType})."
+                    playMedia(entity, listOf(entity))
+                    _isNowPlayingExpanded.value = true
+                }
+                is MediaLibraryRepository.SafImportResult.UnsupportedFormat -> {
+                    _statusBannerMessage.value = result.reason
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        playbackError = result.reason
+                    )
+                }
+                is MediaLibraryRepository.SafImportResult.CorruptedOrEmpty -> {
+                    _statusBannerMessage.value = result.reason
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        playbackError = result.reason
+                    )
+                }
+                is MediaLibraryRepository.SafImportResult.AccessDeniedOrNotFound -> {
+                    _statusBannerMessage.value = result.reason
+                    _playbackState.value = _playbackState.value.copy(
+                        isPlaying = false,
+                        isBuffering = false,
+                        playbackError = result.reason
+                    )
+                }
             }
         }
     }
@@ -802,11 +978,30 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             if (media.isGeneratedSample || media.uriString.contains("Pulse_Cinema_Test_Reel")) {
                 runCatching { sampleGenerator.ensureLegalSampleMediaGenerated() }
             }
+            val parsedUri = Uri.parse(media.uriString)
+            if (parsedUri.scheme == "file") {
+                val localFile = parsedUri.path?.let { File(it) }
+                if (localFile != null && localFile.exists() && localFile.length() in 0L..31L) {
+                    val corruptMsg = "Corrupted or empty media file: '${media.title}' (${localFile.length()} bytes)."
+                    _playbackState.value = _playbackState.value.copy(
+                        currentMedia = media,
+                        isPlaying = false,
+                        isBuffering = false,
+                        hasRenderedFirstFrame = false,
+                        playbackError = corruptMsg
+                    )
+                    _statusBannerMessage.value = corruptMsg
+                    return@launch
+                }
+            }
+
             val isAvailable = mediaRepository.verifyUriAvailability(media.uriString)
             if (!isAvailable) {
                 _playbackState.value = _playbackState.value.copy(
                     currentMedia = media.copy(isAvailable = false),
                     isPlaying = false,
+                    isBuffering = false,
+                    hasRenderedFirstFrame = false,
                     playbackError = "File unavailable: '${media.title}' was moved, deleted, or its URI permission was revoked."
                 )
                 _statusBannerMessage.value = "File unavailable: ${media.title}"
@@ -844,6 +1039,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 ensureFallbackLocalExoPlayer()
                 activePlayer
             } ?: return@launch
+
+            _videoSurfacePlayerFlow.value = PulsePlaybackService.getAuthoritativeExoPlayerOrNull() ?: player
 
             val currentActiveUri = player.currentMediaItem?.mediaId
             val isSameActiveItem = currentActiveUri == media.uriString &&
@@ -915,9 +1112,13 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 queue = resolvedQueue,
                 currentQueueIndex = startIndex,
                 isPlaying = true,
+                isBuffering = player.playbackState == Player.STATE_BUFFERING,
+                hasRenderedFirstFrame = false,
+                decoderRecoveryAttempts = 0,
                 currentPositionMs = initialSeekMs,
                 durationMs = media.durationMs,
                 playbackSpeed = prefs.defaultPlaybackSpeed,
+                playerGeneration = _playbackState.value.playerGeneration + 1,
                 playbackError = null
             )
             startProgressPolling()
@@ -1110,10 +1311,36 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun setQueue(items: List<MediaEntity>, initialIndex: Int = 0) {
         val safeIndex = if (items.isNotEmpty()) initialIndex.coerceIn(0, items.size - 1) else 0
         val current = _playbackState.value
+        val activeMedia = items.getOrNull(safeIndex) ?: current.currentMedia
+        if (activeMedia != null) {
+            decoderRecoveryAttemptsByUri[activeMedia.uriString] = 0
+            val parsedUri = Uri.parse(activeMedia.uriString)
+            if (parsedUri.scheme == "file") {
+                val localFile = parsedUri.path?.let { File(it) }
+                if (localFile != null && localFile.exists() && localFile.length() in 0L..31L) {
+                    val corruptMsg = "Corrupted or empty media file: '${activeMedia.title}' (${localFile.length()} bytes)."
+                    _playbackState.value = current.copy(
+                        queue = items,
+                        currentQueueIndex = safeIndex,
+                        currentMedia = activeMedia,
+                        isPlaying = false,
+                        isBuffering = false,
+                        hasRenderedFirstFrame = false,
+                        decoderRecoveryAttempts = 0,
+                        playbackError = corruptMsg
+                    )
+                    _statusBannerMessage.value = corruptMsg
+                    return
+                }
+            }
+        }
         _playbackState.value = current.copy(
             queue = items,
             currentQueueIndex = safeIndex,
-            currentMedia = items.getOrNull(safeIndex) ?: current.currentMedia
+            currentMedia = activeMedia,
+            hasRenderedFirstFrame = false,
+            decoderRecoveryAttempts = 0,
+            playbackError = null
         )
     }
 

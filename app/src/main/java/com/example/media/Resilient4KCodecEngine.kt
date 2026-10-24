@@ -937,6 +937,45 @@ class Resilient4KMediaCodecAdapterFactory(
             }
         }
 
+        // For standard <=1080p streams, if strict VideoCapabilities alignment rejected a decoder (e.g. 640x360 height not divisible by 16),
+        // try any remaining MIME-matching candidates that haven't been attempted yet.
+        if (!is4k) {
+            val alreadyTriedNames = (orderedCompatibleHardware.map { it.name } + compatibleSoftware.map { it.name }).toSet()
+            val untriedStandardCandidates = candidates.filter { codec ->
+                codec.name !in alreadyTriedNames && reports[codec]?.mimeSupported == true
+            }
+            for (fallbackCodec in untriedStandardCandidates) {
+                val report = reports.getValue(fallbackCodec)
+                try {
+                    val fallbackConfig = if (fallbackCodec.name == configuration.codecInfo.name) {
+                        configuration
+                    } else {
+                        MediaCodecAdapter.Configuration.createForVideoDecoding(
+                            fallbackCodec,
+                            configuration.mediaFormat,
+                            format,
+                            configuration.surface,
+                            configuration.crypto
+                        )
+                    }
+                    val adapter = delegateFactory.createAdapter(fallbackConfig)
+                    Resilient4KCodecEngine.recordDecoderInitialized(
+                        decoderName = fallbackCodec.name,
+                        isHardware = report.isHardwareAccelerated,
+                        isSoftwareFallback = false,
+                        format = format,
+                        fallbackCount = fallbackAttempts,
+                        thermalStatus = thermalStatus
+                    )
+                    return adapter
+                } catch (e: Throwable) {
+                    lastException = e
+                    fallbackAttempts++
+                    failureNotes.add("${fallbackCodec.name} (std-fallback): ${e.javaClass.simpleName}")
+                }
+            }
+        }
+
         // Step 4: No compatible decoder succeeded — record clear diagnostic failure and throw without infinite retries
         val allDiagnostics = reports.values.joinToString("; ") { it.diagnosticNote }
         val finalReason = buildString {

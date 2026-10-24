@@ -209,6 +209,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val processingJobs by viewModel.processingJobs.collectAsStateWithLifecycle()
 
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
+    val videoSurfacePlayer by viewModel.videoSurfacePlayerFlow.collectAsStateWithLifecycle()
     val userPreferences by viewModel.userPreferences.collectAsStateWithLifecycle()
     val eqState by viewModel.equalizerState.collectAsStateWithLifecycle()
 
@@ -554,7 +555,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             playbackState = playbackState,
             userPreferences = userPreferences,
             isFavorite = playbackState.currentMedia?.let { favoriteUris.contains(it.uriString) } ?: false,
-            playerInstance = viewModel.getPlayerInstanceForVideoSurface(),
+            playerInstance = videoSurfacePlayer ?: viewModel.getPlayerInstanceForVideoSurface(),
             onCollapse = { viewModel.setNowPlayingExpanded(false) },
             onPlayPause = { viewModel.togglePlayPause() },
             onSeekTo = { viewModel.seekTo(it) },
@@ -600,7 +601,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             onSaveQueueAsPlaylist = { playlistName ->
                 viewModel.saveCurrentQueueAsPlaylist(playlistName)
             },
-            onRetryPlayback = { viewModel.retryCurrentPlayback() }
+            onRetryPlayback = { viewModel.retryCurrentPlayback() },
+            onSelectAudioTrack = { track -> viewModel.selectAudioTrack(track) },
+            onVideoSurfaceAttached = { attached -> viewModel.onVideoSurfaceAttached(attached) }
         )
         return
     }

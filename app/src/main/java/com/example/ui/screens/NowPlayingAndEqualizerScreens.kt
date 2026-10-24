@@ -90,6 +90,7 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -129,6 +130,7 @@ import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.Resilient4KCodecEngine
 import com.example.ui.components.formatDurationMillis
 import com.example.ui.components.formatFileSize
+import com.example.viewmodel.AudioTrackOption
 import com.example.viewmodel.PlaybackUiState
 import com.example.viewmodel.RepeatModeState
 import com.example.viewmodel.VideoAspectMode
@@ -175,6 +177,8 @@ fun NowPlayingOverlayScreen(
     onRemoveQueueItem: (Int) -> Unit,
     onMoveQueueItem: (Int, Int) -> Unit = { _, _ -> },
     onSaveQueueAsPlaylist: (String) -> Unit = {},
+    onSelectAudioTrack: (AudioTrackOption) -> Unit = {},
+    onVideoSurfaceAttached: (Boolean) -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     val currentMedia = playbackState.currentMedia
@@ -278,6 +282,8 @@ fun NowPlayingOverlayScreen(
                     onToggleFavorite = onToggleFavorite,
                     onOpenEqualizer = onOpenEqualizer,
                     onOpenStudio = onOpenStudio,
+                    onSelectAudioTrack = onSelectAudioTrack,
+                    onVideoSurfaceAttached = onVideoSurfaceAttached,
                     onRetryPlayback = onRetryPlayback
                 )
             } else {
@@ -979,56 +985,59 @@ private fun PortraitVideoSurfaceSection(
                 .testTag("video_surface_container")
         ) {
             if (playerInstance != null) {
-                AndroidView(
-                    factory = { ctx ->
-                        val pv = if (frameTransform.rotationDegrees != 0) {
-                            runCatching {
-                                LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
-                            }.getOrElse { PlayerView(ctx) }
-                        } else {
-                            // Requirement 7: Prefer SurfaceView for ordinary video playback
-                            PlayerView(ctx)
-                        }
-                        pv.apply {
-                            useController = false
-                            player = playerInstance
-                            keepScreenOn = shouldKeepVideoAwake
-                            resizeMode = when (playbackState.videoAspectMode) {
+                val requiresTextureView = frameTransform.rotationDegrees != 0
+                key(requiresTextureView, playerInstance, playbackState.playerGeneration) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val pv = if (requiresTextureView) {
+                                runCatching {
+                                    LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
+                                }.getOrElse { PlayerView(ctx) }
+                            } else {
+                                // Requirement 7: Prefer SurfaceView for ordinary video playback
+                                PlayerView(ctx)
+                            }
+                            pv.apply {
+                                useController = false
+                                player = playerInstance
+                                keepScreenOn = shouldKeepVideoAwake
+                                resizeMode = when (playbackState.videoAspectMode) {
+                                    VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                }
+                            }
+                        },
+                        update = { view ->
+                            if (view.player !== playerInstance) {
+                                view.player = playerInstance
+                            }
+                            view.keepScreenOn = shouldKeepVideoAwake
+                            view.resizeMode = when (playbackState.videoAspectMode) {
                                 VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                                 VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
                                 else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                             }
-                        }
-                    },
-                    update = { view ->
-                        if (view.player !== playerInstance) {
-                            view.player = playerInstance
-                        }
-                        view.keepScreenOn = shouldKeepVideoAwake
-                        view.resizeMode = when (playbackState.videoAspectMode) {
-                            VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                            VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        }
-                    },
-                    onReset = { view ->
-                        if (view.player === playerInstance) {
-                            view.player = null
-                        }
-                    },
-                    onRelease = { view ->
-                        if (view.player === playerInstance) {
-                            view.player = null
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            rotationZ = frameTransform.rotationDegrees.toFloat()
-                            scaleX = frameTransform.scaleX
-                            scaleY = frameTransform.scaleY
-                        }
-                )
+                        },
+                        onReset = { view ->
+                            if (view.player === playerInstance) {
+                                view.player = null
+                            }
+                        },
+                        onRelease = { view ->
+                            if (view.player === playerInstance) {
+                                view.player = null
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer {
+                                rotationZ = frameTransform.rotationDegrees.toFloat()
+                                scaleX = frameTransform.scaleX
+                                scaleY = frameTransform.scaleY
+                            }
+                    )
+                }
             }
 
             // Brightness overlay for left-side vertical gesture
@@ -1267,6 +1276,8 @@ private fun ImmersiveVideoCinemaLayout(
     onToggleFavorite: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenStudio: () -> Unit,
+    onSelectAudioTrack: (AudioTrackOption) -> Unit = {},
+    onVideoSurfaceAttached: (Boolean) -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     var containerWidthPx by remember { mutableIntStateOf(1280) }
@@ -1423,55 +1434,63 @@ private fun ImmersiveVideoCinemaLayout(
             }
 
             if (playerInstance != null) {
-                AndroidView(
-                    factory = { ctx ->
-                        val pv = if (frameTransform.rotationDegrees != 0) {
-                            runCatching {
-                                LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
-                            }.getOrElse { PlayerView(ctx) }
-                        } else {
-                            // Requirement 7: Prefer SurfaceView for ordinary video playback
-                            PlayerView(ctx)
-                        }
-                        pv.apply {
-                            useController = false
-                            player = playerInstance
-                            keepScreenOn = shouldKeepVideoAwake
-                            resizeMode = when (playbackState.videoAspectMode) {
+                val requiresTextureView = frameTransform.rotationDegrees != 0
+                key(requiresTextureView, playerInstance, playbackState.playerGeneration) {
+                    AndroidView(
+                        factory = { ctx ->
+                            val pv = if (requiresTextureView) {
+                                runCatching {
+                                    LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
+                                }.getOrElse { PlayerView(ctx) }
+                            } else {
+                                // Requirement 7: Prefer SurfaceView for ordinary video playback
+                                PlayerView(ctx)
+                            }
+                            pv.apply {
+                                useController = false
+                                player = playerInstance
+                                keepScreenOn = shouldKeepVideoAwake
+                                resizeMode = when (playbackState.videoAspectMode) {
+                                    VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                                    VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
+                                    else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                                }
+                            }
+                            onVideoSurfaceAttached(true)
+                            pv
+                        },
+                        update = { view ->
+                            if (view.player !== playerInstance) {
+                                view.player = playerInstance
+                            }
+                            onVideoSurfaceAttached(true)
+                            view.keepScreenOn = shouldKeepVideoAwake
+                            view.resizeMode = when (playbackState.videoAspectMode) {
                                 VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                                 VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
                                 else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
                             }
-                        }
-                    },
-                    update = { view ->
-                        if (view.player !== playerInstance) {
-                            view.player = playerInstance
-                        }
-                        view.keepScreenOn = shouldKeepVideoAwake
-                        view.resizeMode = when (playbackState.videoAspectMode) {
-                            VideoAspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                            VideoAspectMode.ORIGINAL -> AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
-                        }
-                    },
-                    onReset = { view ->
-                        if (view.player === playerInstance) {
-                            view.player = null
-                        }
-                    },
-                    onRelease = { view ->
-                        if (view.player === playerInstance) {
-                            view.player = null
-                        }
-                    },
-                    modifier = videoModifier
-                        .graphicsLayer {
-                            rotationZ = frameTransform.rotationDegrees.toFloat()
-                            scaleX = frameTransform.scaleX
-                            scaleY = frameTransform.scaleY
-                        }
-                )
+                        },
+                        onReset = { view ->
+                            if (view.player === playerInstance) {
+                                view.player = null
+                            }
+                            onVideoSurfaceAttached(false)
+                        },
+                        onRelease = { view ->
+                            if (view.player === playerInstance) {
+                                view.player = null
+                            }
+                            onVideoSurfaceAttached(false)
+                        },
+                        modifier = videoModifier
+                            .graphicsLayer {
+                                rotationZ = frameTransform.rotationDegrees.toFloat()
+                                scaleX = frameTransform.scaleX
+                                scaleY = frameTransform.scaleY
+                            }
+                    )
+                }
             }
         }
 
@@ -2079,6 +2098,51 @@ private fun ImmersiveVideoCinemaLayout(
                                 }
                             }
                             Spacer(modifier = Modifier.height(8.dp))
+                            if (playbackState.availableAudioTracks.isNotEmpty()) {
+                                Text(
+                                    text = "Container Audio Streams",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = CinemaNeonGreen
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                playbackState.availableAudioTracks.forEach { trackOption ->
+                                    Surface(
+                                        color = if (trackOption.isSelected) CinemaNeonGreen.copy(alpha = 0.18f) else Color.Transparent,
+                                        shape = RoundedCornerShape(10.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                onSelectAudioTrack(trackOption)
+                                                activeAudioTrackLabel = trackOption.label
+                                                showAudioTrackSheet = false
+                                                gestureFeedbackBanner = trackOption.label
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Text(
+                                                text = "${trackOption.label} (${trackOption.language})",
+                                                color = if (trackOption.isSelected) CinemaNeonGreen else Color.White,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                fontWeight = if (trackOption.isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            if (trackOption.isSelected) {
+                                                Text(
+                                                    text = "ACTIVE",
+                                                    color = CinemaNeonGreen,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
                             val profiles = listOf(
                                 "Original HD Audio",
                                 "Cinema Surround Boost",

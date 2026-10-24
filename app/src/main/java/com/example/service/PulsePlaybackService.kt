@@ -86,6 +86,7 @@ class PulsePlaybackService : MediaSessionService() {
             audioProcessor = EqualizerController.sharedAudioProcessor
         )
         serviceExoPlayer = exoPlayer
+        _serviceExoPlayerFlow.value = exoPlayer
 
         exoPlayer.addListener(sessionListener)
         _serviceAudioSessionId.value = exoPlayer.audioSessionId
@@ -191,6 +192,7 @@ class PulsePlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        _serviceExoPlayerFlow.value = null
         _serviceAudioSessionId.value = 0
         _serviceIsPlaying.value = false
         serviceScope.cancel()
@@ -207,6 +209,11 @@ class PulsePlaybackService : MediaSessionService() {
     companion object {
         const val ACTION_GET_AUDIO_SESSION_ID = "com.example.service.action.GET_AUDIO_SESSION_ID"
         const val EXTRA_AUDIO_SESSION_ID = "extra_audio_session_id"
+
+        private val _serviceExoPlayerFlow = MutableStateFlow<ExoPlayer?>(null)
+        val serviceExoPlayerFlow: StateFlow<ExoPlayer?> = _serviceExoPlayerFlow.asStateFlow()
+
+        fun getAuthoritativeExoPlayerOrNull(): ExoPlayer? = _serviceExoPlayerFlow.value
 
         private val _serviceAudioSessionId = MutableStateFlow(0)
         val serviceAudioSessionId: StateFlow<Int> = _serviceAudioSessionId.asStateFlow()

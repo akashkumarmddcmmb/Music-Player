@@ -16,18 +16,23 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.ViewSidebar
 import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -36,7 +41,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -81,10 +89,15 @@ fun MediaItemCard(
     onOpenInStudioClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var overflowExpanded by remember { mutableStateOf(false) }
+    val safeTagSuffix = remember(media.title) {
+        media.title.take(12).replace(" ", "_")
+    }
+
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .testTag("media_item_card_${media.title.take(12).replace(" ", "_")}")
+            .testTag("media_item_card_$safeTagSuffix")
             .clickable(onClick = onPlayClick),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -99,13 +112,13 @@ fun MediaItemCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(start = 12.dp, end = 6.dp, top = 10.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Original Studio Media Badge
             Box(
                 modifier = Modifier
-                    .size(52.dp)
+                    .size(48.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(
                         Brush.linearGradient(
@@ -137,7 +150,7 @@ fun MediaItemCard(
                     } else {
                         MaterialTheme.colorScheme.primary
                     },
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
 
@@ -160,7 +173,7 @@ fun MediaItemCard(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
@@ -198,13 +211,106 @@ fun MediaItemCard(
                     }
                 }
             }
+
+            // Direct Favorite Action Button (48dp touch target)
+            IconButton(
+                onClick = onFavoriteToggle,
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .testTag("media_item_favorite_$safeTagSuffix")
+            ) {
+                Icon(
+                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                    contentDescription = if (isFavorite) "Remove ${cleanTitle} from favorites" else "Add ${cleanTitle} to favorites",
+                    tint = if (isFavorite) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            // Item Overflow Menu Button (Play, Favorite, Add to Playlist, Open in Studio)
+            Box {
+                IconButton(
+                    onClick = { overflowExpanded = true },
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("media_item_overflow_$safeTagSuffix")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "More actions for $cleanTitle",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = overflowExpanded,
+                    onDismissRequest = { overflowExpanded = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Play Now", maxLines = 1) },
+                        leadingIcon = {
+                            Icon(Icons.Default.PlayArrow, contentDescription = null)
+                        },
+                        onClick = {
+                            overflowExpanded = false
+                            onPlayClick()
+                        },
+                        modifier = Modifier.testTag("overflow_play_action")
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                if (isFavorite) "Remove from Favorites" else "Add to Favorites",
+                                maxLines = 1
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                contentDescription = null
+                            )
+                        },
+                        onClick = {
+                            overflowExpanded = false
+                            onFavoriteToggle()
+                        },
+                        modifier = Modifier.testTag("overflow_favorite_action")
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Add to Playlist", maxLines = 1) },
+                        leadingIcon = {
+                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null)
+                        },
+                        onClick = {
+                            overflowExpanded = false
+                            onAddToPlaylistClick()
+                        },
+                        modifier = Modifier.testTag("overflow_playlist_action")
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Edit in Media Studio", maxLines = 1) },
+                        leadingIcon = {
+                            Icon(Icons.Default.ContentCut, contentDescription = null)
+                        },
+                        onClick = {
+                            overflowExpanded = false
+                            onOpenInStudioClick()
+                        },
+                        modifier = Modifier.testTag("overflow_studio_action")
+                    )
+                }
+            }
         }
     }
 }
 
 /**
- * Phase 3 Requirement: Use a persistent mini-player only when playback is active.
- * Avoid overlapping bottom navigation, mini-player controls, system bars and keyboard.
+ * Phase 3 & Landscape Requirement: Persistent mini-player when playback is active.
+ * Placed inside the center content column so it never overlaps navigation controls or system bars.
  */
 @Composable
 fun PersistentMiniPlayerBar(
@@ -212,7 +318,11 @@ fun PersistentMiniPlayerBar(
     onExpandClick: () -> Unit,
     onPlayPauseClick: () -> Unit,
     onNextClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onPreviousClick: (() -> Unit)? = null,
+    showSidePanelToggle: Boolean = false,
+    isSidePanelOpen: Boolean = false,
+    onToggleSidePanelClick: (() -> Unit)? = null
 ) {
     val current = playbackState.currentMedia ?: return
     val progress = if (playbackState.durationMs > 0L) {
@@ -244,12 +354,12 @@ fun PersistentMiniPlayerBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(
                     modifier = Modifier
-                        .size(42.dp)
+                        .size(40.dp)
                         .clip(CircleShape)
                         .background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center
@@ -265,7 +375,7 @@ fun PersistentMiniPlayerBar(
                     )
                 }
 
-                Spacer(modifier = Modifier.width(12.dp))
+                Spacer(modifier = Modifier.width(10.dp))
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -283,6 +393,21 @@ fun PersistentMiniPlayerBar(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+
+                if (onPreviousClick != null) {
+                    IconButton(
+                        onClick = onPreviousClick,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("mini_player_previous_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipPrevious,
+                            contentDescription = "Previous track",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
 
                 IconButton(
@@ -310,7 +435,27 @@ fun PersistentMiniPlayerBar(
                         tint = MaterialTheme.colorScheme.onSurface
                     )
                 }
+
+                if (showSidePanelToggle && onToggleSidePanelClick != null) {
+                    IconButton(
+                        onClick = onToggleSidePanelClick,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("mini_player_toggle_side_panel_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ViewSidebar,
+                            contentDescription = if (isSidePanelOpen) "Hide Now Playing side panel" else "Show Now Playing side panel",
+                            tint = if (isSidePanelOpen) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
             }
         }
     }
 }
+

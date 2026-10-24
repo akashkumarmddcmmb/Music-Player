@@ -20,6 +20,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -33,7 +34,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderSpecial
@@ -90,6 +95,7 @@ import com.example.ui.screens.HomeDashboardScreen
 import com.example.ui.screens.LibraryAndFoldersScreen
 import com.example.ui.screens.MediaCatalogScreen
 import com.example.ui.screens.NowPlayingOverlayScreen
+import com.example.ui.screens.NowPlayingSidePanel
 import com.example.ui.screens.ProfileAndSettingsScreen
 import com.example.ui.screens.SearchAndActionHeader
 import com.example.ui.screens.StudioEditorOverlayScreen
@@ -621,29 +627,52 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         }
     }
 
-    // Adaptive Layout using BoxWithConstraints (NavigationRail on >= 600.dp, NavigationBar on Compact)
+    // Adaptive Layout using BoxWithConstraints:
+    // - Left: Scrollable NavigationRail in Landscape or >= 600.dp width; Bottom NavigationBar in Portrait Compact
+    // - Center: Search/Sort Header + Active Library/Content Screen + Bottom PersistentMiniPlayerBar (never covering list or nav)
+    // - Right: Adaptive NowPlayingSidePanel when sufficient landscape width is available (or toggled by user)
+    var userSidePanelOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val isExpandedScreen = maxWidth >= 600.dp
+        val isLandscape = maxWidth > maxHeight
+        val useNavigationRail = isLandscape || maxWidth >= 600.dp
+        val isCompactHeight = maxHeight < 480.dp
+        val canFitSideNowPlayingPanel = isLandscape && maxWidth >= 560.dp
+        val isWideLandscape = maxWidth >= 840.dp || (isLandscape && maxWidth >= 700.dp)
+        val sidePanelTargetWidth = if (maxWidth >= 900.dp) 340.dp else 284.dp
+
+        val showRightNowPlayingPanel = canFitSideNowPlayingPanel && (
+            userSidePanelOverride ?: (isWideLandscape && playbackState.currentMedia != null)
+        )
+
+        val toggleSidePanelOrExpandPlayer: () -> Unit = {
+            if (canFitSideNowPlayingPanel) {
+                userSidePanelOverride = !showRightNowPlayingPanel
+            } else {
+                viewModel.setNowPlayingExpanded(true)
+            }
+        }
 
         Scaffold(
             contentWindowInsets = WindowInsets.safeDrawing,
             bottomBar = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding()
-                ) {
-                    // Persistent Mini-Player ONLY when playback is active
-                    AnimatedVisibility(visible = playbackState.currentMedia != null) {
-                        PersistentMiniPlayerBar(
-                            playbackState = playbackState,
-                            onExpandClick = { viewModel.setNowPlayingExpanded(true) },
-                            onPlayPauseClick = { viewModel.togglePlayPause() },
-                            onNextClick = { viewModel.skipToNext() }
-                        )
-                    }
+                if (!useNavigationRail) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .navigationBarsPadding()
+                    ) {
+                        // In Portrait mode, Persistent Mini-Player sits directly above Bottom NavigationBar
+                        AnimatedVisibility(visible = playbackState.currentMedia != null) {
+                            PersistentMiniPlayerBar(
+                                playbackState = playbackState,
+                                onExpandClick = { viewModel.setNowPlayingExpanded(true) },
+                                onPlayPauseClick = { viewModel.togglePlayPause() },
+                                onNextClick = { viewModel.skipToNext() },
+                                onPreviousClick = { viewModel.skipToPrevious() }
+                            )
+                        }
 
-                    if (!isExpandedScreen) {
                         NavigationBar(modifier = Modifier.testTag("bottom_navigation_bar")) {
                             primaryDestinations.forEach { dest ->
                                 val selected = selectedTab == dest.tab
@@ -677,38 +706,52 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                if (isExpandedScreen) {
+                // 1. LEFT: Compact Scrollable NavigationRail in Landscape / Expanded Width
+                if (useNavigationRail) {
                     NavigationRail(
                         modifier = Modifier
                             .fillMaxHeight()
                             .testTag("side_navigation_rail")
                     ) {
-                        primaryDestinations.forEach { dest ->
-                            val selected = selectedTab == dest.tab
-                            NavigationRailItem(
-                                selected = selected,
-                                onClick = { viewModel.selectPrimaryTab(dest.tab) },
-                                icon = {
-                                    Icon(
-                                        imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                        contentDescription = dest.label
-                                    )
-                                },
-                                label = {
-                                    Text(
-                                        text = dest.label,
-                                        maxLines = 1,
-                                        softWrap = false
-                                    )
-                                },
-                                alwaysShowLabel = true,
-                                modifier = Modifier.testTag(dest.testTag)
-                            )
+                        Column(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            primaryDestinations.forEach { dest ->
+                                val selected = selectedTab == dest.tab
+                                NavigationRailItem(
+                                    selected = selected,
+                                    onClick = { viewModel.selectPrimaryTab(dest.tab) },
+                                    icon = {
+                                        Icon(
+                                            imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
+                                            contentDescription = dest.label
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = dest.label,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    },
+                                    alwaysShowLabel = true,
+                                    modifier = Modifier.testTag(dest.testTag)
+                                )
+                            }
                         }
                     }
                 }
 
-                Column(modifier = Modifier.weight(1f)) {
+                // 2. CENTER: Main Content Area + Bottom Persistent Mini-Player (in Landscape/Rail mode)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                ) {
                     // Status Feedback Banner
                     AnimatedVisibility(visible = statusBanner != null) {
                         statusBanner?.let { msg ->
@@ -717,11 +760,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                                    .padding(horizontal = 16.dp, vertical = 4.dp)
                                     .testTag("status_feedback_banner")
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
@@ -741,7 +784,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                         }
                     }
 
-                    // Search & Quick Action Header on Home, Videos, Music, and Library tabs
+                    // Search, Sort & Quick Action Header on Home, Videos, Music, and Library tabs
                     if (selectedTab != PrimaryTab.SETTINGS) {
                         SearchAndActionHeader(
                             searchQuery = searchQuery,
@@ -753,7 +796,12 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                             },
                             onRescanClick = { viewModel.refreshLibrary() },
                             onOpenEqualizerClick = { viewModel.setEqualizerSheetOpen(true) },
-                            onOpenStudioClick = { viewModel.openStudioForMedia(null) }
+                            onOpenStudioClick = { viewModel.openStudioForMedia(null) },
+                            showActionChips = !isCompactHeight,
+                            isCompactHeight = isCompactHeight,
+                            showNowPlayingPanelToggle = isLandscape,
+                            isNowPlayingPanelOpen = showRightNowPlayingPanel,
+                            onToggleNowPlayingPanel = toggleSidePanelOrExpandPlayer
                         )
                     }
 
@@ -953,8 +1001,53 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                             }
                         }
                     }
+
+                    // In Landscape / NavigationRail mode, Persistent Mini-Player is docked at the bottom of the
+                    // center column so it never overlaps the left NavigationRail, the song list, or the right Now Playing panel.
+                    if (useNavigationRail) {
+                        AnimatedVisibility(visible = playbackState.currentMedia != null) {
+                            PersistentMiniPlayerBar(
+                                playbackState = playbackState,
+                                onExpandClick = { viewModel.setNowPlayingExpanded(true) },
+                                onPlayPauseClick = { viewModel.togglePlayPause() },
+                                onNextClick = { viewModel.skipToNext() },
+                                onPreviousClick = { viewModel.skipToPrevious() },
+                                showSidePanelToggle = canFitSideNowPlayingPanel,
+                                isSidePanelOpen = showRightNowPlayingPanel,
+                                onToggleSidePanelClick = toggleSidePanelOrExpandPlayer
+                            )
+                        }
+                    }
+                }
+
+                // 3. RIGHT: Dedicated Now Playing Side Panel when in Landscape with sufficient width (or toggled open)
+                AnimatedVisibility(visible = showRightNowPlayingPanel) {
+                    val panelWidth = sidePanelTargetWidth
+                    NowPlayingSidePanel(
+                        playbackState = playbackState,
+                        userPreferences = userPreferences,
+                        isFavorite = playbackState.currentMedia?.let { favoriteUris.contains(it.uriString) } ?: false,
+                        onExpandFullPlayer = { viewModel.setNowPlayingExpanded(true) },
+                        onCollapseSidePanel = { userSidePanelOverride = false },
+                        onPlayPause = { viewModel.togglePlayPause() },
+                        onSeekTo = { viewModel.seekTo(it) },
+                        onPrevious = { viewModel.skipToPrevious() },
+                        onNext = { viewModel.skipToNext() },
+                        onToggleShuffle = { viewModel.toggleShuffle() },
+                        onCycleRepeat = { viewModel.cycleRepeatMode() },
+                        onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
+                        onToggleFavorite = {
+                            playbackState.currentMedia?.let { viewModel.toggleFavorite(it) }
+                        },
+                        onOpenEqualizer = { viewModel.setEqualizerSheetOpen(true) },
+                        onOpenStudio = { viewModel.openStudioForMedia(playbackState.currentMedia) },
+                        onSelectQueueItem = { item -> viewModel.playMedia(item, playbackState.queue) },
+                        onRemoveQueueItem = { idx -> viewModel.removeQueueItemAt(idx) },
+                        modifier = Modifier.width(panelWidth)
+                    )
                 }
             }
         }
     }
 }
+

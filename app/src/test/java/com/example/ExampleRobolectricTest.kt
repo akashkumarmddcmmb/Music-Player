@@ -61,6 +61,29 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.unit.DpSize
+import androidx.compose.ui.unit.dp
+import com.example.data.preferences.SortOption
+import com.example.data.preferences.UserPreferencesState
+import com.example.ui.components.MediaItemCard
+import com.example.ui.screens.NowPlayingOverlayScreen
+import com.example.ui.screens.NowPlayingSidePanel
+import com.example.ui.screens.SearchAndActionHeader
+import com.example.ui.theme.PulsePlayTheme
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -68,6 +91,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.Robolectric
@@ -77,6 +101,9 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [36])
 class ExampleRobolectricTest {
+
+    @get:Rule
+    val composeTestRule = createComposeRule()
 
     private lateinit var context: Context
     private lateinit var database: PulseDatabase
@@ -1977,6 +2004,218 @@ class ExampleRobolectricTest {
         muxer.writeSampleData(vTrack, ByteBuffer.wrap(fakeIdrNal), info)
         muxer.stop()
         muxer.release()
+    }
+
+    @Test
+    fun responsiveLandscapeLayout_adaptsAcrossPortraitSmallLandscapeLargeLandscapeAndTabletAndPreservesPlaybackState() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        val track1 = MediaEntity(
+            uriString = "file:///landscape_song_1.wav",
+            mediaStoreId = null,
+            title = "Landscape Horizon",
+            artist = "PulsePlay Studio",
+            album = "Adaptive Sessions",
+            folderName = "Music",
+            durationMs = 240_000L,
+            sizeBytes = 4096L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000900L
+        )
+        val track2 = track1.copy(
+            uriString = "file:///landscape_song_2.wav",
+            title = "Sunset Synthwave"
+        )
+        vm.setQueue(listOf(track1, track2), initialIndex = 0)
+        vm.setPlaybackSpeed(1.25f)
+
+        var viewportSize by mutableStateOf(DpSize(390.dp, 844.dp)) // Start in Portrait
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(viewportSize.width, viewportSize.height)) {
+                    PulsePlayAppRoot(viewModel = vm)
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. PORTRAIT (390dp x 844dp): Bottom NavigationBar is shown, NavigationRail & Side Panel are hidden
+        composeTestRule.onNodeWithTag("bottom_navigation_bar").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("side_navigation_rail").fetchSemanticsNodes().size)
+        assertEquals(0, composeTestRule.onAllNodesWithTag("landscape_now_playing_panel").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("persistent_mini_player").assertExists()
+
+        // 2. Rotate to SMALL LANDSCAPE (640dp x 360dp):
+        // Left NavigationRail is shown, Bottom NavigationBar is hidden, compact header toggle & side-panel toggle exist
+        viewportSize = DpSize(640.dp, 360.dp)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("side_navigation_rail").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("bottom_navigation_bar").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("persistent_mini_player").assertExists()
+        composeTestRule.onNodeWithTag("header_quick_actions_toggle_button").assertExists()
+        composeTestRule.onNodeWithTag("header_toggle_now_playing_panel_button").assertExists()
+
+        // In Small Landscape (640dp < 700dp), side panel is collapsed by default to give list space,
+        // but can be toggled open via the header or mini-player side-panel button (never silently hidden!)
+        assertEquals(0, composeTestRule.onAllNodesWithTag("landscape_now_playing_panel").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("header_toggle_now_playing_panel_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
+
+        // Collapse side panel again via its close button
+        composeTestRule.onNodeWithTag("side_panel_collapse_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("landscape_now_playing_panel").fetchSemanticsNodes().size)
+
+        // Re-enable side panel via the persistent mini-player side-panel button
+        composeTestRule.onNodeWithTag("mini_player_toggle_side_panel_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+
+        // 3. Resize to LARGE LANDSCAPE (844dp x 390dp):
+        // Left NavigationRail + Center Content + Right Now Playing Side Panel + Bottom Mini-Player all coexist
+        viewportSize = DpSize(844.dp, 390.dp)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("side_navigation_rail").assertExists()
+        composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
+        composeTestRule.onNodeWithTag("persistent_mini_player").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_play_pause_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_next_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_previous_button").assertExists()
+
+        // Switch tabs via Left NavigationRail (Music -> Videos -> Home) and verify playback state is preserved
+        composeTestRule.onNodeWithTag("nav_tab_music")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(PrimaryTab.MUSIC, vm.selectedTab.value)
+
+        composeTestRule.onNodeWithTag("nav_tab_videos")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(PrimaryTab.VIDEOS, vm.selectedTab.value)
+
+        composeTestRule.onNodeWithTag("nav_tab_home")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(PrimaryTab.HOME, vm.selectedTab.value)
+
+        // 4. Resize to TABLET LANDSCAPE (1280dp x 800dp):
+        // Wide 4-column category row on Home + NavigationRail + Right NowPlayingSidePanel
+        viewportSize = DpSize(1280.dp, 800.dp)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("side_navigation_rail").assertExists()
+        composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
+        composeTestRule.onNodeWithTag("home_categories_row_wide").assertExists()
+
+        // 5. Expand Full Now Playing Overlay in Landscape -> renders 2-column LandscapeAudioNowPlayingDeck
+        composeTestRule.onNodeWithTag("side_panel_expand_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertTrue(vm.isNowPlayingExpanded.value)
+        composeTestRule.onNodeWithTag("landscape_audio_now_playing_split").assertExists()
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+
+        // 6. Rotate back to PORTRAIT (390dp x 844dp) while Now Playing is open -> switches to Portrait deck without losing track or speed
+        viewportSize = DpSize(390.dp, 844.dp)
+        composeTestRule.waitForIdle()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("landscape_audio_now_playing_split").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+        assertEquals("Landscape Horizon", vm.playbackState.value.currentMedia?.title)
+        assertEquals(1.25f, vm.playbackState.value.playbackSpeed, 0.01f)
+        assertEquals(2, vm.playbackState.value.queue.size)
+    }
+
+    @Test
+    fun mediaItemOverflowMenuAndSortDropdown_triggerAllActionsInLandscape() {
+        val sampleTrack = MediaEntity(
+            uriString = "file:///test_overflow_track.wav",
+            mediaStoreId = null,
+            title = "Overflow Test Song",
+            artist = "Test Artist",
+            album = "Test Album",
+            folderName = "Music",
+            durationMs = 195_000L,
+            sizeBytes = 2048L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000950L
+        )
+
+        var playClicked = false
+        var favoriteToggled = false
+        var playlistClicked = false
+        var studioClicked = false
+        var selectedSort = SortOption.DATE_DESC
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.size(800.dp, 400.dp)) {
+                    androidx.compose.foundation.layout.Column {
+                        SearchAndActionHeader(
+                            searchQuery = "",
+                            onSearchQueryChange = {},
+                            currentSort = selectedSort,
+                            onSortChange = { selectedSort = it },
+                            onPickSafFileClick = {},
+                            onOpenStudioClick = {},
+                            onOpenEqualizerClick = {},
+                            onRescanClick = {},
+                            isCompactHeight = true
+                        )
+                        MediaItemCard(
+                            media = sampleTrack,
+                            isFavorite = false,
+                            isCurrentlyPlaying = false,
+                            onPlayClick = { playClicked = true },
+                            onFavoriteToggle = { favoriteToggled = true },
+                            onAddToPlaylistClick = { playlistClicked = true },
+                            onOpenInStudioClick = { studioClicked = true }
+                        )
+                    }
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify sort dropdown menu works
+        composeTestRule.onNodeWithTag("sort_menu_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("sort_option_duration_desc").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(SortOption.DURATION_DESC, selectedSort)
+
+        // Verify MediaItemCard direct favorite toggle button
+        val safeSuffix = sampleTrack.title.take(12).replace(" ", "_")
+        composeTestRule.onNodeWithTag("media_item_favorite_$safeSuffix").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("Direct favorite toggle button must work", favoriteToggled)
+
+        // Verify MediaItemCard 3-dot overflow menu actions (Add to Playlist, Edit in Studio, Play Now)
+        composeTestRule.onNodeWithTag("media_item_overflow_$safeSuffix").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_playlist_action").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("Overflow 'Add to Playlist' must trigger callback", playlistClicked)
+
+        composeTestRule.onNodeWithTag("media_item_overflow_$safeSuffix").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_studio_action").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("Overflow 'Edit in Media Studio' must trigger callback", studioClicked)
+
+        composeTestRule.onNodeWithTag("media_item_overflow_$safeSuffix").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_play_action").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue("Overflow 'Play Now' must trigger callback", playClicked)
     }
 }
 

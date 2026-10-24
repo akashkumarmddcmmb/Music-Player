@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -23,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.automirrored.filled.ViewSidebar
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.AudioFile
@@ -41,6 +43,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Transform
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -103,14 +106,23 @@ fun SearchAndActionHeader(
     onRescanClick: () -> Unit,
     onOpenEqualizerClick: () -> Unit,
     onOpenStudioClick: () -> Unit,
-    showActionChips: Boolean = false
+    showActionChips: Boolean = false,
+    isCompactHeight: Boolean = false,
+    showNowPlayingPanelToggle: Boolean = false,
+    isNowPlayingPanelOpen: Boolean = false,
+    onToggleNowPlayingPanel: () -> Unit = {}
 ) {
     var sortMenuExpanded by remember { mutableStateOf(false) }
+    var userExpandedActionChips by rememberSaveable { mutableStateOf(false) }
+    val effectiveShowActionChips = showActionChips || userExpandedActionChips
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .padding(
+                horizontal = 16.dp,
+                vertical = if (isCompactHeight) 4.dp else 8.dp
+            )
     ) {
         OutlinedTextField(
             value = searchQuery,
@@ -118,7 +130,13 @@ fun SearchAndActionHeader(
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("library_search_input"),
-            placeholder = { Text("Search songs, videos, artists, folders...") },
+            placeholder = {
+                Text(
+                    text = "Search songs, videos, artists, folders...",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            },
             leadingIcon = {
                 Icon(Icons.Default.Search, contentDescription = "Search")
             },
@@ -127,17 +145,39 @@ fun SearchAndActionHeader(
                     if (searchQuery.isNotEmpty()) {
                         IconButton(
                             onClick = { onSearchQueryChange("") },
-                            modifier = Modifier.testTag("clear_search_button")
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("clear_search_button")
                         ) {
                             Icon(Icons.Default.Clear, contentDescription = "Clear search")
+                        }
+                    }
+                    if (!showActionChips) {
+                        IconButton(
+                            onClick = { userExpandedActionChips = !userExpandedActionChips },
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("header_quick_actions_toggle_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = if (userExpandedActionChips) "Hide quick tools" else "Show quick tools",
+                                tint = if (userExpandedActionChips) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
                         }
                     }
                     Box {
                         IconButton(
                             onClick = { sortMenuExpanded = true },
-                            modifier = Modifier.testTag("sort_menu_button")
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("sort_menu_button")
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort library")
+                            Icon(Icons.AutoMirrored.Filled.Sort, contentDescription = "Sort library (${currentSort.label})")
                         }
                         DropdownMenu(
                             expanded = sortMenuExpanded,
@@ -145,13 +185,38 @@ fun SearchAndActionHeader(
                         ) {
                             SortOption.entries.forEach { option ->
                                 DropdownMenuItem(
-                                    text = { Text(option.label) },
+                                    text = {
+                                        Text(
+                                            text = if (option == currentSort) "✓ ${option.label}" else option.label,
+                                            fontWeight = if (option == currentSort) FontWeight.Bold else FontWeight.Normal,
+                                            maxLines = 1
+                                        )
+                                    },
                                     onClick = {
                                         onSortChange(option)
                                         sortMenuExpanded = false
-                                    }
+                                    },
+                                    modifier = Modifier.testTag("sort_option_${option.name.lowercase()}")
                                 )
                             }
+                        }
+                    }
+                    if (showNowPlayingPanelToggle) {
+                        IconButton(
+                            onClick = onToggleNowPlayingPanel,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("header_toggle_now_playing_panel_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ViewSidebar,
+                                contentDescription = if (isNowPlayingPanelOpen) "Hide Now Playing panel" else "Show Now Playing panel",
+                                tint = if (isNowPlayingPanelOpen) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
                         }
                     }
                 }
@@ -160,8 +225,8 @@ fun SearchAndActionHeader(
             shape = RoundedCornerShape(16.dp)
         )
 
-        if (showActionChips) {
-            Spacer(modifier = Modifier.height(8.dp))
+        if (effectiveShowActionChips) {
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 4.dp else 8.dp))
 
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -170,7 +235,7 @@ fun SearchAndActionHeader(
                 item {
                     AssistChip(
                         onClick = onPickSafFileClick,
-                        label = { Text("Open File (SAF)") },
+                        label = { Text("Open File (SAF)", maxLines = 1) },
                         leadingIcon = {
                             Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                         },
@@ -180,7 +245,7 @@ fun SearchAndActionHeader(
                 item {
                     AssistChip(
                         onClick = onOpenStudioClick,
-                        label = { Text("Media Studio & Converter") },
+                        label = { Text("Media Studio & Converter", maxLines = 1) },
                         leadingIcon = {
                             Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(18.dp))
                         },
@@ -190,7 +255,7 @@ fun SearchAndActionHeader(
                 item {
                     AssistChip(
                         onClick = onOpenEqualizerClick,
-                        label = { Text("Equalizer DSP") },
+                        label = { Text("Equalizer DSP", maxLines = 1) },
                         leadingIcon = {
                             Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(18.dp))
                         },
@@ -200,7 +265,7 @@ fun SearchAndActionHeader(
                 item {
                     AssistChip(
                         onClick = onRescanClick,
-                        label = { Text("Rescan") },
+                        label = { Text("Rescan", maxLines = 1) },
                         leadingIcon = {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                         },
@@ -327,58 +392,111 @@ fun HomeDashboardScreen(
             }
         }
 
-        // 2x2 Category Dashboard Cards (Inspired by PulsePlay Home Concept: Music, Videos, Playlists, Favorites)
+        // Adaptive Category Dashboard Cards (4-column row in wide landscape, 2x2 grid in portrait/compact)
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    HomeCategoryTile(
-                        title = "Music",
-                        subtitle = "${audioMedia.size} tracks",
-                        icon = Icons.Default.LibraryMusic,
-                        gradientColors = listOf(MusicCardGradientStart, MusicCardGradientEnd),
-                        onClick = onNavigateToMusic,
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val useFourColumnRow = maxWidth >= 560.dp
+                if (useFourColumnRow) {
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .testTag("home_category_music")
-                    )
-                    HomeCategoryTile(
-                        title = "Videos",
-                        subtitle = "${videoMedia.size} videos",
-                        icon = Icons.Default.Movie,
-                        gradientColors = listOf(VideoCardGradientStart, VideoCardGradientEnd),
-                        onClick = onNavigateToVideos,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("home_category_videos")
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    HomeCategoryTile(
-                        title = "Playlists",
-                        subtitle = "$playlistsCount sets",
-                        icon = Icons.AutoMirrored.Filled.PlaylistPlay,
-                        gradientColors = listOf(PlaylistCardGradientStart, PlaylistCardGradientEnd),
-                        onClick = onNavigateToPlaylists,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("home_category_playlists")
-                    )
-                    HomeCategoryTile(
-                        title = "Favorites",
-                        subtitle = "${favoriteUris.size} saved",
-                        icon = Icons.Default.Favorite,
-                        gradientColors = listOf(FavoriteCardGradientStart, FavoriteCardGradientEnd),
-                        onClick = onNavigateToFavorites,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("home_category_favorites")
-                    )
+                            .fillMaxWidth()
+                            .testTag("home_categories_row_wide"),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        HomeCategoryTile(
+                            title = "Music",
+                            subtitle = "${audioMedia.size} tracks",
+                            icon = Icons.Default.LibraryMusic,
+                            gradientColors = listOf(MusicCardGradientStart, MusicCardGradientEnd),
+                            onClick = onNavigateToMusic,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("home_category_music")
+                        )
+                        HomeCategoryTile(
+                            title = "Videos",
+                            subtitle = "${videoMedia.size} videos",
+                            icon = Icons.Default.Movie,
+                            gradientColors = listOf(VideoCardGradientStart, VideoCardGradientEnd),
+                            onClick = onNavigateToVideos,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("home_category_videos")
+                        )
+                        HomeCategoryTile(
+                            title = "Playlists",
+                            subtitle = "$playlistsCount sets",
+                            icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                            gradientColors = listOf(PlaylistCardGradientStart, PlaylistCardGradientEnd),
+                            onClick = onNavigateToPlaylists,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("home_category_playlists")
+                        )
+                        HomeCategoryTile(
+                            title = "Favorites",
+                            subtitle = "${favoriteUris.size} saved",
+                            icon = Icons.Default.Favorite,
+                            gradientColors = listOf(FavoriteCardGradientStart, FavoriteCardGradientEnd),
+                            onClick = onNavigateToFavorites,
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("home_category_favorites")
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            HomeCategoryTile(
+                                title = "Music",
+                                subtitle = "${audioMedia.size} tracks",
+                                icon = Icons.Default.LibraryMusic,
+                                gradientColors = listOf(MusicCardGradientStart, MusicCardGradientEnd),
+                                onClick = onNavigateToMusic,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("home_category_music")
+                            )
+                            HomeCategoryTile(
+                                title = "Videos",
+                                subtitle = "${videoMedia.size} videos",
+                                icon = Icons.Default.Movie,
+                                gradientColors = listOf(VideoCardGradientStart, VideoCardGradientEnd),
+                                onClick = onNavigateToVideos,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("home_category_videos")
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            HomeCategoryTile(
+                                title = "Playlists",
+                                subtitle = "$playlistsCount sets",
+                                icon = Icons.AutoMirrored.Filled.PlaylistPlay,
+                                gradientColors = listOf(PlaylistCardGradientStart, PlaylistCardGradientEnd),
+                                onClick = onNavigateToPlaylists,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("home_category_playlists")
+                            )
+                            HomeCategoryTile(
+                                title = "Favorites",
+                                subtitle = "${favoriteUris.size} saved",
+                                icon = Icons.Default.Favorite,
+                                gradientColors = listOf(FavoriteCardGradientStart, FavoriteCardGradientEnd),
+                                onClick = onNavigateToFavorites,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .testTag("home_category_favorites")
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -512,12 +630,12 @@ private fun HomeCategoryTile(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Brush.linearGradient(gradientColors))
-                .padding(horizontal = 14.dp, vertical = 14.dp),
+                .padding(horizontal = 12.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(38.dp)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.2f)),
                 contentAlignment = Alignment.Center
@@ -526,21 +644,25 @@ private fun HomeCategoryTile(
                     imageVector = icon,
                     contentDescription = null,
                     tint = Color.White,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier.size(20.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(12.dp))
-            Column {
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
-                    color = Color.White
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = Color.White.copy(alpha = 0.85f)
+                    color = Color.White.copy(alpha = 0.85f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }

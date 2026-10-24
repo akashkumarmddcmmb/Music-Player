@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ContentCut
 import androidx.compose.material.icons.filled.DeleteOutline
@@ -52,7 +53,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
@@ -284,6 +287,39 @@ fun NowPlayingOverlayScreen(
                     onOpenStudio = onOpenStudio,
                     onSelectAudioTrack = onSelectAudioTrack,
                     onVideoSurfaceAttached = onVideoSurfaceAttached,
+                    onRetryPlayback = onRetryPlayback
+                )
+            } else if (isLandscapeViewport) {
+                LandscapeAudioNowPlayingDeck(
+                    currentMedia = currentMedia,
+                    playbackState = playbackState,
+                    userPreferences = userPreferences,
+                    isFavorite = isFavorite,
+                    showSubtitleSettings = showSubtitleSettings,
+                    showSleepTimerPanel = showSleepTimerPanel,
+                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                    onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
+                    onCollapse = onCollapse,
+                    onPlayPause = onPlayPause,
+                    onSeekTo = onSeekTo,
+                    onPrevious = onPrevious,
+                    onNext = onNext,
+                    onToggleShuffle = onToggleShuffle,
+                    onCycleRepeat = onCycleRepeat,
+                    onSetPlaybackSpeed = onSetPlaybackSpeed,
+                    onPickSubtitleFileClick = onPickSubtitleFileClick,
+                    onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                    onSetSubtitleFontScale = onSetSubtitleFontScale,
+                    onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                    onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+                    onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+                    onToggleFavorite = onToggleFavorite,
+                    onOpenEqualizer = onOpenEqualizer,
+                    onOpenStudio = onOpenStudio,
+                    onSelectQueueItem = onSelectQueueItem,
+                    onRemoveQueueItem = onRemoveQueueItem,
+                    onMoveQueueItem = onMoveQueueItem,
+                    onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
                     onRetryPlayback = onRetryPlayback
                 )
             } else {
@@ -2273,17 +2309,21 @@ private fun CinemaActionPill(
 private fun StudioCircularAudioArtworkAndWaveform(
     currentMedia: MediaEntity,
     playbackState: PlaybackUiState,
-    subtitlesEnabled: Boolean = true
+    subtitlesEnabled: Boolean = true,
+    compactMode: Boolean = false
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
     val tertiaryColor = MaterialTheme.colorScheme.tertiary
+    val outerRingSize = if (compactMode) 128.dp else 188.dp
+    val innerDiscSize = if (compactMode) 96.dp else 144.dp
+    val iconSize = if (compactMode) 32.dp else 44.dp
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("audio_visualizer_card"),
-        shape = RoundedCornerShape(28.dp),
+        shape = RoundedCornerShape(if (compactMode) 22.dp else 28.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
         )
@@ -2291,16 +2331,19 @@ private fun StudioCircularAudioArtworkAndWaveform(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 22.dp, horizontal = 20.dp),
+                .padding(
+                    vertical = if (compactMode) 14.dp else 22.dp,
+                    horizontal = if (compactMode) 14.dp else 20.dp
+                ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Circular Neon Acoustic Ring + Studio Disc
             Box(
-                modifier = Modifier.size(188.dp),
+                modifier = Modifier.size(outerRingSize),
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    val strokeWidth = 6.dp.toPx()
+                    val strokeWidth = (if (compactMode) 5.dp else 6.dp).toPx()
                     val radius = (size.minDimension - strokeWidth * 2) / 2f
                     val center = Offset(size.width / 2f, size.height / 2f)
                     val progress = if (playbackState.durationMs > 0L) {
@@ -2329,7 +2372,7 @@ private fun StudioCircularAudioArtworkAndWaveform(
 
                 Box(
                     modifier = Modifier
-                        .size(144.dp)
+                        .size(innerDiscSize)
                         .clip(CircleShape)
                         .background(
                             Brush.radialGradient(
@@ -2348,7 +2391,7 @@ private fun StudioCircularAudioArtworkAndWaveform(
                             imageVector = if (playbackState.isPlaying) Icons.Default.GraphicEq else Icons.Default.MusicNote,
                             contentDescription = null,
                             tint = secondaryColor,
-                            modifier = Modifier.size(44.dp)
+                            modifier = Modifier.size(iconSize)
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
@@ -2360,13 +2403,13 @@ private fun StudioCircularAudioArtworkAndWaveform(
                 }
             }
 
-            Spacer(modifier = Modifier.height(18.dp))
+            Spacer(modifier = Modifier.height(if (compactMode) 10.dp else 18.dp))
 
             // Horizontal Studio Waveform Bar
             Canvas(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(48.dp)
+                    .height(if (compactMode) 36.dp else 48.dp)
             ) {
                 val barCount = 36
                 val totalWidth = size.width
@@ -3077,3 +3120,1110 @@ fun EqualizerBottomSheet(
         }
     }
 }
+
+/**
+ * Responsive Two-Column Landscape Audio Now Playing Layout:
+ * - Left pane: Top navigation / collapse bar + compact studio visualizer + track title/artist/favorite.
+ * - Right pane: Scrollable controls (Seekbar, 5-button Transport, Quick Feature Chips, Speed, and Active Queue).
+ */
+@Composable
+private fun LandscapeAudioNowPlayingDeck(
+    currentMedia: MediaEntity,
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    isFavorite: Boolean,
+    showSubtitleSettings: Boolean,
+    showSleepTimerPanel: Boolean,
+    onToggleSubtitleSettings: () -> Unit,
+    onToggleSleepTimerPanel: () -> Unit,
+    onCollapse: () -> Unit,
+    onPlayPause: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    onCycleRepeat: () -> Unit,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onPickSubtitleFileClick: () -> Unit,
+    onToggleSubtitlesEnabled: (Boolean) -> Unit,
+    onSetSubtitleFontScale: (Float) -> Unit,
+    onSetSubtitleOffsetMs: (Long) -> Unit,
+    onSetSleepTimerMinutes: (Int) -> Unit,
+    onSetSleepTimerEndOfTrack: (Boolean) -> Unit,
+    onToggleFavorite: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onOpenStudio: () -> Unit,
+    onSelectQueueItem: (MediaEntity) -> Unit,
+    onRemoveQueueItem: (Int) -> Unit,
+    onMoveQueueItem: (Int, Int) -> Unit,
+    onSaveQueueAsPlaylist: (String) -> Unit,
+    onRetryPlayback: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .testTag("landscape_audio_now_playing_split"),
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Left Column: Header + Compact Visualizer + Track Metadata
+        Column(
+            modifier = Modifier
+                .weight(0.42f)
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onCollapse,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("collapse_now_playing_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Collapse player"
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "NOW PLAYING",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = currentMedia.folderName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("now_playing_favorite_button")
+                ) {
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "Toggle Favorite",
+                        tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            StudioCircularAudioArtworkAndWaveform(
+                currentMedia = currentMedia,
+                playbackState = playbackState,
+                subtitlesEnabled = userPreferences.subtitlesEnabledByDefault,
+                compactMode = true
+            )
+
+            Text(
+                text = currentMedia.title,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            val artistText = currentMedia.artist.takeIf {
+                it.isNotBlank() &&
+                    !it.startsWith("PulsePlay", ignoreCase = true) &&
+                    it != "<unknown>" &&
+                    it != "Unknown Artist" &&
+                    it != "Local Storage"
+            }
+            if (artistText != null) {
+                Text(
+                    text = artistText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        // Right Column: Seekbar, Transport Controls, Feature Chips, Speed, and Active Queue
+        LazyColumn(
+            modifier = Modifier
+                .weight(0.58f)
+                .fillMaxHeight(),
+            contentPadding = PaddingValues(bottom = 28.dp, top = 4.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Top Utility Row (Sleep Timer, Equalizer, Studio)
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onToggleSleepTimerPanel,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("now_playing_sleep_timer_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bedtime,
+                            contentDescription = "Sleep Timer",
+                            tint = if (playbackState.isSleepTimerActive) {
+                                MaterialTheme.colorScheme.tertiary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                    IconButton(
+                        onClick = onOpenEqualizer,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("now_playing_eq_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Equalizer,
+                            contentDescription = "Open Equalizer",
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                    IconButton(
+                        onClick = onOpenStudio,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("now_playing_studio_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCut,
+                            contentDescription = "Open Media Editor",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            if (playbackState.playbackError != null) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        ),
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("playback_error_card")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                text = playbackState.playbackError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Button(
+                                onClick = onRetryPlayback,
+                                modifier = Modifier.testTag("retry_playback_button")
+                            ) {
+                                Text("Retry Playback")
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Seek Bar & Timestamps
+            item {
+                val duration = playbackState.durationMs.coerceAtLeast(1L)
+                val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Slider(
+                        value = pos.toFloat(),
+                        onValueChange = { onSeekTo(it.toLong()) },
+                        valueRange = 0f..duration.toFloat(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("now_playing_seek_slider")
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = formatDurationMillis(pos),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = formatDurationMillis(duration),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Primary Transport Controls: Shuffle, Previous, Play/Pause, Next, Repeat
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onToggleShuffle,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("transport_shuffle_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Shuffle,
+                            contentDescription = "Shuffle",
+                            tint = if (playbackState.shuffleEnabled) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onPrevious,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("transport_previous_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipPrevious,
+                            contentDescription = "Previous",
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+
+                    FilledIconButton(
+                        onClick = onPlayPause,
+                        modifier = Modifier
+                            .size(60.dp)
+                            .testTag("transport_play_pause_button"),
+                        shape = CircleShape
+                    ) {
+                        Icon(
+                            imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onNext,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .testTag("transport_next_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SkipNext,
+                            contentDescription = "Next",
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onCycleRepeat,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("transport_repeat_button")
+                    ) {
+                        Icon(
+                            imageVector = when (playbackState.repeatMode) {
+                                RepeatModeState.ONE -> Icons.Default.RepeatOne
+                                else -> Icons.Default.Repeat
+                            },
+                            contentDescription = "Repeat mode: ${playbackState.repeatMode}",
+                            tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+                }
+            }
+
+            // Key Features Quick Action Chips Row
+            item {
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.testTag("now_playing_feature_chips_row")
+                ) {
+                    item {
+                        FilterChip(
+                            selected = showSubtitleSettings || !playbackState.activeSubtitleText.isNullOrBlank(),
+                            onClick = onToggleSubtitleSettings,
+                            label = {
+                                val fmt = playbackState.loadedSubtitleFormat?.name ?: "SRT/VTT"
+                                Text("Lyrics ($fmt)", maxLines = 1)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Subtitles,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            modifier = Modifier.testTag("now_playing_lyrics_chip")
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = showSleepTimerPanel || playbackState.isSleepTimerActive,
+                            onClick = onToggleSleepTimerPanel,
+                            label = {
+                                val timerLabel = when {
+                                    playbackState.sleepTimerStopAtEndOfTrack -> "Sleep: End of Track"
+                                    playbackState.sleepTimerRemainingMs > 0L ->
+                                        "Sleep: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
+                                    else -> "Sleep Timer"
+                                }
+                                Text(timerLabel, maxLines = 1)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Bedtime,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            modifier = Modifier.testTag("now_playing_sleep_timer_chip")
+                        )
+                    }
+                    item {
+                        AssistChip(
+                            onClick = onOpenEqualizer,
+                            label = { Text("Equalizer & Bass", maxLines = 1) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Equalizer,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            modifier = Modifier.testTag("now_playing_eq_chip")
+                        )
+                    }
+                    item {
+                        AssistChip(
+                            onClick = onOpenStudio,
+                            label = { Text("Audio/Video Edit", maxLines = 1) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.ContentCut,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            modifier = Modifier.testTag("now_playing_editor_chip")
+                        )
+                    }
+                }
+            }
+
+            if (showSleepTimerPanel || playbackState.isSleepTimerActive) {
+                item {
+                    SleepTimerControlCard(
+                        playbackState = playbackState,
+                        onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+                        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack
+                    )
+                }
+            }
+
+            if (showSubtitleSettings || playbackState.subtitleError != null) {
+                item {
+                    SubtitleSettingsCard(
+                        playbackState = playbackState,
+                        userPreferences = userPreferences,
+                        onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                        onSetSubtitleFontScale = onSetSubtitleFontScale,
+                        onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                        onPickSubtitleFileClick = onPickSubtitleFileClick,
+                        onSeekToCue = onSeekTo
+                    )
+                }
+            }
+
+            // Playback Speed Selector Strip + Slider
+            item {
+                val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
+                Column {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Speed,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Speed (${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x)",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                        Text(
+                            text = "0.5x – 3.0x",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(speeds) { spd ->
+                            FilterChip(
+                                selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                                onClick = { onSetPlaybackSpeed(spd) },
+                                label = { Text("${spd}x", maxLines = 1) },
+                                modifier = Modifier.testTag("speed_chip_${spd}")
+                            )
+                        }
+                    }
+                    Slider(
+                        value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
+                        onValueChange = { raw ->
+                            val snapped = (raw * 20f).roundToInt() / 20f
+                            onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
+                        },
+                        valueRange = 0.5f..3.0f,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("now_playing_speed_slider")
+                    )
+                }
+            }
+
+            // Active Queue Management
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Up Next • Active Queue (${playbackState.queue.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (playbackState.queue.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = {
+                                onSaveQueueAsPlaylist("Queue Mix (${playbackState.queue.size} tracks)")
+                            },
+                            modifier = Modifier.testTag("save_queue_as_playlist_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Save as Playlist", style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        }
+                    }
+                }
+            }
+
+            itemsIndexed(
+                playbackState.queue,
+                key = { idx, item -> "${idx}_${item.uriString}" }
+            ) { idx, item ->
+                val isCurrent = idx == playbackState.currentQueueIndex
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelectQueueItem(item) },
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isCurrent) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        }
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "${idx + 1}.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.title,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${item.artist} • ${formatDurationMillis(item.durationMs)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        if (playbackState.queue.size > 1) {
+                            IconButton(
+                                onClick = { onMoveQueueItem(idx, idx - 1) },
+                                enabled = idx > 0,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("queue_move_up_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowUp,
+                                    contentDescription = "Move track up"
+                                )
+                            }
+                            IconButton(
+                                onClick = { onMoveQueueItem(idx, idx + 1) },
+                                enabled = idx < playbackState.queue.lastIndex,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("queue_move_down_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = "Move track down"
+                                )
+                            }
+                            IconButton(
+                                onClick = { onRemoveQueueItem(idx) },
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("queue_remove_$idx")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DeleteOutline,
+                                    contentDescription = "Remove from queue"
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Dedicated Right-Hand Now Playing Side Panel for Landscape Library / Browse mode.
+ * Displays full playback controls, seekbar, speed/EQ chips, and Up Next queue alongside the main library content.
+ */
+@Composable
+fun NowPlayingSidePanel(
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    isFavorite: Boolean,
+    onExpandFullPlayer: () -> Unit,
+    onCollapseSidePanel: () -> Unit,
+    onPlayPause: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+    onToggleShuffle: () -> Unit,
+    onCycleRepeat: () -> Unit,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onToggleFavorite: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onOpenStudio: () -> Unit,
+    onSelectQueueItem: (MediaEntity) -> Unit,
+    onRemoveQueueItem: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val currentMedia = playbackState.currentMedia
+
+    Surface(
+        modifier = modifier
+            .fillMaxHeight()
+            .testTag("landscape_now_playing_panel"),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        tonalElevation = 4.dp,
+        shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp)
+    ) {
+        if (currentMedia == null) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.GraphicEq,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(44.dp)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Now Playing Deck",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Select any song or video from the library to control playback, queue, and DSP here.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onOpenEqualizer,
+                        modifier = Modifier.testTag("side_panel_idle_eq_button")
+                    ) {
+                        Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Equalizer", maxLines = 1)
+                    }
+                    OutlinedButton(
+                        onClick = onCollapseSidePanel,
+                        modifier = Modifier.testTag("side_panel_collapse_button")
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Close Now Playing panel", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Hide", maxLines = 1)
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 14.dp)
+                    .testTag("side_panel_scroll_list"),
+                contentPadding = PaddingValues(top = 10.dp, bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // Header Row: Title badge + Expand Full Player + Collapse Panel
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (currentMedia.mediaType == MediaType.VIDEO) Icons.Default.Movie else Icons.Default.GraphicEq,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "NOW PLAYING",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = onExpandFullPlayer,
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("side_panel_expand_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.OpenInFull,
+                                    contentDescription = "Expand full Now Playing screen",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = onCollapseSidePanel,
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("side_panel_collapse_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Hide Now Playing side panel",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Compact Track / Video Preview Card + Favorite Toggle (fits in short landscape heights so transport controls are immediately visible)
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = onExpandFullPlayer)
+                            .testTag(
+                                if (currentMedia.mediaType == MediaType.VIDEO) {
+                                    "side_panel_video_preview_card"
+                                } else {
+                                    "side_panel_audio_preview_card"
+                                }
+                            ),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(48.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(
+                                        if (currentMedia.mediaType == MediaType.VIDEO) {
+                                            MaterialTheme.colorScheme.secondaryContainer
+                                        } else {
+                                            MaterialTheme.colorScheme.primaryContainer
+                                        }
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (currentMedia.mediaType == MediaType.VIDEO) {
+                                        Icons.Default.Movie
+                                    } else if (playbackState.isPlaying) {
+                                        Icons.Default.GraphicEq
+                                    } else {
+                                        Icons.Default.MusicNote
+                                    },
+                                    contentDescription = null,
+                                    tint = if (currentMedia.mediaType == MediaType.VIDEO) {
+                                        MaterialTheme.colorScheme.secondary
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = currentMedia.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = buildString {
+                                        append(currentMedia.artist.ifBlank { currentMedia.folderName })
+                                        if (currentMedia.mediaType == MediaType.VIDEO && currentMedia.width > 0 && currentMedia.height > 0) {
+                                            append(" • ${currentMedia.width}x${currentMedia.height}")
+                                        }
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = onToggleFavorite,
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .testTag("side_panel_favorite_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    contentDescription = "Toggle Favorite",
+                                    tint = if (isFavorite) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Seek Slider & Timestamps
+                item {
+                    val duration = playbackState.durationMs.coerceAtLeast(1L)
+                    val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Slider(
+                            value = pos.toFloat(),
+                            onValueChange = { onSeekTo(it.toLong()) },
+                            valueRange = 0f..duration.toFloat(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("side_panel_seek_slider")
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = formatDurationMillis(pos),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = formatDurationMillis(duration),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // 5-Button Transport Controls (all with 48dp minimum interactive size)
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(
+                            onClick = onToggleShuffle,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("side_panel_shuffle_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Shuffle,
+                                contentDescription = "Shuffle",
+                                tint = if (playbackState.shuffleEnabled) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onPrevious,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("side_panel_previous_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SkipPrevious,
+                                contentDescription = "Previous"
+                            )
+                        }
+
+                        FilledIconButton(
+                            onClick = onPlayPause,
+                            modifier = Modifier
+                                .size(52.dp)
+                                .testTag("side_panel_play_pause_button"),
+                            shape = CircleShape
+                        ) {
+                            Icon(
+                                imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onNext,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("side_panel_next_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.SkipNext,
+                                contentDescription = "Next"
+                            )
+                        }
+
+                        IconButton(
+                            onClick = onCycleRepeat,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("side_panel_repeat_button")
+                        ) {
+                            Icon(
+                                imageVector = when (playbackState.repeatMode) {
+                                    RepeatModeState.ONE -> Icons.Default.RepeatOne
+                                    else -> Icons.Default.Repeat
+                                },
+                                contentDescription = "Repeat mode: ${playbackState.repeatMode}",
+                                tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Quick Utility Chips (Speed, Equalizer, Studio, Full Player)
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        item {
+                            val speeds = listOf(1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f)
+                            AssistChip(
+                                onClick = {
+                                    val idx = speeds.indexOfFirst { abs(it - playbackState.playbackSpeed) < 0.05f }
+                                    val nextSpd = speeds[(idx + 1) % speeds.size]
+                                    onSetPlaybackSpeed(nextSpd)
+                                },
+                                label = {
+                                    Text(
+                                        "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x",
+                                        maxLines = 1
+                                    )
+                                },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                modifier = Modifier.testTag("side_panel_speed_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = onOpenEqualizer,
+                                label = { Text("EQ", maxLines = 1) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                modifier = Modifier.testTag("side_panel_eq_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = onOpenStudio,
+                                label = { Text("Studio", maxLines = 1) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                modifier = Modifier.testTag("side_panel_studio_chip")
+                            )
+                        }
+                        item {
+                            AssistChip(
+                                onClick = onExpandFullPlayer,
+                                label = { Text("Full Player", maxLines = 1) },
+                                leadingIcon = {
+                                    Icon(Icons.Default.OpenInFull, contentDescription = null, modifier = Modifier.size(16.dp))
+                                },
+                                modifier = Modifier.testTag("side_panel_full_player_chip")
+                            )
+                        }
+                    }
+                }
+
+                // Up Next Queue in Side Panel
+                if (playbackState.queue.isNotEmpty()) {
+                    item {
+                        Text(
+                            text = "Up Next (${playbackState.queue.size})",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    itemsIndexed(
+                        playbackState.queue,
+                        key = { idx, item -> "side_${idx}_${item.uriString}" }
+                    ) { idx, item ->
+                        val isCurrent = idx == playbackState.currentQueueIndex
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable { onSelectQueueItem(item) }
+                                .testTag("side_panel_queue_item_$idx"),
+                            color = if (isCurrent) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                            } else {
+                                MaterialTheme.colorScheme.surface
+                            },
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "${idx + 1}.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = item.title,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = formatDurationMillis(item.durationMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                }
+                                if (playbackState.queue.size > 1) {
+                                    IconButton(
+                                        onClick = { onRemoveQueueItem(idx) },
+                                        modifier = Modifier
+                                            .minimumInteractiveComponentSize()
+                                            .testTag("side_panel_queue_remove_$idx")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.DeleteOutline,
+                                            contentDescription = "Remove from queue",
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

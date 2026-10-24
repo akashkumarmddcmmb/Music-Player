@@ -651,6 +651,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     @OptIn(UnstableApi::class)
     private fun initializeSingleManagedPlayer() {
+        if (android.os.Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) {
+            ensureFallbackLocalExoPlayer()
+            return
+        }
         val app = getApplication<Application>()
         runCatching {
             val sessionToken = SessionToken(

@@ -1,21 +1,21 @@
 # Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Preserve source file and line numbers for actionable crash diagnostics
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Keep Room database, DAOs, and entity models
+-keep class * extends androidx.room.RoomDatabase { *; }
+-keep @androidx.room.Entity class * { *; }
+-keep @androidx.room.Dao class * { *; }
+-keep class com.example.data.local.** { *; }
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep Media3 session service and constructors called via reflection/manifest
+-keep class com.example.service.PulsePlaybackService { *; }
+-keepclassmembers class * implements androidx.media3.exoplayer.mediacodec.MediaCodecAdapter$Factory {
+    public <init>(...);
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Don't warn on optional Robolectric / test annotations referenced in shared metadata
+-dontwarn org.robolectric.**
+-dontwarn com.google.errorprone.annotations.**
+

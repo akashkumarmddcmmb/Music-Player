@@ -1199,5 +1199,461 @@ class ExampleRobolectricTest {
 
         outMp4.delete()
     }
+
+    @Test
+    fun resilient4KCodecEngine_verifies1080pAnd4KCapabilitiesAcrossCodecsFrameRatesAndBitDepths() {
+        val mimes = listOf(
+            android.media.MediaFormat.MIMETYPE_VIDEO_AVC,
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            android.media.MediaFormat.MIMETYPE_VIDEO_VP9,
+            "video/av01"
+        )
+
+        for (mime in mimes) {
+            // 1. Hardware decoder capable of 4K 60fps
+            val hw4kCodec = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+                "c2.qti.${mime.substringAfter('/')}.decoder.4k",
+                mime,
+                mime,
+                null,
+                /* hardwareAccelerated = */ true,
+                /* softwareOnly = */ false,
+                /* vendor = */ true,
+                /* forceDisableAdaptive = */ false,
+                /* forceSecure = */ false
+            )
+            // 2. Hardware decoder capped at 1080p 30fps (even though its name contains the codec token)
+            val hw1080pOnlyCodec = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+                "c2.vendor.${mime.substringAfter('/')}.decoder.1080p.30fps.8bit_only",
+                mime,
+                mime,
+                null,
+                /* hardwareAccelerated = */ true,
+                /* softwareOnly = */ false,
+                /* vendor = */ true,
+                /* forceDisableAdaptive = */ false,
+                /* forceSecure = */ false
+            )
+            // 3. Mismatched MIME decoder whose name deceptively contains "hevc.vp9.av1.avc"
+            val wrongMimeCodec = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+                "c2.deceptive.hevc.vp9.av1.avc.decoder",
+                "video/3gpp",
+                "video/3gpp",
+                null,
+                /* hardwareAccelerated = */ true,
+                /* softwareOnly = */ false,
+                /* vendor = */ true,
+                /* forceDisableAdaptive = */ false,
+                /* forceSecure = */ false
+            )
+
+            // Test 1080p 30fps 8-bit
+            val format1080p30 = androidx.media3.common.Format.Builder()
+                .setSampleMimeType(mime)
+                .setWidth(1920)
+                .setHeight(1080)
+                .setFrameRate(30f)
+                .build()
+
+            val report1080pOn4k = com.example.media.Resilient4KCodecEngine.evaluateCodecCapability(hw4kCodec, format1080p30)
+            val report1080pOnFhd = com.example.media.Resilient4KCodecEngine.evaluateCodecCapability(hw1080pOnlyCodec, format1080p30)
+            val reportDeceptive = com.example.media.Resilient4KCodecEngine.evaluateCodecCapability(wrongMimeCodec, format1080p30)
+
+            assertTrue("4K HW codec must support 1080p30 for $mime", report1080pOn4k.isFullyCompatible)
+            assertTrue("1080p30 HW codec must support 1080p30 8-bit for $mime", report1080pOnFhd.isFullyCompatible)
+            assertFalse("Codec with wrong MIME must be rejected even if name contains codec keywords", reportDeceptive.isFullyCompatible)
+
+            // Test 4K (3840x2160) 60fps 8-bit
+            val format4k60 = androidx.media3.common.Format.Builder()
+                .setSampleMimeType(mime)
+                .setWidth(3840)
+                .setHeight(2160)
+                .setFrameRate(60f)
+                .build()
+
+            val report4k60On4k = com.example.media.Resilient4KCodecEngine.evaluateCodecCapability(hw4kCodec, format4k60)
+            val report4k60OnFhd = com.example.media.Resilient4KCodecEngine.evaluateCodecCapability(hw1080pOnlyCodec, format4k60)
+
+            assertTrue("4K 60fps HW codec must support 3840x2160@60 for $mime", report4k60On4k.isFullyCompatible)
+            assertFalse("1080p-capped codec must reject 3840x2160 for $mime", report4k60OnFhd.dimensionsSupported)
+            assertFalse("1080p-capped codec must not be marked compatible for 4K", report4k60OnFhd.isCompatibleWithOperatingRateAdjustment)
+
+            // Test 4K (3840x2160) 30fps 10-bit HDR
+            val hdrColorInfo = androidx.media3.common.ColorInfo.Builder()
+                .setColorSpace(androidx.media3.common.C.COLOR_SPACE_BT2020)
+                .setColorTransfer(androidx.media3.common.C.COLOR_TRANSFER_ST2084)
+                .setLumaBitdepth(10)
+                .setChromaBitdepth(10)
+                .build()
+            val format4k10Bit = androidx.media3.common.Format.Builder()
+                .setSampleMimeType(mime)
+                .setWidth(3840)
+                .setHeight(2160)
+                .setFrameRate(30f)
+                .setColorInfo(hdrColorInfo)
+                .build()
+
+            assertEquals(10, com.example.media.Resilient4KCodecEngine.extractBitDepth(format4k10Bit))
+            val report10BitOn8BitOnly = com.example.media.Resilient4KCodecEngine.evaluateCodecCapability(
+                hw1080pOnlyCodec,
+                format4k10Bit.buildUpon().setWidth(1920).setHeight(1080).build()
+            )
+            assertFalse("8-bit-only decoder must reject 10-bit HDR stream for $mime", report10BitOn8BitOnly.profileAndBitDepthSupported)
+        }
+    }
+
+    @Test
+    fun resilient4KCodecEngine_preservesMediaFormatKeysUnlessCapabilityValidated() {
+        val format4k30 = androidx.media3.common.Format.Builder()
+            .setSampleMimeType(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC)
+            .setWidth(3840)
+            .setHeight(2160)
+            .setFrameRate(30f)
+            .build()
+
+        val mediaFormatWithinCaps = android.media.MediaFormat.createVideoFormat(
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            3840,
+            2160
+        ).apply {
+            setInteger(android.media.MediaFormat.KEY_MAX_WIDTH, 3840)
+            setInteger(android.media.MediaFormat.KEY_MAX_HEIGHT, 2160)
+            setFloat(android.media.MediaFormat.KEY_OPERATING_RATE, 30f)
+        }
+
+        val full4k30Report = com.example.media.CodecCapabilityReport(
+            codecName = "c2.qti.hevc.decoder",
+            codecMimeType = android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            isHardwareAccelerated = true,
+            isSoftwareOnly = false,
+            mimeSupported = true,
+            dimensionsSupported = true,
+            frameRateSupported = true,
+            profileAndBitDepthSupported = true,
+            maxSupportedWidth = 3840,
+            maxSupportedHeight = 2160,
+            maxSupportedFrameRateAtSize = 30.0,
+            diagnosticNote = "OK"
+        )
+
+        // When KEY_MAX_WIDTH, KEY_MAX_HEIGHT, and KEY_OPERATING_RATE are within capabilities, no adjustment is made
+        val noAdjustment = com.example.media.Resilient4KCodecEngine.buildCapabilityValidatedAdjustedMediaFormat(
+            source = mediaFormatWithinCaps,
+            format = format4k30,
+            report = full4k30Report
+        )
+        assertNull("MediaFormat within documented capabilities must not be modified", noAdjustment)
+
+        // When ExoPlayer populates adaptive KEY_MAX_WIDTH=4096 or KEY_OPERATING_RATE=60f on a 3840x2160@30fps decoder,
+        // only the exceeding values are clamped to documented limits and KEY_WIDTH/KEY_HEIGHT remain untouched
+        val overHintedFormat = android.media.MediaFormat.createVideoFormat(
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            3840,
+            2160
+        ).apply {
+            setInteger(android.media.MediaFormat.KEY_MAX_WIDTH, 4096)
+            setInteger(android.media.MediaFormat.KEY_MAX_HEIGHT, 2304)
+            setFloat(android.media.MediaFormat.KEY_OPERATING_RATE, 60f)
+        }
+
+        val adjusted = com.example.media.Resilient4KCodecEngine.buildCapabilityValidatedAdjustedMediaFormat(
+            source = overHintedFormat,
+            format = format4k30,
+            report = full4k30Report
+        )
+        assertNotNull("Over-hinted MediaFormat should receive capability-validated adjustment", adjusted)
+        assertEquals(3840, adjusted!!.getInteger(android.media.MediaFormat.KEY_WIDTH))
+        assertEquals(2160, adjusted.getInteger(android.media.MediaFormat.KEY_HEIGHT))
+        assertEquals(3840, adjusted.getInteger(android.media.MediaFormat.KEY_MAX_WIDTH))
+        assertEquals(2160, adjusted.getInteger(android.media.MediaFormat.KEY_MAX_HEIGHT))
+        assertEquals(30f, adjusted.getFloat(android.media.MediaFormat.KEY_OPERATING_RATE), 0.01f)
+    }
+
+    private fun createStubMediaCodecAdapter(): androidx.media3.exoplayer.mediacodec.MediaCodecAdapter {
+        return java.lang.reflect.Proxy.newProxyInstance(
+            androidx.media3.exoplayer.mediacodec.MediaCodecAdapter::class.java.classLoader,
+            arrayOf(androidx.media3.exoplayer.mediacodec.MediaCodecAdapter::class.java)
+        ) { _, method, _ ->
+            when (method.returnType) {
+                java.lang.Boolean.TYPE -> false
+                java.lang.Integer.TYPE -> 0
+                java.lang.Long.TYPE -> 0L
+                else -> null
+            }
+        } as androidx.media3.exoplayer.mediacodec.MediaCodecAdapter
+    }
+
+    @Test
+    fun resilient4KMediaCodecAdapterFactory_prefersHardwareAndFallsBackToSecondaryHardwareOnFailure() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        com.example.media.Resilient4KCodecEngine.allowExperimental4kSoftwareFallback = false
+        com.example.media.Resilient4KCodecEngine.resetTelemetryForNewTrack(
+            mimeType = android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            width = 3840,
+            height = 2160
+        )
+
+        val primaryHw = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+            "c2.primary.hevc.decoder.4k",
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            null,
+            /* hardwareAccelerated = */ true,
+            /* softwareOnly = */ false,
+            /* vendor = */ true,
+            /* forceDisableAdaptive = */ false,
+            /* forceSecure = */ false
+        )
+        val secondaryHw = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+            "c2.secondary.hevc.decoder.4k",
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            null,
+            /* hardwareAccelerated = */ true,
+            /* softwareOnly = */ false,
+            /* vendor = */ true,
+            /* forceDisableAdaptive = */ false,
+            /* forceSecure = */ false
+        )
+        val softwareCodec = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+            "c2.android.hevc.decoder",
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            null,
+            /* hardwareAccelerated = */ false,
+            /* softwareOnly = */ true,
+            /* vendor = */ false,
+            /* forceDisableAdaptive = */ false,
+            /* forceSecure = */ false
+        )
+
+        val attemptedCodecs = mutableListOf<String>()
+        val fakeAdapter = createStubMediaCodecAdapter()
+        val delegate = androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Factory { config ->
+            attemptedCodecs.add(config.codecInfo.name)
+            if (config.codecInfo.name == primaryHw.name) {
+                throw java.io.IOException("Simulated primary HW codec resource busy")
+            }
+            fakeAdapter
+        }
+
+        val factory = com.example.media.Resilient4KMediaCodecAdapterFactory(
+            context = context,
+            delegateFactory = delegate,
+            candidateDecodersProvider = { _, _ -> listOf(primaryHw, secondaryHw, softwareCodec) }
+        )
+
+        val format4k = androidx.media3.common.Format.Builder()
+            .setSampleMimeType(android.media.MediaFormat.MIMETYPE_VIDEO_HEVC)
+            .setWidth(3840)
+            .setHeight(2160)
+            .setFrameRate(30f)
+            .build()
+        val mediaFormat4k = android.media.MediaFormat.createVideoFormat(
+            android.media.MediaFormat.MIMETYPE_VIDEO_HEVC,
+            3840,
+            2160
+        )
+        val config = androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Configuration.createForVideoDecoding(
+            primaryHw,
+            mediaFormat4k,
+            format4k,
+            null,
+            null
+        )
+
+        val resultingAdapter = factory.createAdapter(config)
+        assertNotNull(resultingAdapter)
+        assertEquals(listOf(primaryHw.name, secondaryHw.name), attemptedCodecs)
+
+        val telemetry = com.example.media.Resilient4KCodecEngine.latestTelemetry.value
+        assertEquals(secondaryHw.name, telemetry.selectedDecoderName)
+        assertTrue(telemetry.isHardwareAccelerated)
+        assertFalse(telemetry.isSoftwareFallbackActive)
+        assertTrue(telemetry.isDecoderVerified)
+        assertEquals(1, telemetry.fallbackAttemptCount)
+    }
+
+    @Test
+    fun resilient4KMediaCodecAdapterFactory_guardsOptional4KSoftwareFallbackByCpuThermalBatteryAndDroppedFrames() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+
+        // 1. Default off: must reject 4K software fallback
+        val guardDefaultOff = com.example.media.Resilient4KCodecEngine.evaluate4KSoftwareFallbackGuard(
+            context = context,
+            userEnabledSoftware4KFallback = false,
+            cpuCoresOverride = 8,
+            thermalStatusOverride = android.os.PowerManager.THERMAL_STATUS_NONE,
+            lowMemoryOverride = false,
+            powerSaveOverride = false
+        )
+        assertFalse(guardDefaultOff.canAttemptSoftware4KFallback)
+
+        // 2. Insufficient CPU cores (< 6): must reject 4K software fallback
+        val guardLowCores = com.example.media.Resilient4KCodecEngine.evaluate4KSoftwareFallbackGuard(
+            context = context,
+            userEnabledSoftware4KFallback = true,
+            cpuCoresOverride = 4,
+            thermalStatusOverride = android.os.PowerManager.THERMAL_STATUS_NONE,
+            lowMemoryOverride = false,
+            powerSaveOverride = false
+        )
+        assertFalse(guardLowCores.canAttemptSoftware4KFallback)
+
+        // 3. Elevated thermal status (MODERATE or higher): must reject 4K software fallback
+        val guardThermal = com.example.media.Resilient4KCodecEngine.evaluate4KSoftwareFallbackGuard(
+            context = context,
+            userEnabledSoftware4KFallback = true,
+            cpuCoresOverride = 8,
+            thermalStatusOverride = android.os.PowerManager.THERMAL_STATUS_MODERATE,
+            lowMemoryOverride = false,
+            powerSaveOverride = false
+        )
+        assertFalse(guardThermal.canAttemptSoftware4KFallback)
+
+        // 4. Battery Saver active: must reject 4K software fallback
+        val guardBatterySaver = com.example.media.Resilient4KCodecEngine.evaluate4KSoftwareFallbackGuard(
+            context = context,
+            userEnabledSoftware4KFallback = true,
+            cpuCoresOverride = 8,
+            thermalStatusOverride = android.os.PowerManager.THERMAL_STATUS_NONE,
+            lowMemoryOverride = false,
+            powerSaveOverride = true
+        )
+        assertFalse(guardBatterySaver.canAttemptSoftware4KFallback)
+
+        // 5. Excessive dropped frames: must reject 4K software fallback
+        val guardDroppedFrames = com.example.media.Resilient4KCodecEngine.evaluate4KSoftwareFallbackGuard(
+            context = context,
+            userEnabledSoftware4KFallback = true,
+            droppedFrameCount = com.example.media.Resilient4KCodecEngine.MAX_ACCEPTABLE_4K_DROPPED_FRAMES,
+            cpuCoresOverride = 8,
+            thermalStatusOverride = android.os.PowerManager.THERMAL_STATUS_NONE,
+            lowMemoryOverride = false,
+            powerSaveOverride = false
+        )
+        assertFalse(guardDroppedFrames.canAttemptSoftware4KFallback)
+
+        // 6. User opted in AND healthy CPU/thermal/memory/battery: allowed to attempt 4K software fallback
+        val guardHealthy = com.example.media.Resilient4KCodecEngine.evaluate4KSoftwareFallbackGuard(
+            context = context,
+            userEnabledSoftware4KFallback = true,
+            droppedFrameCount = 0,
+            cpuCoresOverride = 8,
+            thermalStatusOverride = android.os.PowerManager.THERMAL_STATUS_NONE,
+            lowMemoryOverride = false,
+            powerSaveOverride = false
+        )
+        assertTrue(guardHealthy.canAttemptSoftware4KFallback)
+
+        // Verify factory behavior when HW fails and guard blocks vs allows SW fallback
+        val hwCodec = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+            "c2.qti.vp9.decoder",
+            android.media.MediaFormat.MIMETYPE_VIDEO_VP9,
+            android.media.MediaFormat.MIMETYPE_VIDEO_VP9,
+            null,
+            /* hardwareAccelerated = */ true,
+            /* softwareOnly = */ false,
+            /* vendor = */ true,
+            /* forceDisableAdaptive = */ false,
+            /* forceSecure = */ false
+        )
+        val swCodec = androidx.media3.exoplayer.mediacodec.MediaCodecInfo.newInstance(
+            "c2.android.vp9.decoder",
+            android.media.MediaFormat.MIMETYPE_VIDEO_VP9,
+            android.media.MediaFormat.MIMETYPE_VIDEO_VP9,
+            null,
+            /* hardwareAccelerated = */ false,
+            /* softwareOnly = */ true,
+            /* vendor = */ false,
+            /* forceDisableAdaptive = */ false,
+            /* forceSecure = */ false
+        )
+        val fakeAdapter = createStubMediaCodecAdapter()
+        val hwFailingDelegate = androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Factory { config ->
+            if (config.codecInfo.name == hwCodec.name) {
+                throw java.io.IOException("HW VP9 4K init failed")
+            }
+            fakeAdapter
+        }
+
+        val format4kVp9 = androidx.media3.common.Format.Builder()
+            .setSampleMimeType(android.media.MediaFormat.MIMETYPE_VIDEO_VP9)
+            .setWidth(3840)
+            .setHeight(2160)
+            .setFrameRate(30f)
+            .build()
+        val mediaFormat4kVp9 = android.media.MediaFormat.createVideoFormat(
+            android.media.MediaFormat.MIMETYPE_VIDEO_VP9,
+            3840,
+            2160
+        )
+        val config = androidx.media3.exoplayer.mediacodec.MediaCodecAdapter.Configuration.createForVideoDecoding(
+            hwCodec,
+            mediaFormat4kVp9,
+            format4kVp9,
+            null,
+            null
+        )
+
+        // When guard blocks SW fallback, factory throws IOException and records failure telemetry
+        val blockedFactory = com.example.media.Resilient4KMediaCodecAdapterFactory(
+            context = context,
+            delegateFactory = hwFailingDelegate,
+            candidateDecodersProvider = { _, _ -> listOf(hwCodec, swCodec) },
+            fallbackGuardProvider = { guardDefaultOff }
+        )
+        var threwWhenBlocked = false
+        try {
+            blockedFactory.createAdapter(config)
+        } catch (_: java.io.IOException) {
+            threwWhenBlocked = true
+        }
+        assertTrue("4K software fallback must be blocked when guard rejects", threwWhenBlocked)
+        assertFalse(com.example.media.Resilient4KCodecEngine.latestTelemetry.value.isDecoderVerified)
+        assertNotNull(com.example.media.Resilient4KCodecEngine.latestTelemetry.value.failureReason)
+
+        // When guard allows SW fallback, factory initializes compatible SW decoder and records SW fallback telemetry
+        val allowedFactory = com.example.media.Resilient4KMediaCodecAdapterFactory(
+            context = context,
+            delegateFactory = hwFailingDelegate,
+            candidateDecodersProvider = { _, _ -> listOf(hwCodec, swCodec) },
+            fallbackGuardProvider = { guardHealthy }
+        )
+        val swAdapter = allowedFactory.createAdapter(config)
+        assertNotNull(swAdapter)
+        val swTelemetry = com.example.media.Resilient4KCodecEngine.latestTelemetry.value
+        assertEquals(swCodec.name, swTelemetry.selectedDecoderName)
+        assertFalse(swTelemetry.isHardwareAccelerated)
+        assertTrue(swTelemetry.isSoftwareFallbackActive)
+        assertTrue(swTelemetry.isDecoderVerified)
+
+        // Simulate excessive dropped frames during SW fallback and verify degradation status
+        com.example.media.Resilient4KCodecEngine.recordDroppedFrames(50)
+        val degradedTelemetry = com.example.media.Resilient4KCodecEngine.latestTelemetry.value
+        assertEquals(50, degradedTelemetry.droppedVideoFrames)
+        assertTrue(degradedTelemetry.diagnosticSummary.contains("Degraded"))
+    }
+
+    @Test
+    fun resilient4KResolutionBadge_requiresActual3840x2160MetadataAndSeparatesDecoderStatus() {
+        assertNull(
+            "Unknown dimensions (0x0) must never fabricate a resolution badge",
+            com.example.media.Resilient4KCodecEngine.formatVerifiedResolutionBadge(0, 0)
+        )
+        assertFalse(com.example.media.Resilient4KCodecEngine.is4kUhdResolution(0, 0))
+        assertFalse(com.example.media.Resilient4KCodecEngine.is4kUhdResolution(1920, 1080))
+        assertEquals(
+            "FHD 1080p",
+            com.example.media.Resilient4KCodecEngine.formatVerifiedResolutionBadge(1920, 1080)
+        )
+        assertTrue(com.example.media.Resilient4KCodecEngine.is4kUhdResolution(3840, 2160))
+        assertTrue(com.example.media.Resilient4KCodecEngine.is4kUhdResolution(2160, 3840))
+        assertEquals(
+            "4K UHD 2160p",
+            com.example.media.Resilient4KCodecEngine.formatVerifiedResolutionBadge(3840, 2160)
+        )
+    }
 }
+
 

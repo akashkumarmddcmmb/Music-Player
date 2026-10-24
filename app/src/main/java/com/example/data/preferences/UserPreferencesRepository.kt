@@ -50,6 +50,8 @@ data class UserPreferencesState(
     val equalizerPresetIndex: Int = 0,
     val bassBoostStrength: Int = 0, // 0..1000
     val customBandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
+    // Optional 4K Software Decoding Fallback (Strictly disabled by default to protect CPU/thermal/battery)
+    val allowExperimental4kSoftwareFallback: Boolean = false,
     // Phase 14: Optional Advertising Module (Strictly disabled by default for privacy)
     val optionalAdsModuleEnabled: Boolean = false,
     val optionalAdsConsentGranted: Boolean = false
@@ -76,6 +78,7 @@ class UserPreferencesRepository(private val context: Context) {
         val EQ_PRESET = intPreferencesKey("equalizer_preset_index")
         val BASS_STRENGTH = intPreferencesKey("bass_boost_strength")
         val EQ_BANDS_CSV = stringPreferencesKey("equalizer_bands_csv")
+        val ALLOW_4K_SW_FALLBACK = booleanPreferencesKey("allow_experimental_4k_software_fallback")
         val OPTIONAL_ADS_ENABLED = booleanPreferencesKey("optional_ads_module_enabled")
         val OPTIONAL_ADS_CONSENT = booleanPreferencesKey("optional_ads_consent_granted")
     }
@@ -117,6 +120,7 @@ class UserPreferencesRepository(private val context: Context) {
             equalizerPresetIndex = prefs[Keys.EQ_PRESET] ?: 0,
             bassBoostStrength = (prefs[Keys.BASS_STRENGTH] ?: 0).coerceIn(0, 1000),
             customBandLevelsMb = parsedBands,
+            allowExperimental4kSoftwareFallback = prefs[Keys.ALLOW_4K_SW_FALLBACK] ?: false,
             optionalAdsModuleEnabled = prefs[Keys.OPTIONAL_ADS_ENABLED] ?: false,
             optionalAdsConsentGranted = prefs[Keys.OPTIONAL_ADS_CONSENT] ?: false
         )
@@ -189,6 +193,12 @@ class UserPreferencesRepository(private val context: Context) {
             prefs[Keys.EQ_PRESET] = presetIndex
             prefs[Keys.BASS_STRENGTH] = bassBoostStrength.coerceIn(0, 1000)
             prefs[Keys.EQ_BANDS_CSV] = bandLevelsMb.joinToString(",")
+        }
+    }
+
+    suspend fun setAllowExperimental4kSoftwareFallback(enabled: Boolean) {
+        context.pulseDataStore.edit { prefs ->
+            prefs[Keys.ALLOW_4K_SW_FALLBACK] = enabled
         }
     }
 

@@ -41,7 +41,7 @@ import com.example.media.HardwareEqualizerState
 import com.example.media.MediaProcessorEngine
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
-import com.example.media.Resilient4KMediaCodecAdapterFactory
+import com.example.media.Resilient4KCodecEngine
 import com.example.media.SampleMediaGenerator
 import com.example.media.SubtitleCueItem
 import com.example.media.SubtitleFormat
@@ -128,6 +128,14 @@ data class PlaybackUiState(
     val sleepTimerTotalMinutes: Int = 0,
     val sleepTimerRemainingMs: Long = 0L,
     val sleepTimerStopAtEndOfTrack: Boolean = false,
+    val verifiedDecoderName: String? = null,
+    val isDecoderVerified: Boolean = false,
+    val isDecoderHardwareAccelerated: Boolean = true,
+    val isSoftwareFallbackDecoder: Boolean = false,
+    val droppedVideoFrames: Int = 0,
+    val decoderStatusLabel: String = "Decoder Unverified",
+    val decodedVideoWidth: Int = 0,
+    val decodedVideoHeight: Int = 0,
     val playbackError: String? = null
 ) {
     val isSleepTimerActive: Boolean
@@ -253,7 +261,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private var sleepTimerJob: Job? = null
     private var activeProcessingJob: Job? = null
     private var lastHistoryWriteTimeMs: Long = 0L
-    private var hasAttemptedSoftwareFallbackForCurrentTrack: Boolean = false
+    private val decoderRecoveryAttemptsByUri = object : LinkedHashMap<String, Int>(32, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean = size > 64
+    }
 
     private val _playbackState = MutableStateFlow(PlaybackUiState())
     val playbackState: StateFlow<PlaybackUiState> = _playbackState.asStateFlow()
@@ -347,13 +357,23 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     error.errorCode == PlaybackException.ERROR_CODE_DECODING_FAILED ||
                     error.errorCode == PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED
 
-            if (isDecoderFailure && !hasAttemptedSoftwareFallbackForCurrentTrack) {
-                hasAttemptedSoftwareFallbackForCurrentTrack = true
-                Resilient4KMediaCodecAdapterFactory.preferSoftwareForHighRes = true
+            val currentUri = _playbackState.value.currentMedia?.uriString
+                ?: activePlayer?.currentMediaItem?.mediaId
+                ?: ""
+            val attemptsSoFar = decoderRecoveryAttemptsByUri[currentUri] ?: 0
+
+            if (isDecoderFailure &&
+                currentUri.isNotBlank() &&
+                attemptsSoFar < Resilient4KCodecEngine.MAX_DECODER_RECOVERY_RETRIES
+            ) {
+                decoderRecoveryAttemptsByUri[currentUri] = attemptsSoFar + 1
+                Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = true
                 val player = activePlayer
                 if (player != null) {
                     val savedIndex = player.currentMediaItemIndex.coerceAtLeast(0)
-                    val savedPos = player.currentPosition.coerceAtLeast(0L)
+                    val savedPos = player.currentPosition.coerceAtLeast(
+                        _playbackState.value.currentPositionMs.coerceAtLeast(0L)
+                    )
                     viewModelScope.launch {
                         delay(120L)
                         runCatching {
@@ -364,6 +384,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                             player.play()
                             _playbackState.value = _playbackState.value.copy(
                                 isPlaying = true,
+                                currentPositionMs = savedPos,
                                 playbackError = null
                             )
                         }
@@ -372,9 +393,16 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
 
-            val friendlyMsg = "Playback error (${error.errorCodeName}): The file may be corrupt, moved, or use an unsupported codec."
+            val telemetryFailure = Resilient4KCodecEngine.latestTelemetry.value.failureReason
+            val friendlyMsg = if (!telemetryFailure.isNullOrBlank() && isDecoderFailure) {
+                "Playback error (${error.errorCodeName}): $telemetryFailure"
+            } else {
+                "Playback error (${error.errorCodeName}): The file may be corrupt, moved, or use an unsupported codec."
+            }
             _playbackState.value = _playbackState.value.copy(
                 isPlaying = false,
+                isDecoderVerified = false,
+                decoderStatusLabel = "Decoder Init Failed",
                 playbackError = friendlyMsg
             )
         }
@@ -387,6 +415,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             val initialPrefs = preferencesRepository.preferencesFlow.first()
+            Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
+                initialPrefs.allowExperimental4kSoftwareFallback
             equalizerController.setStereoBalance(initialPrefs.audioBalance)
             equalizerController.bindToAudioSession(
                 audioSessionId = PulsePlaybackService.serviceAudioSessionId.value,
@@ -399,9 +429,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
             PulsePlaybackService.serviceAudioSessionId.collect { serviceSessionId ->
                 val prefs = preferencesRepository.preferencesFlow.first()
+                Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
+                    prefs.allowExperimental4kSoftwareFallback
                 equalizerController.setStereoBalance(prefs.audioBalance)
                 val currentSession = equalizerController.state.value
-                val effectiveEnabled = currentSession.isEnabled || prefs.equalizerEnabled
+                val effectiveEnabled = prefs.equalizerEnabled
                 val effectiveBands = if (currentSession.bands.any { it.currentLevelMb != 0 }) {
                     currentSession.bands.map { it.currentLevelMb }
                 } else {
@@ -419,6 +451,20 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     bassStrength = prefs.bassBoostStrength,
                     savedBandLevelsMb = effectiveBands,
                     isPlaybackActive = activePlayer?.isPlaying == true || PulsePlaybackService.serviceIsPlaying.value
+                )
+            }
+        }
+        viewModelScope.launch {
+            Resilient4KCodecEngine.latestTelemetry.collect { telemetry ->
+                _playbackState.value = _playbackState.value.copy(
+                    verifiedDecoderName = telemetry.selectedDecoderName,
+                    isDecoderVerified = telemetry.isDecoderVerified,
+                    isDecoderHardwareAccelerated = telemetry.isHardwareAccelerated,
+                    isSoftwareFallbackDecoder = telemetry.isSoftwareFallbackActive,
+                    droppedVideoFrames = telemetry.droppedVideoFrames,
+                    decoderStatusLabel = telemetry.diagnosticSummary,
+                    decodedVideoWidth = telemetry.sourceWidth,
+                    decodedVideoHeight = telemetry.sourceHeight
                 )
             }
         }
@@ -799,12 +845,49 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 activePlayer
             } ?: return@launch
 
-            hasAttemptedSoftwareFallbackForCurrentTrack = false
-            // Synchronously release any active hardware video decoder instance from the previous item
-            // before initializing a new (potentially 4K 3840x2160) video decoder.
-            runCatching {
-                player.stop()
-                player.clearMediaItems()
+            val currentActiveUri = player.currentMediaItem?.mediaId
+            val isSameActiveItem = currentActiveUri == media.uriString &&
+                player.playbackState != Player.STATE_IDLE &&
+                _playbackState.value.playbackError == null
+
+            // Requirement 8: Never release the decoder that is still actively rendering the current video!
+            if (isSameActiveItem) {
+                if (!player.isPlaying) {
+                    if (player.playbackState == Player.STATE_ENDED) {
+                        player.seekTo(0L)
+                    }
+                    player.playWhenReady = true
+                    player.play()
+                }
+                _playbackState.value = _playbackState.value.copy(
+                    currentMedia = media,
+                    queue = resolvedQueue,
+                    currentQueueIndex = startIndex,
+                    isPlaying = true,
+                    playbackError = null
+                )
+                startProgressPolling()
+                return@launch
+            }
+
+            // Reset per-URI recovery counter when user explicitly initiates playback of a track
+            decoderRecoveryAttemptsByUri[media.uriString] = 0
+            Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
+                prefs.allowExperimental4kSoftwareFallback
+            if (media.mediaType == MediaType.VIDEO) {
+                Resilient4KCodecEngine.resetTelemetryForNewTrack(
+                    mimeType = media.mimeType,
+                    width = media.width,
+                    height = media.height
+                )
+            }
+
+            // Release obsolete codec instances from the previous track safely before loading the new track
+            if (currentActiveUri != null || _playbackState.value.playbackError != null) {
+                runCatching {
+                    player.stop()
+                    player.clearMediaItems()
+                }
             }
 
             player.setMediaItems(mediaItems, startIndex, initialSeekMs)
@@ -1510,6 +1593,13 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { preferencesRepository.setDefaultSortOption(option) }
     }
 
+    fun setAllowExperimental4kSoftwareFallback(enabled: Boolean) {
+        Resilient4KCodecEngine.allowExperimental4kSoftwareFallback = enabled
+        viewModelScope.launch {
+            preferencesRepository.setAllowExperimental4kSoftwareFallback(enabled)
+        }
+    }
+
     fun setOptionalAdsConfig(enabled: Boolean, consentGranted: Boolean) {
         viewModelScope.launch {
             preferencesRepository.setOptionalAdsConfiguration(enabled, consentGranted)
@@ -1571,6 +1661,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         activeProcessingJob?.cancel()
         equalizerController.releaseEffects()
         activePlayer?.removeListener(playerListener)
+        activePlayer = null
         mediaControllerFuture?.let { MediaController.releaseFuture(it) }
         mediaControllerFuture = null
         fallbackLocalPlayer?.release()

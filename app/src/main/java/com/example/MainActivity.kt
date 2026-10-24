@@ -915,6 +915,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onSetKeepScreenOnDuringVideo = { viewModel.setKeepScreenOnDuringVideo(it) },
                                     onSetVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
                                     onSetVideoOrientationPref = { viewModel.setVideoOrientationPreference(it) },
+                                    onSetAllowExperimental4kSoftwareFallback = {
+                                        viewModel.setAllowExperimental4kSoftwareFallback(it)
+                                    },
                                     onSetAudioBalance = { viewModel.setAudioBalance(it) },
                                     onSetPreampGainDb = { viewModel.setPreampGainDb(it) },
                                     onSetSleepTimerMinutes = { viewModel.setSleepTimerMinutes(it) },

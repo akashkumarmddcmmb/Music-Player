@@ -605,10 +605,14 @@ class MediaLibraryRepository(
                         if (!visitedDirs.add(canonical)) {
                             false
                         } else {
+                            val path = dir.absolutePath
                             dir.canRead() &&
                                 (!dir.name.startsWith(".") || dir.name == ".Statuses") &&
-                                !dir.absolutePath.contains("/Android/data") &&
-                                !dir.absolutePath.contains("/Android/obb")
+                                !path.contains("/Android/data") &&
+                                !path.contains("/Android/obb") &&
+                                !path.contains("/Android/media/com.google") &&
+                                !path.contains("/.thumbnails") &&
+                                !path.contains("/.Trash")
                         }
                     }
                     .maxDepth(8)

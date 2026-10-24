@@ -25,6 +25,7 @@ import com.example.media.EqualizerController
 import com.example.media.EqualizerDspConfig
 import com.example.media.HardwareEqualizerState
 import com.example.media.PulseEqualizerAudioProcessor
+import com.example.media.Resilient4KCodecEngine
 import com.example.media.Resilient4KMediaCodecAdapterFactory
 import com.example.media.Resilient4KMediaCodecSelector
 import com.google.common.util.concurrent.Futures
@@ -94,6 +95,8 @@ class PulsePlaybackService : MediaSessionService() {
             runCatching {
                 UserPreferencesRepository(applicationContext).preferencesFlow.collect { prefs ->
                     backgroundPlaybackAllowed = prefs.backgroundPlaybackEnabled
+                    Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
+                        prefs.allowExperimental4kSoftwareFallback
                     val resolvedBands = if (prefs.customBandLevelsMb.size == HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ.size) {
                         prefs.customBandLevelsMb
                     } else {
@@ -268,6 +271,9 @@ class PulsePlaybackService : MediaSessionService() {
                 .setVideoChangeFrameRateStrategy(C.VIDEO_CHANGE_FRAME_RATE_STRATEGY_OFF)
                 .setWakeMode(C.WAKE_MODE_LOCAL)
                 .build()
+                .apply {
+                    addAnalyticsListener(Resilient4KCodecEngine.createAnalyticsListener(context))
+                }
         }
     }
 }

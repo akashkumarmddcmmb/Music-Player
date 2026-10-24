@@ -78,6 +78,7 @@ fun ProfileAndSettingsScreen(
     onSetKeepScreenOnDuringVideo: (Boolean) -> Unit = {},
     onSetVideoGestureControls: (Boolean) -> Unit = {},
     onSetVideoOrientationPref: (VideoOrientationPreference) -> Unit = {},
+    onSetAllowExperimental4kSoftwareFallback: (Boolean) -> Unit = {},
     onSetAudioBalance: (Float) -> Unit = {},
     onSetPreampGainDb: (Float) -> Unit = {},
     onSetSleepTimerMinutes: (Int) -> Unit = {},
@@ -321,6 +322,27 @@ fun ProfileAndSettingsScreen(
                         checked = userPreferences.videoGestureControlsEnabled,
                         onCheckedChange = onSetVideoGestureControls,
                         modifier = Modifier.testTag("settings_video_gestures_switch")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Optional 4K Software Decoder Fallback", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Resource-intensive CPU fallback when no hardware decoder supports 4K. Guarded by CPU core count, memory, thermal status & battery saver",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.allowExperimental4kSoftwareFallback,
+                        onCheckedChange = onSetAllowExperimental4kSoftwareFallback,
+                        modifier = Modifier.testTag("settings_4k_sw_fallback_switch")
                     )
                 }
 

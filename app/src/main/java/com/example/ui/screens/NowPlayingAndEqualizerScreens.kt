@@ -126,6 +126,7 @@ import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.HardwareEqualizerState
 import com.example.media.PlayerHandoffAndVideoPolicy
+import com.example.media.Resilient4KCodecEngine
 import com.example.ui.components.formatDurationMillis
 import com.example.ui.components.formatFileSize
 import com.example.viewmodel.PlaybackUiState
@@ -980,9 +981,14 @@ private fun PortraitVideoSurfaceSection(
             if (playerInstance != null) {
                 AndroidView(
                     factory = { ctx ->
-                        val pv = runCatching {
-                            LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
-                        }.getOrElse { PlayerView(ctx) }
+                        val pv = if (frameTransform.rotationDegrees != 0) {
+                            runCatching {
+                                LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
+                            }.getOrElse { PlayerView(ctx) }
+                        } else {
+                            // Requirement 7: Prefer SurfaceView for ordinary video playback
+                            PlayerView(ctx)
+                        }
                         pv.apply {
                             useController = false
                             player = playerInstance
@@ -1006,10 +1012,14 @@ private fun PortraitVideoSurfaceSection(
                         }
                     },
                     onReset = { view ->
-                        view.player = null
+                        if (view.player === playerInstance) {
+                            view.player = null
+                        }
                     },
                     onRelease = { view ->
-                        view.player = null
+                        if (view.player === playerInstance) {
+                            view.player = null
+                        }
                     },
                     modifier = Modifier
                         .fillMaxSize()
@@ -1331,24 +1341,23 @@ private fun ImmersiveVideoCinemaLayout(
         gestureFeedbackBanner = "Speed ${nextSpeed}x"
     }
 
-    val resolutionTag = remember(currentMedia.width, currentMedia.height, currentMedia.sizeBytes, currentMedia.mimeType) {
-        val maxDim = maxOf(currentMedia.width, currentMedia.height)
-        val minDim = minOf(currentMedia.width, currentMedia.height)
-        when {
-            maxDim >= 3800 || minDim >= 2100 -> "4K UHD 2160p"
-            maxDim >= 2500 || minDim >= 1400 -> "2K QHD 1440p"
-            maxDim >= 1900 || minDim >= 1000 || currentMedia.sizeBytes >= 25_000_000L -> "FHD 1080p"
-            maxDim >= 1200 || minDim >= 700 || currentMedia.sizeBytes >= 8_000_000L -> "HD 720p"
-            else -> "HD Video"
-        }
+    val effectiveWidth = currentMedia.width.takeIf { it > 0 } ?: playbackState.decodedVideoWidth
+    val effectiveHeight = currentMedia.height.takeIf { it > 0 } ?: playbackState.decodedVideoHeight
+    val resolutionTag = remember(effectiveWidth, effectiveHeight) {
+        Resilient4KCodecEngine.formatVerifiedResolutionBadge(effectiveWidth, effectiveHeight)
     }
     val subtitleMetaText = remember(currentMedia.sizeBytes, resolutionTag) {
         val formattedSize = if (currentMedia.sizeBytes > 0L) {
             formatFileSize(currentMedia.sizeBytes)
         } else {
-            "HD Video"
+            ""
         }
-        "$resolutionTag • $formattedSize"
+        when {
+            !resolutionTag.isNullOrBlank() && formattedSize.isNotBlank() -> "$resolutionTag • $formattedSize"
+            !resolutionTag.isNullOrBlank() -> resolutionTag
+            formattedSize.isNotBlank() -> formattedSize
+            else -> "Video Stream"
+        }
     }
 
     Box(
@@ -1416,9 +1425,14 @@ private fun ImmersiveVideoCinemaLayout(
             if (playerInstance != null) {
                 AndroidView(
                     factory = { ctx ->
-                        val pv = runCatching {
-                            LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
-                        }.getOrElse { PlayerView(ctx) }
+                        val pv = if (frameTransform.rotationDegrees != 0) {
+                            runCatching {
+                                LayoutInflater.from(ctx).inflate(R.layout.pulse_texture_player_view, null) as PlayerView
+                            }.getOrElse { PlayerView(ctx) }
+                        } else {
+                            // Requirement 7: Prefer SurfaceView for ordinary video playback
+                            PlayerView(ctx)
+                        }
                         pv.apply {
                             useController = false
                             player = playerInstance
@@ -1442,10 +1456,14 @@ private fun ImmersiveVideoCinemaLayout(
                         }
                     },
                     onReset = { view ->
-                        view.player = null
+                        if (view.player === playerInstance) {
+                            view.player = null
+                        }
                     },
                     onRelease = { view ->
-                        view.player = null
+                        if (view.player === playerInstance) {
+                            view.player = null
+                        }
                     },
                     modifier = videoModifier
                         .graphicsLayer {
@@ -1595,7 +1613,20 @@ private fun ImmersiveVideoCinemaLayout(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.White.copy(alpha = 0.76f),
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("video_resolution_meta_label")
+                            )
+                            Text(
+                                text = playbackState.decoderStatusLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (playbackState.isDecoderVerified) {
+                                    CinemaNeonGreen.copy(alpha = 0.9f)
+                                } else {
+                                    Color.White.copy(alpha = 0.6f)
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("video_decoder_status_badge")
                             )
                         }
                     }

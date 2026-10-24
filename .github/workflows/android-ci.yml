@@ -66,11 +66,14 @@ jobs:
               -dname "CN=Android Debug,O=Android,C=US"
           fi
 
+      - name: Ensure Gradle Wrapper is Executable
+        run: chmod +x gradlew
+
       - name: Execute Unit & Robolectric Tests
-        run: gradle :app:testDebugUnitTest --no-daemon
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
 
       - name: Assemble Installable Debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        run: ./gradlew :app:assembleDebug --no-daemon
 
       - name: Assemble Signed Release APK & AAB (If Release Secrets Configured)
         id: release_signing
@@ -82,7 +85,7 @@ jobs:
           if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
             export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
-            gradle :app:assembleRelease :app:bundleRelease --no-daemon
+            ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
             echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
           else
             echo "Release keystore secrets not configured; packaging verified installable Debug APK."

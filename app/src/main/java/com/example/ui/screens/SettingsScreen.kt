@@ -227,10 +227,22 @@ fun ProfileAndSettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     AppThemeMode.entries.forEach { mode ->
+                        val modeLabel = when (mode) {
+                            AppThemeMode.SYSTEM -> "System"
+                            AppThemeMode.DARK -> "Dark"
+                            AppThemeMode.LIGHT -> "Light"
+                        }
                         FilterChip(
                             selected = userPreferences.themeMode == mode,
                             onClick = { onSetThemeMode(mode) },
-                            label = { Text(mode.name) },
+                            label = {
+                                Text(
+                                    text = modeLabel,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            },
                             leadingIcon = {
                                 val modeIcon = when (mode) {
                                     AppThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
@@ -240,7 +252,7 @@ fun ProfileAndSettingsScreen(
                                 Icon(
                                     imageVector = modeIcon,
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(15.dp)
                                 )
                             },
                             modifier = Modifier
@@ -352,13 +364,25 @@ fun ProfileAndSettingsScreen(
                     style = MaterialTheme.typography.labelLarge
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(VideoOrientationPreference.entries) { pref ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    VideoOrientationPreference.entries.forEach { pref ->
                         FilterChip(
                             selected = userPreferences.videoOrientationPreference == pref,
                             onClick = { onSetVideoOrientationPref(pref) },
-                            label = { Text(pref.label) },
-                            modifier = Modifier.testTag("settings_video_orientation_${pref.name.lowercase()}")
+                            label = {
+                                Text(
+                                    text = pref.label,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                            },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("settings_video_orientation_${pref.name.lowercase()}")
                         )
                     }
                 }

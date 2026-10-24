@@ -656,7 +656,14 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                             contentDescription = dest.label
                                         )
                                     },
-                                    label = { Text(dest.label) },
+                                    label = {
+                                        Text(
+                                            text = dest.label,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    },
+                                    alwaysShowLabel = true,
                                     modifier = Modifier.testTag(dest.testTag)
                                 )
                             }
@@ -687,7 +694,14 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                         contentDescription = dest.label
                                     )
                                 },
-                                label = { Text(dest.label) },
+                                label = {
+                                    Text(
+                                        text = dest.label,
+                                        maxLines = 1,
+                                        softWrap = false
+                                    )
+                                },
+                                alwaysShowLabel = true,
                                 modifier = Modifier.testTag(dest.testTag)
                             )
                         }

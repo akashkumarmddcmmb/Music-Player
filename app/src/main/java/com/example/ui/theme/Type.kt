@@ -94,14 +94,14 @@ val Typography = Typography(
         letterSpacing = 0.3.sp
     ),
     labelMedium = TextStyle(
-        fontFamily = JetBrainsMonoFontFamily,
+        fontFamily = PlusJakartaSansFontFamily,
         fontWeight = FontWeight.Medium,
         fontSize = 12.sp,
         lineHeight = 16.sp
     ),
     labelSmall = TextStyle(
-        fontFamily = JetBrainsMonoFontFamily,
-        fontWeight = FontWeight.Normal,
+        fontFamily = PlusJakartaSansFontFamily,
+        fontWeight = FontWeight.Medium,
         fontSize = 11.sp,
         lineHeight = 14.sp
     )

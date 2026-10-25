@@ -65,10 +65,12 @@ import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OpenInFull
@@ -77,10 +79,12 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.RingVolume
 import androidx.compose.material.icons.filled.ScreenLockLandscape
 import androidx.compose.material.icons.filled.ScreenLockPortrait
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
@@ -92,9 +96,12 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -202,6 +209,10 @@ fun NowPlayingOverlayScreen(
     onSaveQueueAsPlaylist: (String) -> Unit = {},
     onSelectAudioTrack: (AudioTrackOption) -> Unit = {},
     onVideoSurfaceAttached: (Boolean) -> Unit = {},
+    onShareCurrentMedia: () -> Unit = {},
+    onSetRingtoneCurrentMedia: () -> Unit = {},
+    onAddToPlaylistCurrentMedia: () -> Unit = {},
+    onShowFileInfoCurrentMedia: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     val context = LocalContext.current
@@ -210,6 +221,7 @@ fun NowPlayingOverlayScreen(
     var showSubtitleSettings by rememberSaveable { mutableStateOf(false) }
     var showVideoSettingsSheet by rememberSaveable { mutableStateOf(false) }
     var showSleepTimerPanel by rememberSaveable { mutableStateOf(false) }
+    var showSpeedPanel by rememberSaveable { mutableStateOf(false) }
     var fullscreenControlsVisible by rememberSaveable { mutableStateOf(true) }
     var controlsInteractionTick by rememberSaveable { mutableIntStateOf(0) }
     var lastObservedMediaUri by rememberSaveable { mutableStateOf<String?>(null) }
@@ -228,6 +240,7 @@ fun NowPlayingOverlayScreen(
             showSubtitleSettings -> showSubtitleSettings = false
             showVideoSettingsSheet -> showVideoSettingsSheet = false
             showSleepTimerPanel -> showSleepTimerPanel = false
+            showSpeedPanel -> showSpeedPanel = false
             playbackState.isVideoControlsLocked -> {
                 onToggleControlsLock(false)
                 fullscreenControlsVisible = true
@@ -388,8 +401,10 @@ fun NowPlayingOverlayScreen(
                     isFavorite = isFavorite,
                     showSubtitleSettings = showSubtitleSettings,
                     showSleepTimerPanel = showSleepTimerPanel,
+                    showSpeedPanel = showSpeedPanel,
                     onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
                     onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
+                    onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
                     onCollapse = onCollapse,
                     onPlayPause = onPlayPause,
                     onSeekTo = onSeekTo,
@@ -407,6 +422,10 @@ fun NowPlayingOverlayScreen(
                     onToggleFavorite = onToggleFavorite,
                     onOpenEqualizer = onOpenEqualizer,
                     onOpenStudio = onOpenStudio,
+                    onShareCurrentMedia = onShareCurrentMedia,
+                    onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                    onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                    onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia,
                     onSelectQueueItem = onSelectQueueItem,
                     onRemoveQueueItem = onRemoveQueueItem,
                     onMoveQueueItem = onMoveQueueItem,
@@ -422,7 +441,7 @@ fun NowPlayingOverlayScreen(
                     contentPadding = PaddingValues(bottom = 48.dp, start = 16.dp, end = 16.dp, top = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    // Top Bar
+                    // Top Bar: Collapse button on left, NOW PLAYING title in center, 3-dot More Options menu on right corner
                     item {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -440,7 +459,10 @@ fun NowPlayingOverlayScreen(
                                     contentDescription = "Collapse player"
                                 )
                             }
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
                                 Text(
                                     text = if (currentMedia.mediaType == MediaType.VIDEO) "VIDEO CINEMA ENGINE" else "NOW PLAYING",
                                     style = MaterialTheme.typography.labelSmall,
@@ -450,65 +472,29 @@ fun NowPlayingOverlayScreen(
                                 Text(
                                     text = currentMedia.folderName,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            Row {
-                                if (currentMedia.mediaType == MediaType.VIDEO) {
-                                    IconButton(
-                                        onClick = { showVideoSettingsSheet = !showVideoSettingsSheet },
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .testTag("now_playing_video_settings_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Settings,
-                                            contentDescription = "Video Settings",
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                }
-                                IconButton(
-                                    onClick = { showSleepTimerPanel = !showSleepTimerPanel },
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("now_playing_sleep_timer_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Bedtime,
-                                        contentDescription = "Sleep Timer",
-                                        tint = if (playbackState.isSleepTimerActive) {
-                                            MaterialTheme.colorScheme.tertiary
-                                        } else {
-                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                        }
-                                    )
-                                }
-                                IconButton(
-                                    onClick = onOpenEqualizer,
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("now_playing_eq_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Equalizer,
-                                        contentDescription = "Open Equalizer",
-                                        tint = MaterialTheme.colorScheme.secondary
-                                    )
-                                }
-                                IconButton(
-                                    onClick = onOpenStudio,
-                                    modifier = Modifier
-                                        .minimumInteractiveComponentSize()
-                                        .testTag("now_playing_studio_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ContentCut,
-                                        contentDescription = "Open Media Editor",
-                                        tint = MaterialTheme.colorScheme.primary
-                                    )
-                                }
-                            }
+                            NowPlayingOverflowMenuButton(
+                                currentMedia = currentMedia,
+                                playbackState = playbackState,
+                                isFavorite = isFavorite,
+                                showSpeedPanel = showSpeedPanel,
+                                showSleepTimerPanel = showSleepTimerPanel,
+                                showSubtitleSettings = showSubtitleSettings,
+                                onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
+                                onOpenEqualizer = onOpenEqualizer,
+                                onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
+                                onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                                onOpenStudio = onOpenStudio,
+                                onToggleFavorite = onToggleFavorite,
+                                onShareCurrentMedia = onShareCurrentMedia,
+                                onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                                onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                                onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia
+                            )
                         }
                     }
 
@@ -542,6 +528,45 @@ fun NowPlayingOverlayScreen(
                         }
                     }
 
+                    // Playback Speed Control Panel (opened via top-right 3-dot menu)
+                    if (showSpeedPanel) {
+                        item {
+                            PlaybackSpeedControlCard(
+                                playbackState = playbackState,
+                                onSetPlaybackSpeed = onSetPlaybackSpeed,
+                                onClose = { showSpeedPanel = false }
+                            )
+                        }
+                    }
+
+                    // Sleep Timer (Automatic Stop) Panel (opened via top-right 3-dot menu)
+                    if (showSleepTimerPanel) {
+                        item {
+                            SleepTimerControlCard(
+                                playbackState = playbackState,
+                                onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+                                onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+                                onClose = { showSleepTimerPanel = false }
+                            )
+                        }
+                    }
+
+                    // Synchronized Lyrics & Subtitle Controls Panel (opened via top-right 3-dot menu)
+                    if (showSubtitleSettings || playbackState.subtitleError != null) {
+                        item {
+                            SubtitleSettingsCard(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                                onSetSubtitleFontScale = onSetSubtitleFontScale,
+                                onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                                onPickSubtitleFileClick = onPickSubtitleFileClick,
+                                onSeekToCue = onSeekTo,
+                                onClose = { showSubtitleSettings = false }
+                            )
+                        }
+                    }
+
                     // Video Surface or Acoustic Studio Visualizer
                     item {
                         if (currentMedia.mediaType == MediaType.VIDEO) {
@@ -571,96 +596,6 @@ fun NowPlayingOverlayScreen(
                         }
                     }
 
-                    // Key Features Quick Action Chips Row (Lyrics SRT/VTT, Sleep Timer, Equalizer, Studio Editor)
-                    item {
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.testTag("now_playing_feature_chips_row")
-                        ) {
-                            item {
-                                FilterChip(
-                                    selected = showSubtitleSettings || !playbackState.activeSubtitleText.isNullOrBlank(),
-                                    onClick = { showSubtitleSettings = !showSubtitleSettings },
-                                    label = {
-                                        val fmt = playbackState.loadedSubtitleFormat?.name ?: "SRT/VTT"
-                                        Text("Lyrics ($fmt)")
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.Subtitles,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("now_playing_lyrics_chip")
-                                )
-                            }
-                            item {
-                                FilterChip(
-                                    selected = showSleepTimerPanel || playbackState.isSleepTimerActive,
-                                    onClick = { showSleepTimerPanel = !showSleepTimerPanel },
-                                    label = {
-                                        val timerLabel = when {
-                                            playbackState.sleepTimerStopAtEndOfTrack -> "Sleep: End of Track"
-                                            playbackState.sleepTimerRemainingMs > 0L ->
-                                                "Sleep: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
-                                            else -> "Sleep Timer"
-                                        }
-                                        Text(timerLabel)
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.Bedtime,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("now_playing_sleep_timer_chip")
-                                )
-                            }
-                            item {
-                                AssistChip(
-                                    onClick = onOpenEqualizer,
-                                    label = { Text("Equalizer & Bass") },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.Equalizer,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("now_playing_eq_chip")
-                                )
-                            }
-                            item {
-                                AssistChip(
-                                    onClick = onOpenStudio,
-                                    label = { Text("Audio/Video Edit") },
-                                    leadingIcon = {
-                                        Icon(
-                                            Icons.Default.ContentCut,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("now_playing_editor_chip")
-                                )
-                            }
-                        }
-                    }
-
-                    // Sleep Timer (Automatic Stop) Panel
-                    if (showSleepTimerPanel || playbackState.isSleepTimerActive) {
-                        item {
-                            SleepTimerControlCard(
-                                playbackState = playbackState,
-                                onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-                                onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack
-                            )
-                        }
-                    }
-
                     // Video Settings Panel (Speed, Subtitles, Audio Track, Screen Rotation, Keep Screen On, Gestures)
                     if (currentMedia.mediaType == MediaType.VIDEO && showVideoSettingsSheet) {
                         item {
@@ -677,21 +612,6 @@ fun NowPlayingOverlayScreen(
                                 onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
                                 onPickSubtitleFileClick = onPickSubtitleFileClick,
                                 onOpenEqualizer = onOpenEqualizer
-                            )
-                        }
-                    }
-
-                    // Synchronized Lyrics & Subtitle Controls Panel (SRT / WebVTT for Music & Video)
-                    if (showSubtitleSettings || playbackState.subtitleError != null) {
-                        item {
-                            SubtitleSettingsCard(
-                                playbackState = playbackState,
-                                userPreferences = userPreferences,
-                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                                onSetSubtitleFontScale = onSetSubtitleFontScale,
-                                onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                                onPickSubtitleFileClick = onPickSubtitleFileClick,
-                                onSeekToCue = onSeekTo
                             )
                         }
                     }
@@ -872,61 +792,6 @@ fun NowPlayingOverlayScreen(
                                     )
                                 }
                             }
-                        }
-                    }
-
-                    // Playback Speed Selector Strip (0.5x – 3.0x) + Fine Speed Slider
-                    item {
-                        val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
-                        Column {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Speed,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Text(
-                                        text = "Playback Speed (${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x)",
-                                        style = MaterialTheme.typography.titleSmall
-                                    )
-                                }
-                                Text(
-                                    text = "Range: 0.5x – 3.0x",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(6.dp))
-                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                items(speeds) { spd ->
-                                    FilterChip(
-                                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
-                                        onClick = { onSetPlaybackSpeed(spd) },
-                                        label = { Text("${spd}x") },
-                                        modifier = Modifier.testTag("speed_chip_${spd}")
-                                    )
-                                }
-                            }
-                            Slider(
-                                value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
-                                onValueChange = { raw ->
-                                    val snapped = (raw * 20f).roundToInt() / 20f
-                                    onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
-                                },
-                                valueRange = 0.5f..3.0f,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("now_playing_speed_slider")
-                            )
                         }
                     }
 
@@ -2810,13 +2675,354 @@ private fun StudioCircularAudioArtworkAndWaveform(
 }
 
 /**
+ * Three-Dot Overflow Menu Button in the top-right corner of the Music Player (Now Playing) screen.
+ * Consolidates all secondary options (Playback Speed, Equalizer, Sleep Timer, Lyrics/Subtitles,
+ * Media Studio Audio Cutter, Share, Set as Ringtone, Add to Playlist, and File Information)
+ * inside a clean dropdown menu so the main Now Playing screen stays uncluttered.
+ */
+@Composable
+private fun NowPlayingOverflowMenuButton(
+    currentMedia: MediaEntity,
+    playbackState: PlaybackUiState,
+    isFavorite: Boolean,
+    showSpeedPanel: Boolean,
+    showSleepTimerPanel: Boolean,
+    showSubtitleSettings: Boolean,
+    onToggleSpeedPanel: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onToggleSleepTimerPanel: () -> Unit,
+    onToggleSubtitleSettings: () -> Unit,
+    onOpenStudio: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onShareCurrentMedia: () -> Unit,
+    onSetRingtoneCurrentMedia: () -> Unit,
+    onAddToPlaylistCurrentMedia: () -> Unit,
+    onShowFileInfoCurrentMedia: () -> Unit
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    val speedFormatted = "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x"
+    val sleepTimerLabel = when {
+        playbackState.sleepTimerStopAtEndOfTrack -> "Sleep Timer (End of Track)"
+        playbackState.sleepTimerRemainingMs > 0L ->
+            "Sleep Timer (${formatDurationMillis(playbackState.sleepTimerRemainingMs)})"
+        else -> "Sleep Timer"
+    }
+    val lyricsLabel = playbackState.loadedSubtitleFormat?.name?.let { "Lyrics & Subtitles ($it)" }
+        ?: "Lyrics & Subtitles (SRT/VTT)"
+
+    Box {
+        IconButton(
+            onClick = { menuExpanded = true },
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .testTag("now_playing_more_options_button")
+        ) {
+            Icon(
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "More player options",
+                tint = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
+        DropdownMenu(
+            expanded = menuExpanded,
+            onDismissRequest = { menuExpanded = false },
+            modifier = Modifier.testTag("now_playing_overflow_dropdown_menu")
+        ) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (showSpeedPanel) "Hide Playback Speed ($speedFormatted)" else "Playback Speed ($speedFormatted)",
+                        maxLines = 1
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Speed,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onToggleSpeedPanel()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_speed")
+            )
+
+            DropdownMenuItem(
+                text = { Text("Equalizer & Bass Boost", maxLines = 1) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Equalizer,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onOpenEqualizer()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_equalizer")
+            )
+
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (showSleepTimerPanel) "Hide $sleepTimerLabel" else sleepTimerLabel,
+                        maxLines = 1
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Bedtime,
+                        contentDescription = null,
+                        tint = if (playbackState.isSleepTimerActive) {
+                            MaterialTheme.colorScheme.tertiary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onToggleSleepTimerPanel()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_sleep_timer")
+            )
+
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (showSubtitleSettings) "Hide $lyricsLabel" else lyricsLabel,
+                        maxLines = 1
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Subtitles,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onToggleSubtitleSettings()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_lyrics")
+            )
+
+            DropdownMenuItem(
+                text = { Text("Edit in Media Studio", maxLines = 1) },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.ContentCut,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onOpenStudio()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_studio")
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            DropdownMenuItem(
+                text = { Text("Share", maxLines = 1) },
+                leadingIcon = {
+                    Icon(Icons.Default.Share, contentDescription = null)
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onShareCurrentMedia()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_share")
+            )
+
+            if (currentMedia.mediaType == MediaType.AUDIO) {
+                DropdownMenuItem(
+                    text = { Text("Set as Ringtone", maxLines = 1) },
+                    leadingIcon = {
+                        Icon(Icons.Default.RingVolume, contentDescription = null)
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    onClick = {
+                        menuExpanded = false
+                        onSetRingtoneCurrentMedia()
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 42.dp)
+                        .testTag("now_playing_menu_ringtone")
+                )
+            }
+
+            DropdownMenuItem(
+                text = { Text("Add to Playlist", maxLines = 1) },
+                leadingIcon = {
+                    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null)
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onAddToPlaylistCurrentMedia()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_add_to_playlist")
+            )
+
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        if (isFavorite) "Remove from Favorites" else "Add to Favorites",
+                        maxLines = 1
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = null
+                    )
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onToggleFavorite()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_favorite")
+            )
+
+            DropdownMenuItem(
+                text = { Text("File Information", maxLines = 1) },
+                leadingIcon = {
+                    Icon(Icons.Default.Info, contentDescription = null)
+                },
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                onClick = {
+                    menuExpanded = false
+                    onShowFileInfoCurrentMedia()
+                },
+                modifier = Modifier
+                    .heightIn(min = 42.dp)
+                    .testTag("now_playing_menu_file_info")
+            )
+        }
+    }
+}
+
+/**
+ * Playback Speed Control Card (opened from the Now Playing 3-dot menu).
+ */
+@Composable
+private fun PlaybackSpeedControlCard(
+    playbackState: PlaybackUiState,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onClose: (() -> Unit)? = null
+) {
+    val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("playback_speed_panel"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Speed,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "Playback Speed (${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                if (onClose != null) {
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Playback Speed panel"
+                        )
+                    }
+                }
+            }
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(speeds) { spd ->
+                    FilterChip(
+                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                        onClick = { onSetPlaybackSpeed(spd) },
+                        label = { Text("${spd}x", maxLines = 1) },
+                        modifier = Modifier.testTag("speed_chip_${spd}")
+                    )
+                }
+            }
+            Slider(
+                value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
+                onValueChange = { raw ->
+                    val snapped = (raw * 20f).roundToInt() / 20f
+                    onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
+                },
+                valueRange = 0.5f..3.0f,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("now_playing_speed_slider")
+            )
+        }
+    }
+}
+
+/**
  * Sleep Timer (Automatic Stop) Control Card.
  */
 @Composable
 private fun SleepTimerControlCard(
     playbackState: PlaybackUiState,
     onSetSleepTimerMinutes: (Int) -> Unit,
-    onSetSleepTimerEndOfTrack: (Boolean) -> Unit
+    onSetSleepTimerEndOfTrack: (Boolean) -> Unit,
+    onClose: (() -> Unit)? = null
 ) {
     val presetMinutes = listOf(0, 5, 10, 15, 30, 45, 60)
     Card(
@@ -2839,7 +3045,8 @@ private fun SleepTimerControlCard(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
                 ) {
                     Icon(
                         imageVector = Icons.Default.Bedtime,
@@ -2849,7 +3056,9 @@ private fun SleepTimerControlCard(
                     Text(
                         text = "Sleep Timer (Automatic Stop)",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 val statusLabel = when {
@@ -2868,6 +3077,17 @@ private fun SleepTimerControlCard(
                     },
                     modifier = Modifier.testTag("sleep_timer_status_text")
                 )
+                if (onClose != null) {
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Sleep Timer panel"
+                        )
+                    }
+                }
             }
 
             Text(
@@ -3073,7 +3293,8 @@ private fun SubtitleSettingsCard(
     onSetSubtitleFontScale: (Float) -> Unit,
     onSetSubtitleOffsetMs: (Long) -> Unit,
     onPickSubtitleFileClick: () -> Unit,
-    onSeekToCue: (Long) -> Unit = {}
+    onSeekToCue: (Long) -> Unit = {},
+    onClose: (() -> Unit)? = null
 ) {
     Card(
         modifier = Modifier
@@ -3093,13 +3314,25 @@ private fun SubtitleSettingsCard(
                 Text(
                     text = "Lyrics & Subtitles (SRT & WebVTT)",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
                 )
                 Switch(
                     checked = userPreferences.subtitlesEnabledByDefault,
                     onCheckedChange = onToggleSubtitlesEnabled,
                     modifier = Modifier.testTag("subtitle_enable_switch")
                 )
+                if (onClose != null) {
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close Lyrics & Subtitles panel"
+                        )
+                    }
+                }
             }
 
             Text(
@@ -3485,8 +3718,10 @@ private fun LandscapeAudioNowPlayingDeck(
     isFavorite: Boolean,
     showSubtitleSettings: Boolean,
     showSleepTimerPanel: Boolean,
+    showSpeedPanel: Boolean,
     onToggleSubtitleSettings: () -> Unit,
     onToggleSleepTimerPanel: () -> Unit,
+    onToggleSpeedPanel: () -> Unit,
     onCollapse: () -> Unit,
     onPlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -3504,6 +3739,10 @@ private fun LandscapeAudioNowPlayingDeck(
     onToggleFavorite: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenStudio: () -> Unit,
+    onShareCurrentMedia: () -> Unit,
+    onSetRingtoneCurrentMedia: () -> Unit,
+    onAddToPlaylistCurrentMedia: () -> Unit,
+    onShowFileInfoCurrentMedia: () -> Unit,
     onSelectQueueItem: (MediaEntity) -> Unit,
     onRemoveQueueItem: (Int) -> Unit,
     onMoveQueueItem: (Int, Int) -> Unit,
@@ -3607,7 +3846,7 @@ private fun LandscapeAudioNowPlayingDeck(
             }
         }
 
-        // Right Column: Seekbar, Transport Controls, Feature Chips, Speed, and Active Queue
+        // Right Column: Top-Right 3-Dot Menu, Seekbar, Transport Controls, Optional Opened Panels, and Active Queue
         LazyColumn(
             modifier = Modifier
                 .weight(0.58f)
@@ -3615,53 +3854,31 @@ private fun LandscapeAudioNowPlayingDeck(
             contentPadding = PaddingValues(bottom = 28.dp, top = 4.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Top Utility Row (Sleep Timer, Equalizer, Studio)
+            // Top Utility Row: Single 3-Dot More Options Menu in the top-right corner
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(
-                        onClick = onToggleSleepTimerPanel,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("now_playing_sleep_timer_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Bedtime,
-                            contentDescription = "Sleep Timer",
-                            tint = if (playbackState.isSleepTimerActive) {
-                                MaterialTheme.colorScheme.tertiary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
-                    IconButton(
-                        onClick = onOpenEqualizer,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("now_playing_eq_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Equalizer,
-                            contentDescription = "Open Equalizer",
-                            tint = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                    IconButton(
-                        onClick = onOpenStudio,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("now_playing_studio_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.ContentCut,
-                            contentDescription = "Open Media Editor",
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
+                    NowPlayingOverflowMenuButton(
+                        currentMedia = currentMedia,
+                        playbackState = playbackState,
+                        isFavorite = isFavorite,
+                        showSpeedPanel = showSpeedPanel,
+                        showSleepTimerPanel = showSleepTimerPanel,
+                        showSubtitleSettings = showSubtitleSettings,
+                        onToggleSpeedPanel = onToggleSpeedPanel,
+                        onOpenEqualizer = onOpenEqualizer,
+                        onToggleSleepTimerPanel = onToggleSleepTimerPanel,
+                        onToggleSubtitleSettings = onToggleSubtitleSettings,
+                        onOpenStudio = onOpenStudio,
+                        onToggleFavorite = onToggleFavorite,
+                        onShareCurrentMedia = onShareCurrentMedia,
+                        onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                        onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                        onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia
+                    )
                 }
             }
 
@@ -3811,91 +4028,23 @@ private fun LandscapeAudioNowPlayingDeck(
                 }
             }
 
-            // Key Features Quick Action Chips Row
-            item {
-                LazyRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.testTag("now_playing_feature_chips_row")
-                ) {
-                    item {
-                        FilterChip(
-                            selected = showSubtitleSettings || !playbackState.activeSubtitleText.isNullOrBlank(),
-                            onClick = onToggleSubtitleSettings,
-                            label = {
-                                val fmt = playbackState.loadedSubtitleFormat?.name ?: "SRT/VTT"
-                                Text("Lyrics ($fmt)", maxLines = 1)
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Subtitles,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            modifier = Modifier.testTag("now_playing_lyrics_chip")
-                        )
-                    }
-                    item {
-                        FilterChip(
-                            selected = showSleepTimerPanel || playbackState.isSleepTimerActive,
-                            onClick = onToggleSleepTimerPanel,
-                            label = {
-                                val timerLabel = when {
-                                    playbackState.sleepTimerStopAtEndOfTrack -> "Sleep: End of Track"
-                                    playbackState.sleepTimerRemainingMs > 0L ->
-                                        "Sleep: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
-                                    else -> "Sleep Timer"
-                                }
-                                Text(timerLabel, maxLines = 1)
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Bedtime,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            modifier = Modifier.testTag("now_playing_sleep_timer_chip")
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = onOpenEqualizer,
-                            label = { Text("Equalizer & Bass", maxLines = 1) },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.Equalizer,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            modifier = Modifier.testTag("now_playing_eq_chip")
-                        )
-                    }
-                    item {
-                        AssistChip(
-                            onClick = onOpenStudio,
-                            label = { Text("Audio/Video Edit", maxLines = 1) },
-                            leadingIcon = {
-                                Icon(
-                                    Icons.Default.ContentCut,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            },
-                            modifier = Modifier.testTag("now_playing_editor_chip")
-                        )
-                    }
+            if (showSpeedPanel) {
+                item {
+                    PlaybackSpeedControlCard(
+                        playbackState = playbackState,
+                        onSetPlaybackSpeed = onSetPlaybackSpeed,
+                        onClose = onToggleSpeedPanel
+                    )
                 }
             }
 
-            if (showSleepTimerPanel || playbackState.isSleepTimerActive) {
+            if (showSleepTimerPanel) {
                 item {
                     SleepTimerControlCard(
                         playbackState = playbackState,
                         onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-                        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack
+                        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+                        onClose = onToggleSleepTimerPanel
                     )
                 }
             }
@@ -3909,62 +4058,8 @@ private fun LandscapeAudioNowPlayingDeck(
                         onSetSubtitleFontScale = onSetSubtitleFontScale,
                         onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
                         onPickSubtitleFileClick = onPickSubtitleFileClick,
-                        onSeekToCue = onSeekTo
-                    )
-                }
-            }
-
-            // Playback Speed Selector Strip + Slider
-            item {
-                val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Speed,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = "Speed (${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x)",
-                                style = MaterialTheme.typography.titleSmall
-                            )
-                        }
-                        Text(
-                            text = "0.5x – 3.0x",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        items(speeds) { spd ->
-                            FilterChip(
-                                selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
-                                onClick = { onSetPlaybackSpeed(spd) },
-                                label = { Text("${spd}x", maxLines = 1) },
-                                modifier = Modifier.testTag("speed_chip_${spd}")
-                            )
-                        }
-                    }
-                    Slider(
-                        value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
-                        onValueChange = { raw ->
-                            val snapped = (raw * 20f).roundToInt() / 20f
-                            onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
-                        },
-                        valueRange = 0.5f..3.0f,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("now_playing_speed_slider")
+                        onSeekToCue = onSeekTo,
+                        onClose = onToggleSubtitleSettings
                     )
                 }
             }
@@ -4211,6 +4306,10 @@ fun NowPlayingSidePanel(
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            var sideMenuExpanded by remember { mutableStateOf(false) }
+                            val speeds = listOf(1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f)
+                            val speedLabel = "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x"
+
                             IconButton(
                                 onClick = onExpandFullPlayer,
                                 modifier = Modifier
@@ -4236,6 +4335,72 @@ fun NowPlayingSidePanel(
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(20.dp)
                                 )
+                            }
+                            Box {
+                                IconButton(
+                                    onClick = { sideMenuExpanded = true },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("side_panel_more_options_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MoreVert,
+                                        contentDescription = "More player options",
+                                        tint = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = sideMenuExpanded,
+                                    onDismissRequest = { sideMenuExpanded = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Playback Speed ($speedLabel)", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                                        },
+                                        onClick = {
+                                            val idx = speeds.indexOfFirst { abs(it - playbackState.playbackSpeed) < 0.05f }
+                                            val nextSpd = speeds[(idx + 1) % speeds.size]
+                                            onSetPlaybackSpeed(nextSpd)
+                                            sideMenuExpanded = false
+                                        },
+                                        modifier = Modifier.testTag("side_panel_speed_chip")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Equalizer & Bass Boost", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Equalizer, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        },
+                                        onClick = {
+                                            sideMenuExpanded = false
+                                            onOpenEqualizer()
+                                        },
+                                        modifier = Modifier.testTag("side_panel_eq_chip")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Edit in Media Studio", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.ContentCut, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+                                        },
+                                        onClick = {
+                                            sideMenuExpanded = false
+                                            onOpenStudio()
+                                        },
+                                        modifier = Modifier.testTag("side_panel_studio_chip")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Open Full Player", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.OpenInFull, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        },
+                                        onClick = {
+                                            sideMenuExpanded = false
+                                            onExpandFullPlayer()
+                                        },
+                                        modifier = Modifier.testTag("side_panel_full_player_chip")
+                                    )
+                                }
                             }
                         }
                     }
@@ -4448,61 +4613,6 @@ fun NowPlayingSidePanel(
                     }
                 }
 
-                // Quick Utility Chips (Speed, Equalizer, Studio, Full Player)
-                item {
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item {
-                            val speeds = listOf(1.0f, 1.25f, 1.5f, 2.0f, 0.5f, 0.75f)
-                            AssistChip(
-                                onClick = {
-                                    val idx = speeds.indexOfFirst { abs(it - playbackState.playbackSpeed) < 0.05f }
-                                    val nextSpd = speeds[(idx + 1) % speeds.size]
-                                    onSetPlaybackSpeed(nextSpd)
-                                },
-                                label = {
-                                    Text(
-                                        "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x",
-                                        maxLines = 1
-                                    )
-                                },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(16.dp))
-                                },
-                                modifier = Modifier.testTag("side_panel_speed_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = onOpenEqualizer,
-                                label = { Text("EQ", maxLines = 1) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
-                                },
-                                modifier = Modifier.testTag("side_panel_eq_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = onOpenStudio,
-                                label = { Text("Studio", maxLines = 1) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.ContentCut, contentDescription = null, modifier = Modifier.size(16.dp))
-                                },
-                                modifier = Modifier.testTag("side_panel_studio_chip")
-                            )
-                        }
-                        item {
-                            AssistChip(
-                                onClick = onExpandFullPlayer,
-                                label = { Text("Full Player", maxLines = 1) },
-                                leadingIcon = {
-                                    Icon(Icons.Default.OpenInFull, contentDescription = null, modifier = Modifier.size(16.dp))
-                                },
-                                modifier = Modifier.testTag("side_panel_full_player_chip")
-                            )
-                        }
-                    }
-                }
 
                 // Up Next Queue in Side Panel
                 if (playbackState.queue.isNotEmpty()) {

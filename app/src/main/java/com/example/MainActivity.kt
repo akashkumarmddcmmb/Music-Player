@@ -716,6 +716,35 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 viewModel.setNowPlayingExpanded(false)
                 viewModel.openStudioForMedia(playbackState.currentMedia)
             },
+            onShareCurrentMedia = {
+                playbackState.currentMedia?.let { media ->
+                    when (val outcome = MediaFileActionsHelper.shareMediaFile(context, media)) {
+                        is ShareOutcome.Success -> {
+                            viewModel.postStatusBannerMessage(
+                                "Sharing '${media.title}' (${outcome.mimeType})"
+                            )
+                        }
+                        is ShareOutcome.Failure -> {
+                            viewModel.postStatusBannerMessage(outcome.errorMessage)
+                        }
+                    }
+                }
+            },
+            onSetRingtoneCurrentMedia = {
+                playbackState.currentMedia?.let { media ->
+                    applyRingtoneForMedia(media)
+                }
+            },
+            onAddToPlaylistCurrentMedia = {
+                playbackState.currentMedia?.let { media ->
+                    pendingPlaylistAddMedia = media
+                }
+            },
+            onShowFileInfoCurrentMedia = {
+                playbackState.currentMedia?.let { media ->
+                    activeFileInfo = MediaFileActionsHelper.extractDetailedMediaFileInfo(context, media)
+                }
+            },
             onSelectQueueItem = { item ->
                 viewModel.playMedia(item, playbackState.queue)
             },

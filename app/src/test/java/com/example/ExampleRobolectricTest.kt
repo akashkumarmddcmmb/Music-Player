@@ -2957,9 +2957,128 @@ class ExampleRobolectricTest {
         audioFile.delete()
         videoFile.delete()
     }
+
+    @Test
+    fun `musicPlayerNowPlaying shows threeDotMenuInCorner and consolidatesAllOutsideOptionsIntoDropdown`() {
+        val sampleAudio = MediaEntity(
+            uriString = "file:///storage/emulated/0/Music/PulsePlay_Clean_Player.wav",
+            mediaStoreId = null,
+            title = "Clean Player Acoustic Track",
+            artist = "PulsePlay Artist",
+            album = "Studio Album",
+            folderName = "Music",
+            durationMs = 210_000L,
+            sizeBytes = 8_400_000L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            width = 0,
+            height = 0,
+            dateAddedEpochSec = 1_700_002_000L,
+            isAvailable = true
+        )
+
+        var eqOpened = false
+        var studioOpened = false
+        var shareTriggered = false
+        var ringtoneTriggered = false
+        var addToPlaylistTriggered = false
+        var fileInfoTriggered = false
+        var favoriteToggled = false
+        var viewportSize by mutableStateOf(DpSize(300.dp, 318.dp))
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(viewportSize)) {
+                    NowPlayingOverlayScreen(
+                        playbackState = com.example.viewmodel.PlaybackUiState(
+                            currentMedia = sampleAudio,
+                            queue = listOf(sampleAudio),
+                            currentQueueIndex = 0,
+                            isPlaying = true,
+                            currentPositionMs = 30_000L,
+                            durationMs = sampleAudio.durationMs
+                        ),
+                        userPreferences = UserPreferencesState(),
+                        isFavorite = false,
+                        playerInstance = null,
+                        onCollapse = {},
+                        onPlayPause = {},
+                        onSeekTo = {},
+                        onPrevious = {},
+                        onNext = {},
+                        onToggleShuffle = {},
+                        onCycleRepeat = {},
+                        onSetPlaybackSpeed = {},
+                        onCycleAspectMode = {},
+                        onRotateVideo90 = {},
+                        onToggleFullscreen = {},
+                        onBrightnessGestureDelta = {},
+                        onVolumeGestureDelta = {},
+                        onPickSubtitleFileClick = {},
+                        onToggleSubtitlesEnabled = {},
+                        onSetSubtitleFontScale = {},
+                        onSetSubtitleOffsetMs = {},
+                        onToggleFavorite = { favoriteToggled = true },
+                        onOpenEqualizer = { eqOpened = true },
+                        onOpenStudio = { studioOpened = true },
+                        onShareCurrentMedia = { shareTriggered = true },
+                        onSetRingtoneCurrentMedia = { ringtoneTriggered = true },
+                        onAddToPlaylistCurrentMedia = { addToPlaylistTriggered = true },
+                        onShowFileInfoCurrentMedia = { fileInfoTriggered = true },
+                        onSelectQueueItem = {},
+                        onRemoveQueueItem = {},
+                        onRetryPlayback = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        // 1. Verify top-right 3-dot icon exists while outer scissors icon and clutter chips are NOT shown outside
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_studio_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("now_playing_feature_chips_row").assertDoesNotExist()
+
+        // 2. Open the 3-dot menu in the top-right corner and verify all consolidated options exist inside
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("now_playing_overflow_dropdown_menu").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_speed").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_equalizer").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_sleep_timer").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_lyrics").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_studio").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_share").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_ringtone").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_add_to_playlist").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_favorite").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_menu_file_info").assertExists()
+
+        // 3. Select Playback Speed from inside the 3-dot menu -> opens PlaybackSpeedControlCard
+        composeTestRule.onNodeWithTag("now_playing_menu_speed").performClick()
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("playback_speed_panel").assertExists()
+
+        // 4. Re-open 3-dot menu and trigger Edit in Media Studio
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("now_playing_menu_studio").performClick()
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        assertTrue(studioOpened)
+
+        // 5. Verify Landscape Audio Now Playing also shows the 3-dot menu in the corner without outer clutter
+        viewportSize = DpSize(460.dp, 318.dp)
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("landscape_audio_now_playing_split").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_studio_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("now_playing_feature_chips_row").assertDoesNotExist()
+    }
 }
-
-
-
-
 

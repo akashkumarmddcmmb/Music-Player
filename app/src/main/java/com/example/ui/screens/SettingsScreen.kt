@@ -364,11 +364,11 @@ fun ProfileAndSettingsScreen(
                     style = MaterialTheme.typography.labelLarge
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                Row(
+                LazyRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    VideoOrientationPreference.entries.forEach { pref ->
+                    items(VideoOrientationPreference.entries) { pref ->
                         FilterChip(
                             selected = userPreferences.videoOrientationPreference == pref,
                             onClick = { onSetVideoOrientationPref(pref) },
@@ -381,7 +381,6 @@ fun ProfileAndSettingsScreen(
                                 )
                             },
                             modifier = Modifier
-                                .weight(1f)
                                 .testTag("settings_video_orientation_${pref.name.lowercase()}")
                         )
                     }
@@ -648,22 +647,29 @@ fun ProfileAndSettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
                     OutlinedButton(
                         onClick = { showClearHistoryDialog = true },
-                        modifier = Modifier.testTag("clear_history_settings_button")
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("clear_history_settings_button")
                     ) {
                         Icon(Icons.Default.DeleteSweep, contentDescription = null)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Clear History")
+                        Text("Clear History", maxLines = 1)
                     }
                     OutlinedButton(
                         onClick = { showResetPrefsDialog = true },
-                        modifier = Modifier.testTag("reset_preferences_button")
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("reset_preferences_button")
                     ) {
                         Icon(Icons.Default.RestartAlt, contentDescription = null)
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Reset Prefs")
+                        Text("Reset Prefs", maxLines = 1)
                     }
                 }
             }

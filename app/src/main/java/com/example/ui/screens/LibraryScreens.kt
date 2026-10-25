@@ -19,8 +19,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.Sort
@@ -301,7 +303,10 @@ fun HomeDashboardScreen(
     onToggleFavorite: (MediaEntity) -> Unit,
     onAddToPlaylistRequest: (MediaEntity) -> Unit,
     onOpenStudioForMedia: (MediaEntity?) -> Unit,
-    onOpenEqualizer: () -> Unit
+    onOpenEqualizer: () -> Unit,
+    onShareMedia: (MediaEntity) -> Unit = {},
+    onSetRingtoneRequest: (MediaEntity) -> Unit = {},
+    onShowFileInfoRequest: (MediaEntity) -> Unit = {}
 ) {
     LazyColumn(
         modifier = Modifier
@@ -570,7 +575,10 @@ fun HomeDashboardScreen(
                 Text(
                     text = "Media Library (${allMedia.size})",
                     style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 TextButton(
                     onClick = onGenerateSamplesClick,
@@ -582,7 +590,7 @@ fun HomeDashboardScreen(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Refresh")
+                    Text("Refresh", maxLines = 1)
                 }
             }
         }
@@ -605,7 +613,10 @@ fun HomeDashboardScreen(
                     onPlayClick = { onPlayMedia(media, allMedia) },
                     onFavoriteToggle = { onToggleFavorite(media) },
                     onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                    onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                    onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                    onShareClick = { onShareMedia(media) },
+                    onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                    onFileInfoClick = { onShowFileInfoRequest(media) }
                 )
             }
         }
@@ -693,7 +704,10 @@ fun MediaCatalogScreen(
     onRequestPermissionClick: () -> Unit = {},
     onRescanClick: () -> Unit = {},
     searchQuery: String = "",
-    onClearSearch: () -> Unit = {}
+    onClearSearch: () -> Unit = {},
+    onShareMedia: (MediaEntity) -> Unit = {},
+    onSetRingtoneRequest: (MediaEntity) -> Unit = {},
+    onShowFileInfoRequest: (MediaEntity) -> Unit = {}
 ) {
     var viewMode by rememberSaveable { mutableStateOf(CatalogViewMode.ALL) }
     var selectedFolderInCatalog by rememberSaveable { mutableStateOf<String?>(null) }
@@ -922,10 +936,13 @@ fun MediaCatalogScreen(
                         Text(
                             text = "Folder: $selectedFolderInCatalog (${displayedMedia.size})",
                             style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
                         )
                         TextButton(onClick = { selectedFolderInCatalog = null }) {
-                            Text("All Folders")
+                            Text("All Folders", maxLines = 1)
                         }
                     }
                 }
@@ -949,7 +966,10 @@ fun MediaCatalogScreen(
                         onPlayClick = { onPlayMedia(item, displayedMedia) },
                         onFavoriteToggle = { onToggleFavorite(item) },
                         onAddToPlaylistClick = { onAddToPlaylistRequest(item) },
-                        onOpenInStudioClick = { onOpenStudioForMedia(item) }
+                        onOpenInStudioClick = { onOpenStudioForMedia(item) },
+                        onShareClick = { onShareMedia(item) },
+                        onSetRingtoneClick = { onSetRingtoneRequest(item) },
+                        onFileInfoClick = { onShowFileInfoRequest(item) }
                     )
                 }
             }
@@ -996,7 +1016,10 @@ fun LibraryAndFoldersScreen(
     canPopSubTab: Boolean = false,
     onPopSubTab: () -> Unit = {},
     searchQuery: String = "",
-    onClearSearch: () -> Unit = {}
+    onClearSearch: () -> Unit = {},
+    onShareMedia: (MediaEntity) -> Unit = {},
+    onSetRingtoneRequest: (MediaEntity) -> Unit = {},
+    onShowFileInfoRequest: (MediaEntity) -> Unit = {}
 ) {
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
@@ -1047,19 +1070,25 @@ fun LibraryAndFoldersScreen(
             onDismissRequest = { showCreatePlaylistDialog = false },
             title = { Text("New Local Playlist") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     OutlinedTextField(
                         value = newPlaylistName,
                         onValueChange = { newPlaylistName = it },
                         label = { Text("Playlist Name") },
                         singleLine = true,
-                        modifier = Modifier.testTag("new_playlist_name_input")
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("new_playlist_name_input")
                     )
                     OutlinedTextField(
                         value = newPlaylistDesc,
                         onValueChange = { newPlaylistDesc = it },
                         label = { Text("Description (Optional)") },
-                        singleLine = true
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             },
@@ -1134,7 +1163,10 @@ fun LibraryAndFoldersScreen(
                             onPlayClick = { onPlayMedia(media, allMedia) },
                             onFavoriteToggle = { onToggleFavorite(media) },
                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                            onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                            onShareClick = { onShareMedia(media) },
+                            onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                            onFileInfoClick = { onShowFileInfoRequest(media) }
                         )
                     }
                 }
@@ -1196,10 +1228,13 @@ fun LibraryAndFoldersScreen(
                                 Text(
                                     text = "Album: $selectedAlbum",
                                     style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { onSelectAlbum(null) }) {
-                                    Text("All Albums")
+                                    Text("All Albums", maxLines = 1)
                                 }
                             }
                         }
@@ -1211,7 +1246,10 @@ fun LibraryAndFoldersScreen(
                                 onPlayClick = { onPlayMedia(media, albumTracks) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                onShareClick = { onShareMedia(media) },
+                                onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                onFileInfoClick = { onShowFileInfoRequest(media) }
                             )
                         }
                     }
@@ -1274,10 +1312,13 @@ fun LibraryAndFoldersScreen(
                                 Text(
                                     text = "Artist: $selectedArtist",
                                     style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { onSelectArtist(null) }) {
-                                    Text("All Artists")
+                                    Text("All Artists", maxLines = 1)
                                 }
                             }
                         }
@@ -1289,7 +1330,10 @@ fun LibraryAndFoldersScreen(
                                 onPlayClick = { onPlayMedia(media, artistTracks) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                onShareClick = { onShareMedia(media) },
+                                onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                onFileInfoClick = { onShowFileInfoRequest(media) }
                             )
                         }
                     }
@@ -1357,7 +1401,10 @@ fun LibraryAndFoldersScreen(
                                     Text(
                                         text = "Local Media Folders (${groupedByFolder.size})",
                                         style = MaterialTheme.typography.titleLarge,
-                                        fontWeight = FontWeight.Bold
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
                                     )
                                     TextButton(
                                         onClick = onRescanClick,
@@ -1369,43 +1416,49 @@ fun LibraryAndFoldersScreen(
                                             modifier = Modifier.size(16.dp)
                                         )
                                         Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Scan")
+                                        Text("Scan", maxLines = 1)
                                     }
                                 }
                                 Spacer(modifier = Modifier.height(6.dp))
-                                Row(
+                                LazyRow(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    FilterChip(
-                                        selected = selectedFolderMediaFilter == FavoriteTypeFilter.ALL,
-                                        onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.ALL },
-                                        label = { Text("All ($allFoldersCount)") }
-                                    )
-                                    FilterChip(
-                                        selected = selectedFolderMediaFilter == FavoriteTypeFilter.AUDIO,
-                                        onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.AUDIO },
-                                        label = { Text("Audio ($audioFoldersCount)") },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Default.LibraryMusic,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    )
-                                    FilterChip(
-                                        selected = selectedFolderMediaFilter == FavoriteTypeFilter.VIDEO,
-                                        onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.VIDEO },
-                                        label = { Text("Videos ($videoFoldersCount)") },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Default.Movie,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    )
+                                    item {
+                                        FilterChip(
+                                            selected = selectedFolderMediaFilter == FavoriteTypeFilter.ALL,
+                                            onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.ALL },
+                                            label = { Text("All ($allFoldersCount)", maxLines = 1) }
+                                        )
+                                    }
+                                    item {
+                                        FilterChip(
+                                            selected = selectedFolderMediaFilter == FavoriteTypeFilter.AUDIO,
+                                            onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.AUDIO },
+                                            label = { Text("Audio ($audioFoldersCount)", maxLines = 1) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.LibraryMusic,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        )
+                                    }
+                                    item {
+                                        FilterChip(
+                                            selected = selectedFolderMediaFilter == FavoriteTypeFilter.VIDEO,
+                                            onClick = { selectedFolderMediaFilter = FavoriteTypeFilter.VIDEO },
+                                            label = { Text("Videos ($videoFoldersCount)", maxLines = 1) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Movie,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1464,10 +1517,13 @@ fun LibraryAndFoldersScreen(
                                 Text(
                                     text = "Folder: $selectedFolder (${folderItems.size})",
                                     style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { onSelectFolder(null) }) {
-                                    Text("All Folders")
+                                    Text("All Folders", maxLines = 1)
                                 }
                             }
                         }
@@ -1479,7 +1535,10 @@ fun LibraryAndFoldersScreen(
                                 onPlayClick = { onPlayMedia(media, folderItems) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                onShareClick = { onShareMedia(media) },
+                                onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                onFileInfoClick = { onShowFileInfoRequest(media) }
                             )
                         }
                     }
@@ -1496,7 +1555,10 @@ fun LibraryAndFoldersScreen(
                                 Text(
                                     text = "User Playlists (${playlists.size})",
                                     style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                                 Button(
                                     onClick = { showCreatePlaylistDialog = true },
@@ -1504,7 +1566,7 @@ fun LibraryAndFoldersScreen(
                                 ) {
                                     Icon(Icons.Default.Add, contentDescription = null)
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text("New Playlist")
+                                    Text("New Playlist", maxLines = 1)
                                 }
                             }
                         }
@@ -1574,10 +1636,13 @@ fun LibraryAndFoldersScreen(
                                 Text(
                                     text = "Playlist Tracks (${playlistItems.size})",
                                     style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                                 TextButton(onClick = { onSelectPlaylist(null) }) {
-                                    Text("Back to Playlists")
+                                    Text("Back to Playlists", maxLines = 1)
                                 }
                             }
                         }
@@ -1589,7 +1654,10 @@ fun LibraryAndFoldersScreen(
                                 onPlayClick = { onPlayMedia(media, playlistItems) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                onShareClick = { onShareMedia(media) },
+                                onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                onFileInfoClick = { onShowFileInfoRequest(media) }
                             )
                         }
                     }
@@ -1604,49 +1672,55 @@ fun LibraryAndFoldersScreen(
                                 fontWeight = FontWeight.Bold
                             )
                             Spacer(modifier = Modifier.height(8.dp))
-                            Row(
+                            LazyRow(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                FilterChip(
-                                    selected = selectedFavoriteFilter == FavoriteTypeFilter.ALL,
-                                    onClick = { selectedFavoriteFilter = FavoriteTypeFilter.ALL },
-                                    label = { Text("All (${favoriteMedia.size})") },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.Favorite,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("favorite_filter_all")
-                                )
-                                FilterChip(
-                                    selected = selectedFavoriteFilter == FavoriteTypeFilter.AUDIO,
-                                    onClick = { selectedFavoriteFilter = FavoriteTypeFilter.AUDIO },
-                                    label = { Text("Audio (${favoriteAudio.size})") },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.LibraryMusic,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("favorite_filter_audio")
-                                )
-                                FilterChip(
-                                    selected = selectedFavoriteFilter == FavoriteTypeFilter.VIDEO,
-                                    onClick = { selectedFavoriteFilter = FavoriteTypeFilter.VIDEO },
-                                    label = { Text("Videos (${favoriteVideos.size})") },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.Movie,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("favorite_filter_video")
-                                )
+                                item {
+                                    FilterChip(
+                                        selected = selectedFavoriteFilter == FavoriteTypeFilter.ALL,
+                                        onClick = { selectedFavoriteFilter = FavoriteTypeFilter.ALL },
+                                        label = { Text("All (${favoriteMedia.size})", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.Favorite,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("favorite_filter_all")
+                                    )
+                                }
+                                item {
+                                    FilterChip(
+                                        selected = selectedFavoriteFilter == FavoriteTypeFilter.AUDIO,
+                                        onClick = { selectedFavoriteFilter = FavoriteTypeFilter.AUDIO },
+                                        label = { Text("Audio (${favoriteAudio.size})", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.LibraryMusic,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("favorite_filter_audio")
+                                    )
+                                }
+                                item {
+                                    FilterChip(
+                                        selected = selectedFavoriteFilter == FavoriteTypeFilter.VIDEO,
+                                        onClick = { selectedFavoriteFilter = FavoriteTypeFilter.VIDEO },
+                                        label = { Text("Videos (${favoriteVideos.size})", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.Movie,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        },
+                                        modifier = Modifier.testTag("favorite_filter_video")
+                                    )
+                                }
                             }
                         }
                     }
@@ -1691,7 +1765,10 @@ fun LibraryAndFoldersScreen(
                                             onPlayClick = { onPlayMedia(media, favoriteAudio) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                            onShareClick = { onShareMedia(media) },
+                                            onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                            onFileInfoClick = { onShowFileInfoRequest(media) }
                                         )
                                     }
                                 }
@@ -1724,7 +1801,10 @@ fun LibraryAndFoldersScreen(
                                             onPlayClick = { onPlayMedia(media, favoriteVideos) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                            onShareClick = { onShareMedia(media) },
+                                            onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                            onFileInfoClick = { onShowFileInfoRequest(media) }
                                         )
                                     }
                                 }
@@ -1749,7 +1829,10 @@ fun LibraryAndFoldersScreen(
                                             onPlayClick = { onPlayMedia(media, favoriteAudio) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                            onShareClick = { onShareMedia(media) },
+                                            onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                            onFileInfoClick = { onShowFileInfoRequest(media) }
                                         )
                                     }
                                 }
@@ -1774,7 +1857,10 @@ fun LibraryAndFoldersScreen(
                                             onPlayClick = { onPlayMedia(media, favoriteVideos) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
-                                            onOpenInStudioClick = { onOpenStudioForMedia(media) }
+                                            onOpenInStudioClick = { onOpenStudioForMedia(media) },
+                                            onShareClick = { onShareMedia(media) },
+                                            onSetRingtoneClick = { onSetRingtoneRequest(media) },
+                                            onFileInfoClick = { onShowFileInfoRequest(media) }
                                         )
                                     }
                                 }

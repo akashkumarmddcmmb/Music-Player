@@ -2217,7 +2217,749 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         assertTrue("Overflow 'Play Now' must trigger callback", playClicked)
     }
+
+    @Test
+    fun `immersive system bars hide in landscape and fullscreen video and restore on library or audio screens`() {
+        val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
+        val window = activity.window
+
+        // 1. Landscape video playback (even before pressing explicit fullscreen toggle) -> MUST hide system bars
+        val hideInLandscapeVideo = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            isStudioSheetOpen = false,
+            mediaType = MediaType.VIDEO,
+            isFullscreenVideo = false,
+            isLandscapeViewport = true,
+            orientationPreference = VideoOrientationPreference.AUTO
+        )
+        assertTrue("System bars must hide in Landscape video playback", hideInLandscapeVideo)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInLandscapeVideo)
+        assertTrue(
+            "Window must have system bars hidden in Landscape video playback",
+            PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window)
+        )
+
+        // 2. Exiting fullscreen / rotating to Portrait non-fullscreen -> MUST restore system bars
+        val hideInPortraitNonFullscreen = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            isStudioSheetOpen = false,
+            mediaType = MediaType.VIDEO,
+            isFullscreenVideo = false,
+            isLandscapeViewport = false,
+            orientationPreference = VideoOrientationPreference.AUTO
+        )
+        assertFalse("System bars must be visible in Portrait non-fullscreen video", hideInPortraitNonFullscreen)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInPortraitNonFullscreen)
+        assertFalse(
+            "Window must restore system bars when exiting fullscreen to Portrait",
+            PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window)
+        )
+
+        // 3. Explicit Fullscreen video started -> MUST hide system bars
+        val hideInExplicitFullscreen = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            isStudioSheetOpen = false,
+            mediaType = MediaType.VIDEO,
+            isFullscreenVideo = true,
+            isLandscapeViewport = false,
+            orientationPreference = VideoOrientationPreference.AUTO
+        )
+        assertTrue("System bars must hide when fullscreen video is active", hideInExplicitFullscreen)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInExplicitFullscreen)
+        assertTrue(PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window))
+
+        // 4. Leaving video player back to Music/Video Library -> MUST restore system bars
+        val hideOnLibraryScreen = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = false,
+            isStudioSheetOpen = false,
+            mediaType = MediaType.VIDEO,
+            isFullscreenVideo = true,
+            isLandscapeViewport = true,
+            orientationPreference = VideoOrientationPreference.LANDSCAPE
+        )
+        assertFalse("System bars must never be hidden on Library screens", hideOnLibraryScreen)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideOnLibraryScreen)
+        assertFalse(PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window))
+
+        // 5. Audio Now Playing in Landscape -> MUST NOT hide system bars
+        val hideOnLandscapeAudio = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            isStudioSheetOpen = false,
+            mediaType = MediaType.AUDIO,
+            isFullscreenVideo = false,
+            isLandscapeViewport = true,
+            orientationPreference = VideoOrientationPreference.AUTO
+        )
+        assertFalse("System bars must not be hidden during Audio playback", hideOnLandscapeAudio)
+    }
+
+    @Test
+    fun `video player controls auto-hide after inactivity and recover on tap during active playback and rotation`() {
+        val sampleVideo = MediaEntity(
+            uriString = "file:///storage/emulated/0/Movies/cinema_clip.mp4",
+            mediaStoreId = null,
+            title = "Cinema Test Clip",
+            artist = "Pulse Director",
+            album = "Movies",
+            folderName = "Movies",
+            durationMs = 180_000L,
+            sizeBytes = 15_728_640L,
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 1920,
+            height = 1080,
+            dateAddedEpochSec = 1700001000L
+        )
+        val secondVideo = sampleVideo.copy(
+            uriString = "file:///storage/emulated/0/Movies/cinema_clip_2.mp4",
+            title = "Cinema Clip Two"
+        )
+
+        var viewportSize by mutableStateOf(DpSize(892.dp, 412.dp)) // Start in Landscape
+        var isPlayingState by mutableStateOf(true)
+        var positionMsState by mutableStateOf(12_000L)
+        var isFullscreenState by mutableStateOf(false)
+        var orientationPrefState by mutableStateOf(VideoOrientationPreference.AUTO)
+        var nextClickedCount = 0
+        var prevClickedCount = 0
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(viewportSize)) {
+                    NowPlayingOverlayScreen(
+                        playbackState = com.example.viewmodel.PlaybackUiState(
+                            currentMedia = sampleVideo,
+                            queue = listOf(sampleVideo, secondVideo),
+                            currentQueueIndex = 0,
+                            isPlaying = isPlayingState,
+                            currentPositionMs = positionMsState,
+                            durationMs = sampleVideo.durationMs,
+                            isFullscreenVideo = isFullscreenState,
+                            activeSubtitleText = "Synchronized subtitle line"
+                        ),
+                        userPreferences = UserPreferencesState(
+                            videoOrientationPreference = orientationPrefState,
+                            subtitlesEnabledByDefault = true
+                        ),
+                        isFavorite = false,
+                        playerInstance = null,
+                        onCollapse = {},
+                        onPlayPause = { isPlayingState = !isPlayingState },
+                        onSeekTo = { positionMsState = it },
+                        onPrevious = { prevClickedCount++ },
+                        onNext = { nextClickedCount++ },
+                        onToggleShuffle = {},
+                        onCycleRepeat = {},
+                        onSetPlaybackSpeed = {},
+                        onCycleAspectMode = {},
+                        onRotateVideo90 = {},
+                        onToggleFullscreen = { isFullscreenState = it },
+                        onSelectVideoOrientation = { orientationPrefState = it },
+                        onBrightnessGestureDelta = {},
+                        onVolumeGestureDelta = {},
+                        onPickSubtitleFileClick = {},
+                        onToggleSubtitlesEnabled = {},
+                        onSetSubtitleFontScale = {},
+                        onSetSubtitleOffsetMs = {},
+                        onToggleFavorite = {},
+                        onOpenEqualizer = {},
+                        onOpenStudio = {},
+                        onSelectQueueItem = {},
+                        onRemoveQueueItem = {},
+                        onRetryPlayback = {}
+                    )
+                }
+            }
+        }
+
+        composeTestRule.mainClock.advanceTimeBy(300L)
+        composeTestRule.waitForIdle()
+
+        // 1. Verify all video controls are initially visible in Landscape
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_seek_slider").assertExists()
+        composeTestRule.onNodeWithTag("video_current_time_text").assertExists()
+        composeTestRule.onNodeWithTag("video_total_time_text").assertExists()
+        composeTestRule.onNodeWithTag("transport_rewind_10_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_forward_10_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_previous_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_next_button").assertExists()
+        composeTestRule.onNodeWithTag("video_audio_track_pill").assertExists()
+        composeTestRule.onNodeWithTag("video_subtitles_chip").assertExists()
+        composeTestRule.onNodeWithTag("video_fullscreen_chip").assertExists()
+        composeTestRule.onNodeWithTag("active_subtitle_overlay").assertExists()
+
+        // 2. Simulate active video playback with 200ms position ticks for 4.2 seconds of inactivity
+        repeat(21) {
+            positionMsState += 200L
+            composeTestRule.mainClock.advanceTimeBy(200L)
+        }
+        composeTestRule.mainClock.advanceTimeBy(300L)
+        composeTestRule.waitForIdle()
+
+        // Controls must auto-hide after inactivity while subtitles remain visible
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("now_playing_seek_slider").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("active_subtitle_overlay").assertExists()
+
+        // 3. While playback position continues updating every 200ms, TAP the video surface to bring controls back
+        positionMsState += 200L
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.onNodeWithTag("video_surface_container").performClick()
+        positionMsState += 200L
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+
+        // Controls MUST immediately recover and be visible again!
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_seek_slider").assertExists()
+        composeTestRule.onNodeWithTag("transport_forward_10_button").assertExists()
+        composeTestRule.onNodeWithTag("video_fullscreen_chip").assertExists()
+
+        // 4. Test transport controls: +10s forward, -10s rewind, Next, Previous, Play/Pause
+        val posBeforeSeek = positionMsState
+        composeTestRule.onNodeWithTag("transport_forward_10_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        assertEquals(posBeforeSeek + 10_000L, positionMsState)
+
+        composeTestRule.onNodeWithTag("transport_rewind_10_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        assertEquals(posBeforeSeek, positionMsState)
+
+        composeTestRule.onNodeWithTag("transport_next_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        assertEquals(1, nextClickedCount)
+
+        composeTestRule.onNodeWithTag("transport_previous_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        assertEquals(1, prevClickedCount)
+
+        // 5. Rotate from Landscape (892x412) -> Portrait (412x892) -> Landscape (892x412)
+        viewportSize = DpSize(412.dp, 892.dp)
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+
+        // Toggle Fullscreen from Portrait
+        composeTestRule.onNodeWithTag("video_fullscreen_chip").performClick()
+        composeTestRule.mainClock.advanceTimeBy(200L)
+        assertTrue("Fullscreen toggle must activate fullscreen state", isFullscreenState)
+
+        // Rotate to Landscape and verify state, position, and controls remain intact
+        viewportSize = DpSize(892.dp, 412.dp)
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        assertEquals("Playback position must not reset on rotation", posBeforeSeek, positionMsState)
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+
+        // Let controls auto-hide again in Landscape, then tap after rotation to verify tap still recovers controls
+        repeat(21) {
+            positionMsState += 200L
+            composeTestRule.mainClock.advanceTimeBy(200L)
+        }
+        composeTestRule.mainClock.advanceTimeBy(300L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("video_surface_container").performClick()
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_seek_slider").assertExists()
+
+        composeTestRule.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun landscapeOverflowAndFeatureAccessibilityAudit_acrossAllScreensAndDialogs() {
+        val sampleVideo = MediaEntity(
+            uriString = "file:///storage/emulated/0/Movies/PulsePlay_Cinema_1080p.mp4",
+            mediaStoreId = null,
+            title = "PulsePlay Cinema Masterpiece With Very Long Title For Overflow Audit",
+            artist = "PulsePlay Studio Orchestra",
+            album = "Landscape Audit Vault",
+            folderName = "Movies_With_Long_Folder_Directory_Name",
+            durationMs = 240_000L,
+            sizeBytes = 42_000_000L,
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 1920,
+            height = 1080,
+            dateAddedEpochSec = 1_700_000_000L,
+            isAvailable = true
+        )
+        val sampleAudio = sampleVideo.copy(
+            uriString = "file:///storage/emulated/0/Music/PulsePlay_Acoustic_Master.wav",
+            title = "PulsePlay Acoustic Master With Long Track Title",
+            mediaType = MediaType.AUDIO,
+            mimeType = "audio/wav",
+            width = 0,
+            height = 0
+        )
+
+        var screenMode by mutableStateOf("VIDEO_HUD")
+        var subtitleOffsetMs by mutableStateOf(0L)
+        var selectedOrientationPref by mutableStateOf(VideoOrientationPreference.AUTO)
+        var audioTrimTriggered by mutableStateOf(false)
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(DpSize(640.dp, 360.dp))) {
+                    when (screenMode) {
+                        "VIDEO_HUD" -> {
+                            NowPlayingOverlayScreen(
+                                playbackState = com.example.viewmodel.PlaybackUiState(
+                                    currentMedia = sampleVideo,
+                                    isPlaying = false,
+                                    currentPositionMs = 45_000L,
+                                    durationMs = 240_000L,
+                                    queue = listOf(sampleVideo, sampleAudio),
+                                    currentQueueIndex = 0,
+                                    isFullscreenVideo = true,
+                                    decoderStatusLabel = "Hardware H.264 Ready",
+                                    isDecoderVerified = true
+                                ),
+                                userPreferences = UserPreferencesState(
+                                    subtitleSyncOffsetMs = subtitleOffsetMs,
+                                    videoOrientationPreference = selectedOrientationPref
+                                ),
+                                isFavorite = true,
+                                playerInstance = null,
+                                onCollapse = {},
+                                onPlayPause = {},
+                                onSeekTo = {},
+                                onPrevious = {},
+                                onNext = {},
+                                onToggleShuffle = {},
+                                onCycleRepeat = {},
+                                onSetPlaybackSpeed = {},
+                                onCycleAspectMode = {},
+                                onRotateVideo90 = {},
+                                onToggleFullscreen = {},
+                                onToggleControlsLock = {},
+                                onSelectVideoOrientation = { selectedOrientationPref = it },
+                                onToggleKeepScreenOn = {},
+                                onToggleVideoGestureControls = {},
+                                onBrightnessGestureDelta = {},
+                                onVolumeGestureDelta = {},
+                                onPickSubtitleFileClick = {},
+                                onToggleSubtitlesEnabled = {},
+                                onSetSubtitleFontScale = {},
+                                onSetSubtitleOffsetMs = { subtitleOffsetMs = it },
+                                onSetSleepTimerMinutes = {},
+                                onSetSleepTimerEndOfTrack = {},
+                                onToggleFavorite = {},
+                                onOpenEqualizer = {},
+                                onOpenStudio = {},
+                                onSelectQueueItem = {},
+                                onRemoveQueueItem = {},
+                                onMoveQueueItem = { _, _ -> },
+                                onSaveQueueAsPlaylist = {},
+                                onRetryPlayback = {}
+                            )
+                        }
+                        "STUDIO" -> {
+                            com.example.ui.screens.StudioEditorOverlayScreen(
+                                allMedia = listOf(sampleAudio, sampleVideo),
+                                initialTargetMedia = sampleAudio,
+                                conversionProfiles = emptyList(),
+                                processingJobs = emptyList(),
+                                onClose = {},
+                                onPreviewSegment = { _, _ -> },
+                                onRunAudioTrim = { _, _, _, _ -> audioTrimTriggered = true },
+                                onRunVideoTrimRotate = { _, _, _, _, _ -> },
+                                onRunConversionOrExtraction = { _, _, _, _ -> },
+                                onCancelActiveJob = {},
+                                onClearCompletedJobs = {},
+                                onPlayExportedUri = {}
+                            )
+                        }
+                        "SETTINGS" -> {
+                            com.example.ui.screens.ProfileAndSettingsScreen(
+                                userPreferences = UserPreferencesState(
+                                    videoOrientationPreference = selectedOrientationPref
+                                ),
+                                hasMediaPermission = true,
+                                historyCount = 5,
+                                sleepTimerMinutes = 0,
+                                sleepTimerStopAtEndOfTrack = false,
+                                preampGainDb = 0f,
+                                onSetThemeMode = {},
+                                onSetDynamicColor = {},
+                                onSetDefaultSpeed = {},
+                                onSetResumePlayback = {},
+                                onSetRecordHistory = {},
+                                onSetBackgroundPlayback = {},
+                                onSetKeepScreenOnDuringVideo = {},
+                                onSetVideoGestureControls = {},
+                                onSetVideoOrientationPref = { pref -> selectedOrientationPref = pref },
+                                onSetAllowExperimental4kSoftwareFallback = {},
+                                onSetAudioBalance = {},
+                                onSetPreampGainDb = {},
+                                onSetSleepTimerMinutes = {},
+                                onSetSleepTimerEndOfTrack = {},
+                                onSetSubtitlesEnabled = {},
+                                onSetSubtitleScale = {},
+                                onSetDefaultSort = {},
+                                onOpenEqualizerClick = {},
+                                onRequestMediaPermissionClick = {},
+                                onSetOptionalAdsConfig = { _, _ -> },
+                                onClearHistoryOnlyClick = {},
+                                onResetPreferencesClick = {}
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. In Compact Landscape (640x360) Video HUD: open Audio Track popup and verify it does not clip
+        composeTestRule.onNodeWithTag("video_audio_track_pill")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        val audioSheetBounds = composeTestRule.onNodeWithTag("video_audio_track_sheet_card")
+            .assertExists()
+            .fetchSemanticsNode()
+            .boundsInRoot
+        assertTrue("Audio track sheet top must not clip off-screen in 360dp height", audioSheetBounds.top >= 0f)
+
+        // 2. Open Subtitle Settings Drawer in Compact Landscape and verify +250ms button is reachable and not clipped
+        composeTestRule.onNodeWithTag("video_subtitles_chip")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("subtitle_offset_plus_250_button")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(250L, subtitleOffsetMs)
+
+        // 3. Switch to Studio Editor in Compact Landscape (640x360) and verify Preview & Trim buttons work immediately
+        screenMode = "STUDIO"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("preview_trim_segment_button").assertExists()
+        composeTestRule.onNodeWithTag("execute_audio_trim_button")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertTrue("Trim & Export Audio button must be clickable in compact Landscape", audioTrimTriggered)
+
+        // 4. Switch to Settings in Compact Landscape (640x360), verify Theme chips at top
+        screenMode = "SETTINGS"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("theme_mode_chip_system").assertExists()
+        composeTestRule.onNodeWithTag("theme_mode_chip_dark").assertExists()
+        composeTestRule.onNodeWithTag("theme_mode_chip_light").assertExists()
+    }
+
+    @Test
+    fun `threeDotOverflowMenu supports Share Ringtone FileInfo and existing actions for Audio and Video`() {
+        val generator = SampleMediaGenerator(context)
+        val audioFile = File(context.filesDir, "pulse_samples/menu_test_audio.wav").apply {
+            parentFile?.mkdirs()
+        }
+        generator.generateStereoWavFile(audioFile, durationSeconds = 3)
+
+        val videoFile = File(context.filesDir, "pulse_samples/menu_test_video.mp4").apply {
+            parentFile?.mkdirs()
+        }
+        val muxer = IsoMp4Muxer(videoFile, majorBrand = "mp42")
+        val vFmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 1280, 720)
+        val aFmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, 2)
+        val vTrack = muxer.addTrack(vFmt)
+        val aTrack = muxer.addTrack(aFmt)
+        muxer.start()
+        val annexBIdr = byteArrayOf(
+            0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1E,
+            0, 0, 0, 1, 0x68, 0xCE.toByte(), 0x3C, 0x80.toByte(),
+            0, 0, 0, 1, 0x65, 0x88.toByte(), 0x84.toByte(), 0x21
+        )
+        val vInfo = MediaCodec.BufferInfo().apply {
+            set(0, annexBIdr.size, 0L, MediaCodec.BUFFER_FLAG_KEY_FRAME)
+        }
+        muxer.writeSampleData(vTrack, ByteBuffer.wrap(annexBIdr), vInfo)
+        val aacFrame = byteArrayOf(0x21, 0x10, 0x04, 0x60, 0x8C.toByte(), 0x1C)
+        val aInfo = MediaCodec.BufferInfo().apply {
+            set(0, aacFrame.size, 0L, MediaCodec.BUFFER_FLAG_KEY_FRAME)
+        }
+        muxer.writeSampleData(aTrack, ByteBuffer.wrap(aacFrame), aInfo)
+        muxer.stop()
+        muxer.release()
+
+        val audioEntity = MediaEntity(
+            uriString = Uri.fromFile(audioFile).toString(),
+            mediaStoreId = null,
+            title = "Menu Test Acoustic Track",
+            artist = "PulsePlay Ensemble",
+            album = "Studio Masters",
+            folderName = "pulse_samples",
+            durationMs = 3_000L,
+            sizeBytes = audioFile.length(),
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            width = 0,
+            height = 0,
+            dateAddedEpochSec = 1_700_000_500L,
+            isAvailable = true
+        )
+        val videoEntity = MediaEntity(
+            uriString = Uri.fromFile(videoFile).toString(),
+            mediaStoreId = null,
+            title = "Menu Test Cinema Reel",
+            artist = "PulsePlay Visuals",
+            album = "Cinema Vault",
+            folderName = "pulse_samples",
+            durationMs = 15_000L,
+            sizeBytes = videoFile.length(),
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 1280,
+            height = 720,
+            dateAddedEpochSec = 1_700_000_600L,
+            isAvailable = true
+        )
+
+        // 1. Verify secure Share action for BOTH Audio and Video (content:// URI, MIME type, FLAG_GRANT_READ_URI_PERMISSION)
+        val audioShareOutcome = com.example.media.MediaFileActionsHelper.shareMediaFile(context, audioEntity)
+        assertTrue("Audio share should succeed", audioShareOutcome is com.example.media.ShareOutcome.Success)
+        val audioShareLaunched = audioShareOutcome as com.example.media.ShareOutcome.Success
+        assertEquals("content", audioShareLaunched.sharedUri.scheme)
+        assertEquals("audio/wav", audioShareLaunched.mimeType)
+        assertEquals(android.content.Intent.ACTION_CHOOSER, audioShareLaunched.chooserIntent.action)
+        @Suppress("DEPRECATION")
+        val innerAudioSend = audioShareLaunched.chooserIntent.getParcelableExtra<android.content.Intent>(android.content.Intent.EXTRA_INTENT)
+        assertNotNull(innerAudioSend)
+        assertEquals(android.content.Intent.ACTION_SEND, innerAudioSend!!.action)
+        assertTrue(
+            "Share intent must grant temporary read URI permission",
+            (innerAudioSend.flags and android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0
+        )
+
+        val videoShareOutcome = com.example.media.MediaFileActionsHelper.shareMediaFile(context, videoEntity)
+        assertTrue("Video share should succeed", videoShareOutcome is com.example.media.ShareOutcome.Success)
+        val videoShareLaunched = videoShareOutcome as com.example.media.ShareOutcome.Success
+        assertEquals("content", videoShareLaunched.sharedUri.scheme)
+        assertEquals("video/mp4", videoShareLaunched.mimeType)
+
+        // 2. Verify Set as Ringtone flow: PermissionRequired -> Granted -> Success for Audio, and rejected for Video
+        try {
+            com.example.media.MediaFileActionsHelper.testCanWriteSettingsOverride = false
+            val deniedOutcome = com.example.media.MediaFileActionsHelper.setAudioAsRingtone(context, audioEntity)
+            assertTrue(
+                "When WRITE_SETTINGS is not granted, setAudioAsRingtone must return PermissionRequired",
+                deniedOutcome is com.example.media.RingtoneOutcome.PermissionRequired
+            )
+            val permReq = deniedOutcome as com.example.media.RingtoneOutcome.PermissionRequired
+            assertEquals(android.provider.Settings.ACTION_MANAGE_WRITE_SETTINGS, permReq.settingsIntent.action)
+
+            com.example.media.MediaFileActionsHelper.testCanWriteSettingsOverride = true
+            val grantedOutcome = com.example.media.MediaFileActionsHelper.setAudioAsRingtone(context, audioEntity)
+            assertTrue(
+                "When WRITE_SETTINGS is granted, setAudioAsRingtone must succeed",
+                grantedOutcome is com.example.media.RingtoneOutcome.Success
+            )
+            val ringtoneSuccess = grantedOutcome as com.example.media.RingtoneOutcome.Success
+            assertEquals("content", ringtoneSuccess.ringtoneUri.scheme)
+            assertEquals(ringtoneSuccess.ringtoneUri, com.example.media.MediaFileActionsHelper.lastAppliedRingtoneUri)
+
+            val videoRingtoneOutcome = com.example.media.MediaFileActionsHelper.setAudioAsRingtone(context, videoEntity)
+            assertTrue(
+                "Video files must never be set as ringtone",
+                videoRingtoneOutcome is com.example.media.RingtoneOutcome.Failure
+            )
+        } finally {
+            com.example.media.MediaFileActionsHelper.testCanWriteSettingsOverride = null
+        }
+
+        // 3. Verify File Information extraction for Audio and Video (truthful metadata + "Not available" fallback)
+        val audioInfo = com.example.media.MediaFileActionsHelper.extractDetailedMediaFileInfo(context, audioEntity)
+        assertEquals("menu_test_audio.wav", audioInfo.fullFileName)
+        assertEquals("WAV", audioInfo.fileExtension)
+        assertTrue(audioInfo.mimeType.contains("audio/wav"))
+        assertTrue(audioInfo.audioCodec.contains("PCM"))
+        assertTrue(audioInfo.bitrate.contains("kbps"))
+        assertEquals(com.example.media.MediaFileActionsHelper.NOT_AVAILABLE, audioInfo.resolution)
+        assertEquals(com.example.media.MediaFileActionsHelper.NOT_AVAILABLE, audioInfo.videoCodec)
+
+        val videoInfo = com.example.media.MediaFileActionsHelper.extractDetailedMediaFileInfo(context, videoEntity)
+        assertEquals("menu_test_video.mp4", videoInfo.fullFileName)
+        assertEquals("MP4", videoInfo.fileExtension)
+        assertTrue(videoInfo.resolution.contains("1280 × 720"))
+        assertTrue(videoInfo.videoCodec.contains("H.264") || videoInfo.videoCodec.contains("AVC"))
+        assertTrue(videoInfo.audioCodec.contains("AAC"))
+
+        // 4. Verify Compose UI: Audio vs Video 3-dot overflow menu items, File Info Dialog, and Ringtone Permission Dialog
+        var currentCardMedia by mutableStateOf(audioEntity)
+        var showFileInfoDialog by mutableStateOf<com.example.media.DetailedMediaFileInfo?>(null)
+        var showRingtonePermDialog by mutableStateOf<MediaEntity?>(null)
+        var playClickedCount = 0
+        var shareClickedCount = 0
+        var ringtoneClickedCount = 0
+        var fileInfoClickedCount = 0
+        var favoriteClickedCount = 0
+        var playlistClickedCount = 0
+        var studioClickedCount = 0
+        var settingsOpenedCount = 0
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(DpSize(640.dp, 360.dp))) {
+                    MediaItemCard(
+                        media = currentCardMedia,
+                        isFavorite = false,
+                        isCurrentlyPlaying = false,
+                        onPlayClick = { playClickedCount++ },
+                        onFavoriteToggle = { favoriteClickedCount++ },
+                        onAddToPlaylistClick = { playlistClickedCount++ },
+                        onOpenInStudioClick = { studioClickedCount++ },
+                        onShareClick = { shareClickedCount++ },
+                        onSetRingtoneClick = {
+                            ringtoneClickedCount++
+                            showRingtonePermDialog = currentCardMedia
+                        },
+                        onFileInfoClick = {
+                            fileInfoClickedCount++
+                            showFileInfoDialog = com.example.media.MediaFileActionsHelper.extractDetailedMediaFileInfo(
+                                context,
+                                currentCardMedia
+                            )
+                        }
+                    )
+
+                    if (showFileInfoDialog != null) {
+                        com.example.ui.components.MediaFileInformationDialog(
+                            info = showFileInfoDialog!!,
+                            onCopyLocation = { loc ->
+                                com.example.media.MediaFileActionsHelper.copyTextToClipboard(context, "Path", loc)
+                            },
+                            onDismiss = { showFileInfoDialog = null }
+                        )
+                    }
+
+                    if (showRingtonePermDialog != null) {
+                        com.example.ui.components.RingtonePermissionDialog(
+                            media = showRingtonePermDialog!!,
+                            onOpenSettings = { settingsOpenedCount++ },
+                            onContinueSetRingtone = { showRingtonePermDialog = null },
+                            onDismiss = { showRingtonePermDialog = null }
+                        )
+                    }
+                }
+            }
+        }
+
+        val audioOverflowTag = "media_item_overflow_${audioEntity.title.take(12).replace(" ", "_")}"
+        val videoOverflowTag = "media_item_overflow_${videoEntity.title.take(12).replace(" ", "_")}"
+
+        // Open 3-dot menu on AUDIO item -> verify all 7 options exist including Set as Ringtone
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_play_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_share_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_ringtone_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_file_info_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_favorite_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_playlist_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_studio_action").assertExists()
+
+        // Click Share on Audio item
+        composeTestRule.onNodeWithTag("overflow_share_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, shareClickedCount)
+
+        // Open 3-dot menu and click Set as Ringtone -> opens RingtonePermissionDialog
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_ringtone_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, ringtoneClickedCount)
+        composeTestRule.onNodeWithTag("ringtone_permission_dialog").assertExists()
+        composeTestRule.onNodeWithTag("ringtone_open_settings_button").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, settingsOpenedCount)
+        composeTestRule.onNodeWithTag("ringtone_continue_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("ringtone_permission_dialog").assertDoesNotExist()
+
+        // Open 3-dot menu and click File Information -> opens scrollable File Information dialog
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_file_info_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, fileInfoClickedCount)
+        composeTestRule.onNodeWithTag("file_info_dialog").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_name").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_extension").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_mime").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_size").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_duration").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_audio_codec").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_bitrate").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_location").assertExists()
+        composeTestRule.onNodeWithTag("file_info_copy_location_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("file_info_close_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("file_info_dialog").assertDoesNotExist()
+
+        // Verify existing actions (Play Now, Add to Favorites, Add to Playlist, Edit in Media Studio) remain intact
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_play_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, playClickedCount)
+
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_favorite_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, favoriteClickedCount)
+
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_playlist_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, playlistClickedCount)
+
+        composeTestRule.onNodeWithTag(audioOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_studio_action").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, studioClickedCount)
+
+        // Switch card to VIDEO item -> verify Set as Ringtone is NOT shown, while Share and File Info ARE shown
+        currentCardMedia = videoEntity
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag(videoOverflowTag).performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("overflow_play_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_share_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_file_info_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_favorite_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_playlist_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_studio_action").assertExists()
+        composeTestRule.onNodeWithTag("overflow_ringtone_action").assertDoesNotExist()
+
+        // Open File Information for Video item -> verify video metadata dialog opens cleanly
+        composeTestRule.onNodeWithTag("overflow_file_info_action").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("file_info_dialog").assertExists()
+        composeTestRule.onNodeWithTag("file_info_row_resolution").assertExists()
+        composeTestRule.onNodeWithTag("file_info_close_button").performClick()
+        composeTestRule.waitForIdle()
+
+        audioFile.delete()
+        videoFile.delete()
+    }
 }
+
+
 
 
 

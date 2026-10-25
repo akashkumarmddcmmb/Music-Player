@@ -1,8 +1,14 @@
 package com.example.media
 
 import android.content.pm.ActivityInfo
+import android.os.Build
+import android.view.View
 import android.view.Window
 import android.view.WindowManager
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
@@ -210,6 +216,99 @@ object PlayerHandoffAndVideoPolicy {
         isFullscreenVideo = isFullscreenVideo,
         orientationPreference = orientationPreference
     )
+
+    /**
+     * Determines whether the Android Status Bar and Navigation Bar (`WindowInsetsCompat.Type.systemBars()`)
+     * should be hidden in immersive fullscreen mode.
+     *
+     * Rules:
+     * - Never hide system bars when the activity is not resumed, when on Library / Home / Music /
+     *   Settings screens (`!isNowPlayingOverlayVisible`), when the Studio Editor sheet is open,
+     *   or when playing Audio (`mediaType != MediaType.VIDEO`).
+     * - Hide system bars during active Video Now Playing whenever any of the following holds:
+     *   1. Device is in Landscape orientation (`isLandscapeViewport == true`), OR
+     *   2. User toggled explicit fullscreen video mode (`isFullscreenVideo == true`), OR
+     *   3. Video orientation preference is locked to Landscape (`orientationPreference == VideoOrientationPreference.LANDSCAPE`).
+     */
+    fun shouldHideSystemBarsForVideo(
+        isActivityResumed: Boolean = true,
+        isNowPlayingOverlayVisible: Boolean,
+        isStudioSheetOpen: Boolean = false,
+        mediaType: MediaType?,
+        isFullscreenVideo: Boolean,
+        isLandscapeViewport: Boolean,
+        orientationPreference: VideoOrientationPreference = VideoOrientationPreference.AUTO
+    ): Boolean {
+        if (!isActivityResumed) return false
+        if (!isNowPlayingOverlayVisible) return false
+        if (isStudioSheetOpen) return false
+        if (mediaType != MediaType.VIDEO) return false
+        return isFullscreenVideo ||
+            isLandscapeViewport ||
+            orientationPreference == VideoOrientationPreference.LANDSCAPE
+    }
+
+    /**
+     * Applies or restores immersive fullscreen system bars (`WindowInsetsCompat.Type.systemBars()`)
+     * using AndroidX [WindowInsetsControllerCompat] with `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`.
+     * Also synchronizes display cutout mode (API 28+) and legacy system UI visibility flags so
+     * status/navigation bars hide and restore reliably across all supported Android versions.
+     */
+    @Suppress("DEPRECATION")
+    fun applyImmersiveSystemBars(window: Window?, hideSystemBars: Boolean) {
+        if (window == null) return
+        val decorView = window.decorView ?: return
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val targetCutoutMode = if (hideSystemBars) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+            }
+            val lp = window.attributes
+            if (lp != null && lp.layoutInDisplayCutoutMode != targetCutoutMode) {
+                lp.layoutInDisplayCutoutMode = targetCutoutMode
+                window.attributes = lp
+            }
+        }
+        val controller = WindowCompat.getInsetsController(window, decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        val immersiveFlags = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+            View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+        if (hideSystemBars) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            decorView.systemUiVisibility = decorView.systemUiVisibility or immersiveFlags
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+            val clearMask = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_IMMERSIVE or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_FULLSCREEN).inv()
+            decorView.systemUiVisibility = decorView.systemUiVisibility and clearMask
+        }
+    }
+
+    /**
+     * Inspects whether system bars (status bar + navigation bar) are currently hidden on [window].
+     */
+    @Suppress("DEPRECATION")
+    fun areSystemBarsHiddenOnWindow(window: Window?): Boolean {
+        if (window == null) return false
+        val decorView = window.decorView ?: return false
+        val hasHiddenFlags = (decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_FULLSCREEN) != 0 &&
+            (decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) != 0
+        val rootInsets = ViewCompat.getRootWindowInsets(decorView)
+        if (rootInsets != null && !hasHiddenFlags) {
+            return !rootInsets.isVisible(WindowInsetsCompat.Type.statusBars()) &&
+                !rootInsets.isVisible(WindowInsetsCompat.Type.navigationBars())
+        }
+        return hasHiddenFlags
+    }
 
     /**
      * Normalizes video rotation degrees to `{0, 90, 180, 270}` and computes aspect-compensated

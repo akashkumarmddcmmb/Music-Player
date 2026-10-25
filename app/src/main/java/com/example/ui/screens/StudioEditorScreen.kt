@@ -3,16 +3,20 @@ package com.example.ui.screens
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -130,136 +134,167 @@ fun StudioEditorOverlayScreen(
     Surface(
         modifier = Modifier
             .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing)
             .testTag("studio_editor_overlay"),
         color = MaterialTheme.colorScheme.background
     ) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 48.dp, start = 16.dp, end = 16.dp, top = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            // Top Header
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = "PulsePlay Processing Studio",
-                            style = MaterialTheme.typography.headlineMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "Real MediaExtractor • MediaCodec • MediaMuxer • PCM WAVE Pipeline",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("close_studio_button")
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val isCompactLandscape = maxHeight < 480.dp
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("studio_editor_list"),
+                contentPadding = PaddingValues(
+                    bottom = if (isCompactLandscape) 32.dp else 48.dp,
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = if (isCompactLandscape) 4.dp else 12.dp
+                ),
+                verticalArrangement = Arrangement.spacedBy(if (isCompactLandscape) 6.dp else 14.dp)
+            ) {
+                // Top Header
+                item {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Close, contentDescription = "Close Studio")
-                    }
-                }
-            }
-
-            // Studio Mode Selector
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(StudioMode.entries) { mode ->
-                        FilterChip(
-                            selected = selectedMode == mode,
-                            onClick = { selectedMode = mode },
-                            label = { Text(mode.label) },
-                            modifier = Modifier.testTag("studio_mode_${mode.name.lowercase()}")
-                        )
-                    }
-                }
-            }
-
-            // Source Media Selector Card
-            item {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Column(modifier = Modifier.padding(14.dp)) {
-                        Text(
-                            text = "1. Source Media Selection",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "PulsePlay Processing Studio",
+                                style = if (isCompactLandscape) {
+                                    MaterialTheme.typography.titleMedium
+                                } else {
+                                    MaterialTheme.typography.headlineMedium
+                                },
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (!isCompactLandscape) {
                                 Text(
-                                    text = selectedSource?.title ?: "No Media Available",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = selectedSource?.let {
-                                        "${it.mimeType} • Duration: ${formatDurationMillis(it.durationMs)}"
-                                    } ?: "Generate samples on Home first",
+                                    text = "Real MediaExtractor • MediaCodec • MediaMuxer • PCM WAVE Pipeline",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            Row {
-                                OutlinedButton(
-                                    onClick = { sourcePickerExpanded = true },
-                                    modifier = Modifier.testTag("change_studio_source_button")
-                                ) {
-                                    Text("Switch Track")
+                        }
+                        IconButton(
+                            onClick = onClose,
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("close_studio_button")
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = "Close Studio")
+                        }
+                    }
+                }
+
+                // Studio Mode Selector
+                item {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(StudioMode.entries) { mode ->
+                            FilterChip(
+                                selected = selectedMode == mode,
+                                onClick = { selectedMode = mode },
+                                label = { Text(mode.label, maxLines = 1) },
+                                modifier = Modifier.testTag("studio_mode_${mode.name.lowercase()}")
+                            )
+                        }
+                    }
+                }
+
+                // Source Media Selector Card
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(if (isCompactLandscape) 12.dp else 16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(if (isCompactLandscape) 8.dp else 14.dp)) {
+                            if (!isCompactLandscape) {
+                                Text(
+                                    text = "1. Source Media Selection",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = selectedSource?.title ?: "No Media Available",
+                                        style = if (isCompactLandscape) {
+                                            MaterialTheme.typography.titleSmall
+                                        } else {
+                                            MaterialTheme.typography.titleMedium
+                                        },
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = selectedSource?.let {
+                                            "${it.mimeType} • Duration: ${formatDurationMillis(it.durationMs)}"
+                                        } ?: "Generate samples on Home first",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
-                                DropdownMenu(
-                                    expanded = sourcePickerExpanded,
-                                    onDismissRequest = { sourcePickerExpanded = false }
-                                ) {
-                                    allMedia.forEach { item ->
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text("${item.title} (${item.mediaType.name})")
-                                            },
-                                            onClick = {
-                                                selectedSource = item
-                                                sourcePickerExpanded = false
-                                            }
-                                        )
+                                Row {
+                                    OutlinedButton(
+                                        onClick = { sourcePickerExpanded = true },
+                                        contentPadding = if (isCompactLandscape) {
+                                            PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        } else {
+                                            PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                                        },
+                                        modifier = Modifier.testTag("change_studio_source_button")
+                                    ) {
+                                        Text("Switch Track", maxLines = 1)
+                                    }
+                                    DropdownMenu(
+                                        expanded = sourcePickerExpanded,
+                                        onDismissRequest = { sourcePickerExpanded = false }
+                                    ) {
+                                        allMedia.forEach { item ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text("${item.title} (${item.mediaType.name})")
+                                                },
+                                                onClick = {
+                                                    selectedSource = item
+                                                    sourcePickerExpanded = false
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Operation Configuration Card
-            item {
-                val src = selectedSource
-                if (src != null) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                // Operation Configuration Card
+                item {
+                    val src = selectedSource
+                    if (src != null) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(if (isCompactLandscape) 14.dp else 18.dp)
                         ) {
+                            Column(
+                                modifier = Modifier.padding(if (isCompactLandscape) 10.dp else 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(if (isCompactLandscape) 6.dp else 12.dp)
+                            ) {
                             when (selectedMode) {
                                 StudioMode.AUDIO_TRIM -> {
                                     Text(
@@ -281,36 +316,47 @@ fun StudioEditorOverlayScreen(
                                         valueRange = 0f..1f,
                                         modifier = Modifier.testTag("audio_trim_range_slider")
                                     )
-                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        FilterChip(
-                                            selected = audioTrimFormat == "wav",
-                                            onClick = { audioTrimFormat = "wav" },
-                                            label = { Text("Export PCM .WAV (Lossless)") }
-                                        )
-                                        FilterChip(
-                                            selected = audioTrimFormat == "m4a",
-                                            onClick = { audioTrimFormat = "m4a" },
-                                            label = { Text("Export AAC .M4A") }
-                                        )
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        item {
+                                            FilterChip(
+                                                selected = audioTrimFormat == "wav",
+                                                onClick = { audioTrimFormat = "wav" },
+                                                label = { Text("Export PCM .WAV (Lossless)", maxLines = 1) }
+                                            )
+                                        }
+                                        item {
+                                            FilterChip(
+                                                selected = audioTrimFormat == "m4a",
+                                                onClick = { audioTrimFormat = "m4a" },
+                                                label = { Text("Export AAC .M4A", maxLines = 1) }
+                                            )
+                                        }
                                     }
-                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
                                         OutlinedButton(
                                             onClick = { onPreviewSegment(src, startMs) },
-                                            modifier = Modifier.testTag("preview_trim_segment_button")
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("preview_trim_segment_button")
                                         ) {
                                             Icon(Icons.Default.PlayArrow, contentDescription = null)
                                             Spacer(modifier = Modifier.width(4.dp))
-                                            Text("Preview Segment")
+                                            Text("Preview Segment", maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                         Button(
                                             onClick = {
                                                 onRunAudioTrim(src, startMs, endMs, audioTrimFormat)
                                             },
-                                            modifier = Modifier.testTag("execute_audio_trim_button")
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .testTag("execute_audio_trim_button")
                                         ) {
                                             Icon(Icons.Default.ContentCut, contentDescription = null)
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text("Trim & Export Audio")
+                                            Text("Trim & Export Audio", maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                     }
                                 }
@@ -615,6 +661,7 @@ fun StudioEditorOverlayScreen(
                     }
                 }
             }
+        }
         }
     }
 }

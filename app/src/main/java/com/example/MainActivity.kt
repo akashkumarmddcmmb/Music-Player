@@ -7,6 +7,7 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -75,21 +76,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
+import com.example.media.DetailedMediaFileInfo
+import com.example.media.MediaFileActionsHelper
 import com.example.media.PlayerHandoffAndVideoPolicy
+import com.example.media.RingtoneOutcome
+import com.example.media.ShareOutcome
+import com.example.ui.components.MediaFileInformationDialog
 import com.example.ui.components.PersistentMiniPlayerBar
+import com.example.ui.components.RingtonePermissionDialog
 import com.example.ui.screens.EqualizerBottomSheet
 import com.example.ui.screens.HomeDashboardScreen
 import com.example.ui.screens.LibraryAndFoldersScreen
@@ -129,6 +134,29 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingMediaIntent(intent)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            val playback = viewModel.playbackState.value
+            val prefs = viewModel.userPreferences.value
+            val isExpanded = viewModel.isNowPlayingExpanded.value
+            val isStudioOpen = viewModel.isStudioSheetOpen.value
+            val config = resources.configuration
+            val isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE ||
+                config.screenWidthDp > config.screenHeightDp
+            val shouldHide = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+                isActivityResumed = true,
+                isNowPlayingOverlayVisible = isExpanded && !isStudioOpen,
+                isStudioSheetOpen = isStudioOpen,
+                mediaType = playback.currentMedia?.mediaType,
+                isFullscreenVideo = playback.isFullscreenVideo,
+                isLandscapeViewport = isLandscape,
+                orientationPreference = prefs.videoOrientationPreference
+            )
+            PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, shouldHide)
+        }
     }
 
     private fun handleIncomingMediaIntent(intent: Intent?) {
@@ -230,9 +258,37 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val isEqualizerSheetOpen by viewModel.isEqualizerSheetOpen.collectAsStateWithLifecycle()
 
     var pendingPlaylistAddMedia by remember { mutableStateOf<MediaEntity?>(null) }
+    var pendingRingtoneMedia by remember { mutableStateOf<MediaEntity?>(null) }
+    var activeFileInfo by remember { mutableStateOf<DetailedMediaFileInfo?>(null) }
     var isActivityResumed by remember { mutableStateOf(true) }
 
-    // Track Activity lifecycle for lifecycle-safe FLAG_KEEP_SCREEN_ON
+    val applyRingtoneForMedia: (MediaEntity) -> Unit = { media ->
+        when (val outcome = MediaFileActionsHelper.setAudioAsRingtone(context, media)) {
+            is RingtoneOutcome.Success -> {
+                pendingRingtoneMedia = null
+                viewModel.postStatusBannerMessage(outcome.message)
+            }
+            is RingtoneOutcome.PermissionRequired -> {
+                pendingRingtoneMedia = media
+                viewModel.postStatusBannerMessage(outcome.message)
+            }
+            is RingtoneOutcome.Failure -> {
+                pendingRingtoneMedia = null
+                viewModel.postStatusBannerMessage(outcome.errorMessage)
+            }
+        }
+    }
+
+    val writeSettingsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        val pending = pendingRingtoneMedia
+        if (pending != null && MediaFileActionsHelper.canWriteSystemSettings(context)) {
+            applyRingtoneForMedia(pending)
+        }
+    }
+
+    // Track Activity lifecycle for lifecycle-safe FLAG_KEEP_SCREEN_ON & ringtone permission return
     DisposableEffect(lifecycleOwner, activity) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -240,6 +296,10 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 Lifecycle.Event.ON_RESUME -> {
                     isActivityResumed = true
                     viewModel.onAppForegrounded()
+                    val pending = pendingRingtoneMedia
+                    if (pending != null && MediaFileActionsHelper.canWriteSystemSettings(context)) {
+                        applyRingtoneForMedia(pending)
+                    }
                 }
                 Lifecycle.Event.ON_PAUSE,
                 Lifecycle.Event.ON_STOP,
@@ -285,45 +345,51 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     }
 
     // Real Android Display Orientation & Immersive System Bars for Video Player
+    val configuration = LocalConfiguration.current
+    val isConfigurationLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE ||
+        configuration.screenWidthDp > configuration.screenHeightDp
+
     val targetOrientation = PlayerHandoffAndVideoPolicy.resolveRequestedScreenOrientation(
         isNowPlayingOverlayVisible = isNowPlayingExpanded && !isStudioSheetOpen,
         mediaType = playbackState.currentMedia?.mediaType,
         isFullscreenVideo = playbackState.isFullscreenVideo,
         orientationPreference = userPreferences.videoOrientationPreference
     )
-    val isFullscreenVideoActive = isNowPlayingExpanded &&
-        !isStudioSheetOpen &&
-        playbackState.currentMedia?.mediaType == MediaType.VIDEO &&
-        playbackState.isFullscreenVideo
+    val shouldHideSystemBars = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+        isActivityResumed = isActivityResumed,
+        isNowPlayingOverlayVisible = isNowPlayingExpanded && !isStudioSheetOpen,
+        isStudioSheetOpen = isStudioSheetOpen,
+        mediaType = playbackState.currentMedia?.mediaType,
+        isFullscreenVideo = playbackState.isFullscreenVideo,
+        isLandscapeViewport = isConfigurationLandscape,
+        orientationPreference = userPreferences.videoOrientationPreference
+    )
 
     DisposableEffect(
         activity,
         targetOrientation,
-        isFullscreenVideoActive
+        shouldHideSystemBars,
+        isConfigurationLandscape,
+        isNowPlayingExpanded,
+        isStudioSheetOpen,
+        playbackState.currentMedia?.mediaType
     ) {
         if (activity != null) {
             if (activity.requestedOrientation != targetOrientation) {
                 activity.requestedOrientation = targetOrientation
             }
-            val window = activity.window
-            if (window != null) {
-                val controller = WindowCompat.getInsetsController(window, window.decorView)
-                if (isFullscreenVideoActive) {
-                    controller.systemBarsBehavior =
-                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    controller.hide(WindowInsetsCompat.Type.systemBars())
-                } else {
-                    controller.show(WindowInsetsCompat.Type.systemBars())
-                }
-            }
+            PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
+                window = activity.window,
+                hideSystemBars = shouldHideSystemBars
+            )
         }
         onDispose {
-            if (activity != null && !isNowPlayingExpanded) {
+            if (activity != null && (!isNowPlayingExpanded || playbackState.currentMedia?.mediaType != MediaType.VIDEO)) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-                activity.window?.let { win ->
-                    WindowCompat.getInsetsController(win, win.decorView)
-                        .show(WindowInsetsCompat.Type.systemBars())
-                }
+                PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
+                    window = activity.window,
+                    hideSystemBars = false
+                )
             }
         }
     }
@@ -467,9 +533,17 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         val mediaToAdd = pendingPlaylistAddMedia!!
         AlertDialog(
             onDismissRequest = { pendingPlaylistAddMedia = null },
-            title = { Text("Add '${mediaToAdd.title}' to Playlist") },
+            title = {
+                Text(
+                    text = "Add '${mediaToAdd.title}' to Playlist",
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                )
+            },
             text = {
-                Column {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                ) {
                     if (playlists.isEmpty()) {
                         Text(
                             "No playlists yet. Create a new playlist instantly:",
@@ -492,7 +566,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             ) {
-                                Text("${pl.name} (${pl.itemCount} tracks)")
+                                Text(
+                                    text = "${pl.name} (${pl.itemCount} tracks)",
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }
@@ -503,6 +581,49 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                     Text("Close")
                 }
             }
+        )
+    }
+
+    // Ringtone Permission Continuation Dialog
+    if (pendingRingtoneMedia != null) {
+        val ringtoneTarget = pendingRingtoneMedia!!
+        RingtonePermissionDialog(
+            media = ringtoneTarget,
+            onOpenSettings = {
+                runCatching {
+                    writeSettingsLauncher.launch(
+                        MediaFileActionsHelper.buildManageWriteSettingsIntent(context)
+                    )
+                }.onFailure {
+                    viewModel.postStatusBannerMessage(
+                        "Unable to open Modify System Settings screen on this device."
+                    )
+                }
+            },
+            onContinueSetRingtone = {
+                if (MediaFileActionsHelper.canWriteSystemSettings(context)) {
+                    applyRingtoneForMedia(ringtoneTarget)
+                } else {
+                    viewModel.postStatusBannerMessage(
+                        "Modify System Settings permission is not granted yet. Tap 'Open System Settings' to allow it."
+                    )
+                }
+            },
+            onDismiss = { pendingRingtoneMedia = null }
+        )
+    }
+
+    // File Information / Details Dialog
+    if (activeFileInfo != null) {
+        val info = activeFileInfo!!
+        MediaFileInformationDialog(
+            info = info,
+            onCopyLocation = { locationText ->
+                if (MediaFileActionsHelper.copyTextToClipboard(context, "Media File Location", locationText)) {
+                    viewModel.postStatusBannerMessage("Copied file location to clipboard.")
+                }
+            },
+            onDismiss = { activeFileInfo = null }
         )
     }
 
@@ -616,12 +737,14 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
 
     // Step-by-step back navigation unwinding: dialogs -> search query -> primary tab backstack
     val canPopTab = viewModel.canPopPrimaryTab()
-    val hasPendingDialog = pendingPlaylistAddMedia != null
+    val hasPendingDialog = pendingPlaylistAddMedia != null || pendingRingtoneMedia != null || activeFileInfo != null
     val hasSearch = searchQuery.isNotEmpty()
 
     BackHandler(enabled = hasPendingDialog || hasSearch || canPopTab) {
         when {
-            hasPendingDialog -> pendingPlaylistAddMedia = null
+            activeFileInfo != null -> activeFileInfo = null
+            pendingRingtoneMedia != null -> pendingRingtoneMedia = null
+            pendingPlaylistAddMedia != null -> pendingPlaylistAddMedia = null
             hasSearch -> viewModel.updateSearchQuery("")
             canPopTab -> viewModel.popPrimaryTab()
         }
@@ -824,6 +947,30 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                     val onOpenStudioForMediaCallback: (MediaEntity?) -> Unit = remember(viewModel) {
                         { viewModel.openStudioForMedia(it) }
                     }
+                    val onShareMediaCallback: (MediaEntity) -> Unit = remember(context, viewModel) {
+                        { media ->
+                            when (val outcome = MediaFileActionsHelper.shareMediaFile(context, media)) {
+                                is ShareOutcome.Success -> {
+                                    viewModel.postStatusBannerMessage(
+                                        "Sharing '${media.title}' (${outcome.mimeType})"
+                                    )
+                                }
+                                is ShareOutcome.Failure -> {
+                                    viewModel.postStatusBannerMessage(outcome.errorMessage)
+                                }
+                            }
+                        }
+                    }
+                    val onSetRingtoneRequestCallback: (MediaEntity) -> Unit = remember(context, viewModel) {
+                        { media ->
+                            applyRingtoneForMedia(media)
+                        }
+                    }
+                    val onShowFileInfoRequestCallback: (MediaEntity) -> Unit = remember(context) {
+                        { media ->
+                            activeFileInfo = MediaFileActionsHelper.extractDetailedMediaFileInfo(context, media)
+                        }
+                    }
                     val onOpenEqualizerCallback: () -> Unit = remember(viewModel) {
                         { viewModel.setEqualizerSheetOpen(true) }
                     }
@@ -872,6 +1019,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
+                                    onShareMedia = onShareMediaCallback,
+                                    onSetRingtoneRequest = onSetRingtoneRequestCallback,
+                                    onShowFileInfoRequest = onShowFileInfoRequestCallback,
                                     onOpenEqualizer = onOpenEqualizerCallback
                                 )
                             }
@@ -889,6 +1039,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
+                                    onShareMedia = onShareMediaCallback,
+                                    onSetRingtoneRequest = onSetRingtoneRequestCallback,
+                                    onShowFileInfoRequest = onShowFileInfoRequestCallback,
                                     onPickSafFileClick = {
                                         safMediaLauncher.launch(arrayOf("video/*"))
                                     },
@@ -913,6 +1066,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
+                                    onShareMedia = onShareMediaCallback,
+                                    onSetRingtoneRequest = onSetRingtoneRequestCallback,
+                                    onShowFileInfoRequest = onShowFileInfoRequestCallback,
                                     onPickSafFileClick = {
                                         safMediaLauncher.launch(arrayOf("audio/*"))
                                     },
@@ -951,6 +1107,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
+                                    onShareMedia = onShareMediaCallback,
+                                    onSetRingtoneRequest = onSetRingtoneRequestCallback,
+                                    onShowFileInfoRequest = onShowFileInfoRequestCallback,
                                     onOpenEqualizer = onOpenEqualizerCallback,
                                     onClearHistoryOnly = { viewModel.clearPlaybackHistoryOnly() },
                                     hasMediaPermission = hasMediaPermission,
@@ -1014,7 +1173,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                 onPreviousClick = { viewModel.skipToPrevious() },
                                 showSidePanelToggle = canFitSideNowPlayingPanel,
                                 isSidePanelOpen = showRightNowPlayingPanel,
-                                onToggleSidePanelClick = toggleSidePanelOrExpandPlayer
+                                onToggleSidePanelClick = toggleSidePanelOrExpandPlayer,
+                                isCompactHeight = isCompactHeight
                             )
                         }
                     }

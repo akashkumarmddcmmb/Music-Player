@@ -884,6 +884,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         _searchQuery.value = query
     }
 
+    fun postStatusBannerMessage(message: String) {
+        _statusBannerMessage.value = message
+    }
+
     fun dismissStatusBanner() {
         _statusBannerMessage.value = null
     }

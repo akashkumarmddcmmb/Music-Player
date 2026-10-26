@@ -12,6 +12,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -137,6 +138,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -158,6 +160,7 @@ import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.HardwareEqualizerState
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.Resilient4KCodecEngine
+import com.example.media.rememberMediaArtworkBitmap
 import com.example.ui.components.formatDurationMillis
 import com.example.ui.components.formatFileSize
 import com.example.viewmodel.AudioTrackOption
@@ -2524,6 +2527,15 @@ private fun StudioCircularAudioArtworkAndWaveform(
     val outerRingSize = if (compactMode) 128.dp else 188.dp
     val innerDiscSize = if (compactMode) 96.dp else 144.dp
     val iconSize = if (compactMode) 32.dp else 44.dp
+    val albumFrameSize = if (compactMode) 136.dp else 212.dp
+    val albumCornerRadius = if (compactMode) 18.dp else 24.dp
+
+    val artworkBitmap by rememberMediaArtworkBitmap(
+        media = currentMedia,
+        artworkData = playbackState.currentArtworkData,
+        artworkUri = playbackState.currentArtworkUri,
+        targetSizePx = if (compactMode) 384 else 640
+    )
 
     Card(
         modifier = Modifier
@@ -2543,68 +2555,108 @@ private fun StudioCircularAudioArtworkAndWaveform(
                 ),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Circular Neon Acoustic Ring + Studio Disc
-            Box(
-                modifier = Modifier.size(outerRingSize),
-                contentAlignment = Alignment.Center
-            ) {
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val strokeWidth = (if (compactMode) 5.dp else 6.dp).toPx()
-                    val radius = (size.minDimension - strokeWidth * 2) / 2f
-                    val center = Offset(size.width / 2f, size.height / 2f)
-                    val progress = if (playbackState.durationMs > 0L) {
-                        (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
-                    } else 0f
-
-                    // Outer studio ring
-                    drawCircle(
-                        color = primaryColor.copy(alpha = 0.22f),
-                        radius = radius,
-                        center = center,
-                        style = Stroke(width = strokeWidth)
-                    )
-
-                    // Active playback arc
-                    drawArc(
-                        brush = Brush.sweepGradient(
-                            listOf(primaryColor, secondaryColor, tertiaryColor, primaryColor)
-                        ),
-                        startAngle = -90f,
-                        sweepAngle = 360f * progress.coerceAtLeast(0.04f),
-                        useCenter = false,
-                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                    )
-                }
-
+            val resolvedCover = artworkBitmap
+            if (resolvedCover != null) {
+                // Real Album Artwork with rounded corners, proper 1:1 aspect ratio, and subtle progress halo
                 Box(
                     modifier = Modifier
-                        .size(innerDiscSize)
-                        .clip(CircleShape)
+                        .size(albumFrameSize)
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(albumCornerRadius))
                         .background(
-                            Brush.radialGradient(
+                            Brush.linearGradient(
                                 colors = listOf(
-                                    primaryColor.copy(alpha = 0.38f),
-                                    secondaryColor.copy(alpha = 0.18f),
-                                    MaterialTheme.colorScheme.surface
+                                    primaryColor.copy(alpha = 0.35f),
+                                    secondaryColor.copy(alpha = 0.25f)
                                 )
                             )
                         )
-                        .border(1.dp, secondaryColor.copy(alpha = 0.4f), CircleShape),
+                        .border(
+                            width = 2.dp,
+                            brush = Brush.sweepGradient(
+                                listOf(primaryColor, secondaryColor, tertiaryColor, primaryColor)
+                            ),
+                            shape = RoundedCornerShape(albumCornerRadius)
+                        )
+                        .padding(3.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = if (playbackState.isPlaying) Icons.Default.GraphicEq else Icons.Default.MusicNote,
-                            contentDescription = null,
-                            tint = secondaryColor,
-                            modifier = Modifier.size(iconSize)
+                    Image(
+                        bitmap = resolvedCover,
+                        contentDescription = "Album artwork for ${currentMedia.title}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(albumCornerRadius - 2.dp))
+                            .testTag("now_playing_album_artwork_image")
+                    )
+                }
+            } else {
+                // Fallback: Circular Neon Acoustic Ring + Studio Disc when no artwork is available
+                Box(
+                    modifier = Modifier
+                        .size(outerRingSize)
+                        .testTag("now_playing_default_artwork_placeholder"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Canvas(modifier = Modifier.fillMaxSize()) {
+                        val strokeWidth = (if (compactMode) 5.dp else 6.dp).toPx()
+                        val radius = (size.minDimension - strokeWidth * 2) / 2f
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        val progress = if (playbackState.durationMs > 0L) {
+                            (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
+                        } else 0f
+
+                        // Outer studio ring
+                        drawCircle(
+                            color = primaryColor.copy(alpha = 0.22f),
+                            radius = radius,
+                            center = center,
+                            style = Stroke(width = strokeWidth)
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = currentMedia.mimeType.substringAfterLast('/').uppercase(),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                        // Active playback arc
+                        drawArc(
+                            brush = Brush.sweepGradient(
+                                listOf(primaryColor, secondaryColor, tertiaryColor, primaryColor)
+                            ),
+                            startAngle = -90f,
+                            sweepAngle = 360f * progress.coerceAtLeast(0.04f),
+                            useCenter = false,
+                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
                         )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(innerDiscSize)
+                            .clip(CircleShape)
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(
+                                        primaryColor.copy(alpha = 0.38f),
+                                        secondaryColor.copy(alpha = 0.18f),
+                                        MaterialTheme.colorScheme.surface
+                                    )
+                                )
+                            )
+                            .border(1.dp, secondaryColor.copy(alpha = 0.4f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = if (playbackState.isPlaying) Icons.Default.GraphicEq else Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = secondaryColor,
+                                modifier = Modifier.size(iconSize)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = currentMedia.mimeType.substringAfterLast('/').uppercase(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -4430,6 +4482,12 @@ fun NowPlayingSidePanel(
                                 .padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val sidePanelArtwork by rememberMediaArtworkBitmap(
+                                media = currentMedia,
+                                artworkData = playbackState.currentArtworkData,
+                                artworkUri = playbackState.currentArtworkUri,
+                                targetSizePx = 160
+                            )
                             Box(
                                 modifier = Modifier
                                     .size(48.dp)
@@ -4443,22 +4501,35 @@ fun NowPlayingSidePanel(
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Icon(
-                                    imageVector = if (currentMedia.mediaType == MediaType.VIDEO) {
-                                        Icons.Default.Movie
-                                    } else if (playbackState.isPlaying) {
-                                        Icons.Default.GraphicEq
-                                    } else {
-                                        Icons.Default.MusicNote
-                                    },
-                                    contentDescription = null,
-                                    tint = if (currentMedia.mediaType == MediaType.VIDEO) {
-                                        MaterialTheme.colorScheme.secondary
-                                    } else {
-                                        MaterialTheme.colorScheme.primary
-                                    },
-                                    modifier = Modifier.size(26.dp)
-                                )
+                                val resolvedSideThumb = sidePanelArtwork
+                                if (resolvedSideThumb != null && currentMedia.mediaType == MediaType.AUDIO) {
+                                    Image(
+                                        bitmap = resolvedSideThumb,
+                                        contentDescription = "Album artwork for ${currentMedia.title}",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .testTag("side_panel_artwork_image")
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = if (currentMedia.mediaType == MediaType.VIDEO) {
+                                            Icons.Default.Movie
+                                        } else if (playbackState.isPlaying) {
+                                            Icons.Default.GraphicEq
+                                        } else {
+                                            Icons.Default.MusicNote
+                                        },
+                                        contentDescription = null,
+                                        tint = if (currentMedia.mediaType == MediaType.VIDEO) {
+                                            MaterialTheme.colorScheme.secondary
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        },
+                                        modifier = Modifier.size(26.dp)
+                                    )
+                                }
                             }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {

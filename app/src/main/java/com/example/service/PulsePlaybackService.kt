@@ -7,6 +7,8 @@ import android.os.Bundle
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -44,7 +46,7 @@ import kotlinx.coroutines.launch
  * lock-screen media controls, audio focus handling, headphone disconnection pause,
  * wake-lock management during screen-off playback, and real-time 5-band Biquad Equalizer + Bass Boost DSP.
  *
- * Exposes [serviceAudioSessionId] and supports [ACTION_GET_AUDIO_SESSION_ID] custom session
+ * Exposes [serviceAudioSessionId], [serviceMediaMetadata], and supports [ACTION_GET_AUDIO_SESSION_ID] custom session
  * command so [com.example.viewmodel.PulsePlayViewModel] and [EqualizerController] always bind
  * to the authoritative service [ExoPlayer] without casting `MediaController` to `ExoPlayer`.
  */
@@ -76,6 +78,18 @@ class PulsePlaybackService : MediaSessionService() {
             if (currentSessionId > 0 && _serviceAudioSessionId.value != currentSessionId) {
                 _serviceAudioSessionId.value = currentSessionId
             }
+            serviceExoPlayer?.mediaMetadata?.let { meta ->
+                _serviceMediaMetadata.value = meta
+            }
+        }
+
+        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+            _serviceMediaMetadata.value = mediaMetadata
+        }
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            _serviceMediaMetadata.value =
+                serviceExoPlayer?.mediaMetadata ?: mediaItem?.mediaMetadata ?: MediaMetadata.EMPTY
         }
     }
 
@@ -90,6 +104,7 @@ class PulsePlaybackService : MediaSessionService() {
 
         exoPlayer.addListener(sessionListener)
         _serviceAudioSessionId.value = exoPlayer.audioSessionId
+        _serviceMediaMetadata.value = exoPlayer.mediaMetadata
 
         // Continuously synchronize persisted Equalizer + Bass Boost & Background Playback preferences
         serviceScope.launch {
@@ -195,6 +210,7 @@ class PulsePlaybackService : MediaSessionService() {
         _serviceExoPlayerFlow.value = null
         _serviceAudioSessionId.value = 0
         _serviceIsPlaying.value = false
+        _serviceMediaMetadata.value = MediaMetadata.EMPTY
         serviceScope.cancel()
         mediaSession?.run {
             player.removeListener(sessionListener)
@@ -220,6 +236,9 @@ class PulsePlaybackService : MediaSessionService() {
 
         private val _serviceIsPlaying = MutableStateFlow(false)
         val serviceIsPlaying: StateFlow<Boolean> = _serviceIsPlaying.asStateFlow()
+
+        private val _serviceMediaMetadata = MutableStateFlow(MediaMetadata.EMPTY)
+        val serviceMediaMetadata: StateFlow<MediaMetadata> = _serviceMediaMetadata.asStateFlow()
 
         /**
          * Builds an [ExoPlayer] instance wired with:

@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -62,6 +64,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -72,6 +75,7 @@ import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
 import com.example.media.DetailedMediaFileInfo
 import com.example.media.MediaFileActionsHelper
+import com.example.media.rememberMediaArtworkBitmap
 import com.example.viewmodel.PlaybackUiState
 
 fun formatDurationMillis(durationMs: Long): String {
@@ -758,22 +762,42 @@ fun PersistentMiniPlayerBar(
                     .padding(horizontal = 10.dp, vertical = if (isCompactHeight) 3.dp else 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                val miniArtwork by rememberMediaArtworkBitmap(
+                    media = current,
+                    artworkData = playbackState.currentArtworkData,
+                    artworkUri = playbackState.currentArtworkUri,
+                    targetSizePx = 144
+                )
+                val thumbSize = if (isCompactHeight) 36.dp else 40.dp
                 Box(
                     modifier = Modifier
-                        .size(if (isCompactHeight) 36.dp else 40.dp)
-                        .clip(CircleShape)
+                        .size(thumbSize)
+                        .clip(RoundedCornerShape(10.dp))
                         .background(MaterialTheme.colorScheme.primaryContainer),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = if (current.mediaType == MediaType.VIDEO) {
-                            Icons.Default.Movie
-                        } else {
-                            Icons.Default.GraphicEq
-                        },
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
-                    )
+                    val resolvedMiniThumb = miniArtwork
+                    if (resolvedMiniThumb != null && current.mediaType == MediaType.AUDIO) {
+                        Image(
+                            bitmap = resolvedMiniThumb,
+                            contentDescription = "Album artwork for ${current.title}",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(10.dp))
+                                .testTag("mini_player_artwork_image")
+                        )
+                    } else {
+                        Icon(
+                            imageVector = if (current.mediaType == MediaType.VIDEO) {
+                                Icons.Default.Movie
+                            } else {
+                                Icons.Default.GraphicEq
+                            },
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.width(10.dp))

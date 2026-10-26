@@ -38,6 +38,7 @@ import com.example.media.ConversionCapabilityRegistry
 import com.example.media.ConversionProfile
 import com.example.media.EqualizerController
 import com.example.media.HardwareEqualizerState
+import com.example.media.MediaArtworkLoader
 import com.example.media.MediaProcessorEngine
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
@@ -49,6 +50,7 @@ import com.example.media.SubtitleLoadResult
 import com.example.media.SubtitleParser
 import com.example.service.PulsePlaybackService
 import com.example.ui.theme.AppThemeMode
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -60,7 +62,9 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Arrays
 
 enum class PrimaryTab {
     HOME,
@@ -142,10 +146,16 @@ data class PlaybackUiState(
     val controllerConnected: Boolean = false,
     val playerGeneration: Int = 0,
     val decoderRecoveryAttempts: Int = 0,
-    val playbackError: String? = null
+    val playbackError: String? = null,
+    val currentArtworkData: ByteArray? = null,
+    val currentArtworkUri: String? = null,
+    val currentArtworkSource: String = "none"
 ) {
     val isSleepTimerActive: Boolean
         get() = sleepTimerRemainingMs > 0L || sleepTimerStopAtEndOfTrack
+
+    val currentArtworkDataHash: Int
+        get() = currentArtworkData?.let { Arrays.hashCode(it) } ?: 0
 }
 
 class PulsePlayViewModel(application: Application) : AndroidViewModel(application) {
@@ -266,6 +276,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private var progressPollingJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var activeProcessingJob: Job? = null
+    private var artworkResolutionJob: Job? = null
     private var lastHistoryWriteTimeMs: Long = 0L
     private val decoderRecoveryAttemptsByUri = object : LinkedHashMap<String, Int>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean = size > 64
@@ -331,10 +342,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 player.isPlaying || (playbackState == Player.STATE_READY && player.mediaItemCount > 0)
             )
             queryServiceAudioSessionIdIfController(player)
+            if (playbackState == Player.STATE_READY) {
+                onPlayerMediaMetadataUpdated(player.mediaMetadata)
+            }
 
             if (playbackState == Player.STATE_ENDED && _playbackState.value.sleepTimerStopAtEndOfTrack) {
                 triggerSleepTimerAutoStop("Sleep Timer: Stopped automatically at end of track.")
             }
+        }
+
+        override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+            onPlayerMediaMetadataUpdated(mediaMetadata)
         }
 
         override fun onRenderedFirstFrame() {
@@ -392,6 +410,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 hasRenderedFirstFrame = false,
                 playbackError = null
             )
+            // Synchronize artwork for the transitioned track using the item's own metadata (never stale previous track metadata)
+            syncAndResolveArtworkForTrack(
+                media = nextEntity,
+                playerMediaMetadata = mediaItem?.mediaMetadata
+            )
             if (nextEntity != null) {
                 autoLoadMatchingSampleSubtitles(nextEntity)
             }
@@ -403,6 +426,122 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
         override fun onPlayerError(error: PlaybackException) {
             handlePlayerError(error)
+        }
+    }
+
+    /**
+     * Updates [_playbackState] when ExoPlayer or [PulsePlaybackService] emits updated [MediaMetadata]
+     * (such as embedded ID3 `APIC` or MP4 `covr` `artworkData` / `artworkUri`) for the active track.
+     */
+    fun onPlayerMediaMetadataUpdated(mediaMetadata: MediaMetadata) {
+        val current = _playbackState.value.currentMedia ?: return
+        // Ensure if MediaMetadata has a title, it either matches the active track or is blank
+        val metaTitle = mediaMetadata.title?.toString()?.trim()
+        if (!metaTitle.isNullOrBlank() &&
+            !metaTitle.equals(current.title.trim(), ignoreCase = true) &&
+            activePlayer?.currentMediaItem?.mediaId != null &&
+            activePlayer?.currentMediaItem?.mediaId != current.uriString
+        ) {
+            return
+        }
+        val bytes = mediaMetadata.artworkData?.takeIf { it.isNotEmpty() }
+        val uri = mediaMetadata.artworkUri?.toString()?.takeIf { it.isNotBlank() }
+        if (bytes != null || uri != null) {
+            MediaArtworkLoader.cacheLiveMediaMetadataArtwork(current.uriString, mediaMetadata)
+            val state = _playbackState.value
+            val nextBytes = bytes ?: state.currentArtworkData
+            val nextUri = uri ?: state.currentArtworkUri
+            val nextSource = when {
+                bytes != null -> "MediaMetadata.artworkData"
+                uri != null -> "MediaMetadata.artworkUri"
+                else -> state.currentArtworkSource
+            }
+            if (!(nextBytes contentEquals state.currentArtworkData) ||
+                nextUri != state.currentArtworkUri ||
+                nextSource != state.currentArtworkSource
+            ) {
+                _playbackState.value = state.copy(
+                    currentArtworkData = nextBytes,
+                    currentArtworkUri = nextUri,
+                    currentArtworkSource = nextSource
+                )
+            }
+        }
+    }
+
+    /**
+     * Synchronously resets or applies cached artwork for [media] so stale artwork from the
+     * previous track never remains visible on Next/Previous/Queue changes, then asynchronously
+     * resolves embedded/MediaStore/MediaMetadata artwork on [Dispatchers.IO].
+     */
+    private fun syncAndResolveArtworkForTrack(
+        media: MediaEntity?,
+        playerMediaMetadata: MediaMetadata? = null
+    ) {
+        artworkResolutionJob?.cancel()
+        if (media == null) {
+            _playbackState.value = _playbackState.value.copy(
+                currentArtworkData = null,
+                currentArtworkUri = null,
+                currentArtworkSource = "none"
+            )
+            return
+        }
+
+        val liveBytes = playerMediaMetadata?.artworkData?.takeIf { it.isNotEmpty() }
+        val liveUri = playerMediaMetadata?.artworkUri?.toString()?.takeIf { it.isNotBlank() }
+        val cached = MediaArtworkLoader.peekCachedArtworkMetadata(media.uriString)
+
+        val immediateBytes = liveBytes ?: cached?.artworkData
+        val immediateUri = liveUri ?: cached?.artworkUri?.toString()
+        val immediateSource = when {
+            liveBytes != null -> "MediaMetadata.artworkData"
+            liveUri != null -> "MediaMetadata.artworkUri"
+            cached != null && cached.hasArtwork -> cached.sourceLabel
+            else -> "none"
+        }
+
+        _playbackState.value = _playbackState.value.copy(
+            currentArtworkData = immediateBytes,
+            currentArtworkUri = immediateUri,
+            currentArtworkSource = immediateSource
+        )
+
+        if (liveBytes != null || liveUri != null) {
+            MediaArtworkLoader.cacheLiveMediaMetadataArtwork(media.uriString, playerMediaMetadata)
+        }
+
+        val app = getApplication<Application>()
+        artworkResolutionJob = viewModelScope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                MediaArtworkLoader.resolveArtworkMetadata(
+                    context = app,
+                    media = media,
+                    playerMetadata = playerMediaMetadata
+                )
+            }
+            if (_playbackState.value.currentMedia?.uriString == media.uriString) {
+                val state = _playbackState.value
+                val bestBytes = state.currentArtworkData?.takeIf { it.isNotEmpty() }
+                    ?: resolved.artworkData
+                val bestUri = state.currentArtworkUri?.takeIf { it.isNotBlank() }
+                    ?: resolved.artworkUri?.toString()
+                val bestSource = if (state.currentArtworkData != null || !state.currentArtworkUri.isNullOrBlank()) {
+                    state.currentArtworkSource
+                } else {
+                    resolved.sourceLabel
+                }
+                if (!(bestBytes contentEquals state.currentArtworkData) ||
+                    bestUri != state.currentArtworkUri ||
+                    bestSource != state.currentArtworkSource
+                ) {
+                    _playbackState.value = state.copy(
+                        currentArtworkData = bestBytes,
+                        currentArtworkUri = bestUri,
+                        currentArtworkSource = bestSource
+                    )
+                }
+            }
         }
     }
 
@@ -604,6 +743,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 )
             }
         }
+        viewModelScope.launch {
+            PulsePlaybackService.serviceMediaMetadata.collect { serviceMeta ->
+                onPlayerMediaMetadataUpdated(serviceMeta)
+            }
+        }
         initializeSingleManagedPlayer()
     }
 
@@ -719,7 +863,41 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             val prefs = preferencesRepository.preferencesFlow.first()
             equalizerController.setStereoBalance(prefs.audioBalance)
             if (snapshot.mediaItems.isEmpty()) {
-                player.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
+                if (player.mediaItemCount > 0) {
+                    val currentAll = allMedia.value
+                    val liveItems = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
+                    val reconstructedQueue = liveItems.mapNotNull { item ->
+                        currentAll.find { it.uriString == item.mediaId }
+                    }
+                    val currentIndex = player.currentMediaItemIndex.coerceAtLeast(0)
+                    val activeEntity = reconstructedQueue.getOrNull(currentIndex)
+                        ?: player.currentMediaItem?.mediaId?.let { id -> currentAll.find { it.uriString == id } }
+                        ?: _playbackState.value.currentMedia
+                    if (activeEntity != null) {
+                        val repeatState = when (player.repeatMode) {
+                            Player.REPEAT_MODE_ONE -> RepeatModeState.ONE
+                            Player.REPEAT_MODE_ALL -> RepeatModeState.ALL
+                            else -> RepeatModeState.OFF
+                        }
+                        _playbackState.value = _playbackState.value.copy(
+                            currentMedia = activeEntity,
+                            queue = if (reconstructedQueue.isNotEmpty()) reconstructedQueue else _playbackState.value.queue,
+                            currentQueueIndex = currentIndex,
+                            isPlaying = player.isPlaying || player.playWhenReady,
+                            currentPositionMs = player.currentPosition.coerceAtLeast(0L),
+                            durationMs = player.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: activeEntity.durationMs,
+                            playbackSpeed = player.playbackParameters.speed,
+                            shuffleEnabled = player.shuffleModeEnabled,
+                            repeatMode = repeatState
+                        )
+                        syncAndResolveArtworkForTrack(activeEntity, player.mediaMetadata)
+                        if (player.isPlaying || player.playWhenReady) {
+                            startProgressPolling()
+                        }
+                    }
+                } else {
+                    player.setPlaybackSpeed(prefs.defaultPlaybackSpeed)
+                }
             } else {
                 val currentAll = allMedia.value
                 val reconstructedQueue = snapshot.mediaItems.mapNotNull { item ->
@@ -744,6 +922,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         shuffleEnabled = snapshot.shuffleModeEnabled,
                         repeatMode = repeatState
                     )
+                    syncAndResolveArtworkForTrack(activeEntity, player.mediaMetadata)
                     if (snapshot.isPlaying || snapshot.playWhenReady) {
                         startProgressPolling()
                     }
@@ -1024,21 +1203,38 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             } else 0L
             val initialSeekMs = if (savedPos in 1000L until (media.durationMs - 1500L)) savedPos else 0L
 
+            val app = getApplication<Application>()
+            val activeResolvedArtwork = withContext(Dispatchers.IO) {
+                MediaArtworkLoader.resolveArtworkMetadata(app, media, null)
+            }
+
             val mediaItems = resolvedQueue.map { item ->
+                val cachedArt = if (item.uriString == media.uriString) {
+                    activeResolvedArtwork
+                } else {
+                    MediaArtworkLoader.peekCachedArtworkMetadata(item.uriString)
+                }
+                val metaBuilder = MediaMetadata.Builder()
+                    .setTitle(item.title)
+                    .setArtist(item.artist)
+                    .setAlbumTitle(item.album)
+                if (cachedArt?.artworkData != null && cachedArt.artworkData.isNotEmpty()) {
+                    metaBuilder.maybeSetArtworkData(
+                        cachedArt.artworkData,
+                        MediaMetadata.PICTURE_TYPE_FRONT_COVER
+                    )
+                }
+                val resolvedArtUri = cachedArt?.artworkUri
+                if (resolvedArtUri != null) {
+                    metaBuilder.setArtworkUri(resolvedArtUri)
+                }
                 MediaItem.Builder()
                     .setMediaId(item.uriString)
                     .setUri(Uri.parse(item.uriString))
-                    .setMediaMetadata(
-                        MediaMetadata.Builder()
-                            .setTitle(item.title)
-                            .setArtist(item.artist)
-                            .setAlbumTitle(item.album)
-                            .build()
-                    )
+                    .setMediaMetadata(metaBuilder.build())
                     .build()
             }
 
-            val app = getApplication<Application>()
             runCatching {
                 app.startService(Intent(app, PulsePlaybackService::class.java))
             }
@@ -1071,6 +1267,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     isPlaying = true,
                     playbackError = null
                 )
+                syncAndResolveArtworkForTrack(media, player.mediaMetadata)
                 startProgressPolling()
                 return@launch
             }
@@ -1127,8 +1324,12 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 durationMs = media.durationMs,
                 playbackSpeed = prefs.defaultPlaybackSpeed,
                 playerGeneration = _playbackState.value.playerGeneration + 1,
-                playbackError = null
+                playbackError = null,
+                currentArtworkData = activeResolvedArtwork.artworkData,
+                currentArtworkUri = activeResolvedArtwork.artworkUri?.toString(),
+                currentArtworkSource = activeResolvedArtwork.sourceLabel
             )
+            syncAndResolveArtworkForTrack(media, player.mediaMetadata)
             startProgressPolling()
         }
     }
@@ -1154,20 +1355,75 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun skipToNext() {
-        val player = activePlayer ?: return
-        if (player.hasNextMediaItem()) {
-            player.seekToNextMediaItem()
-        } else if (_playbackState.value.queue.size > 1) {
-            player.seekTo(0, 0L)
+        val player = activePlayer
+        val queue = _playbackState.value.queue
+        if (player != null && player.mediaItemCount > 0) {
+            if (player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+            } else if (queue.size > 1) {
+                player.seekTo(0, 0L)
+            }
+            val nextIdx = player.currentMediaItemIndex.takeIf { it in queue.indices }
+                ?: ((_playbackState.value.currentQueueIndex + 1) % queue.size.coerceAtLeast(1))
+            val nextEntity = queue.getOrNull(nextIdx)
+            if (nextEntity != null) {
+                _playbackState.value = _playbackState.value.copy(
+                    currentMedia = nextEntity,
+                    currentQueueIndex = nextIdx,
+                    currentPositionMs = 0L,
+                    durationMs = nextEntity.durationMs,
+                    hasRenderedFirstFrame = false
+                )
+                syncAndResolveArtworkForTrack(nextEntity, player.currentMediaItem?.mediaMetadata)
+            }
+        } else if (queue.size > 1) {
+            val nextIdx = (_playbackState.value.currentQueueIndex + 1) % queue.size
+            val nextEntity = queue[nextIdx]
+            _playbackState.value = _playbackState.value.copy(
+                currentMedia = nextEntity,
+                currentQueueIndex = nextIdx,
+                currentPositionMs = 0L,
+                durationMs = nextEntity.durationMs,
+                hasRenderedFirstFrame = false
+            )
+            syncAndResolveArtworkForTrack(nextEntity, null)
         }
     }
 
     fun skipToPrevious() {
-        val player = activePlayer ?: return
-        if (player.currentPosition > 3000L) {
-            player.seekTo(0L)
-        } else if (player.hasPreviousMediaItem()) {
-            player.seekToPreviousMediaItem()
+        val player = activePlayer
+        val queue = _playbackState.value.queue
+        if (player != null && player.mediaItemCount > 0) {
+            if (player.currentPosition > 3000L) {
+                player.seekTo(0L)
+                _playbackState.value = _playbackState.value.copy(currentPositionMs = 0L)
+            } else if (player.hasPreviousMediaItem()) {
+                player.seekToPreviousMediaItem()
+                val prevIdx = player.currentMediaItemIndex.takeIf { it in queue.indices }
+                    ?: (_playbackState.value.currentQueueIndex - 1).coerceAtLeast(0)
+                val prevEntity = queue.getOrNull(prevIdx)
+                if (prevEntity != null) {
+                    _playbackState.value = _playbackState.value.copy(
+                        currentMedia = prevEntity,
+                        currentQueueIndex = prevIdx,
+                        currentPositionMs = 0L,
+                        durationMs = prevEntity.durationMs,
+                        hasRenderedFirstFrame = false
+                    )
+                    syncAndResolveArtworkForTrack(prevEntity, player.currentMediaItem?.mediaMetadata)
+                }
+            }
+        } else if (queue.size > 1 && _playbackState.value.currentQueueIndex > 0) {
+            val prevIdx = _playbackState.value.currentQueueIndex - 1
+            val prevEntity = queue[prevIdx]
+            _playbackState.value = _playbackState.value.copy(
+                currentMedia = prevEntity,
+                currentQueueIndex = prevIdx,
+                currentPositionMs = 0L,
+                durationMs = prevEntity.durationMs,
+                hasRenderedFirstFrame = false
+            )
+            syncAndResolveArtworkForTrack(prevEntity, null)
         }
     }
 
@@ -1350,6 +1606,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             decoderRecoveryAttempts = 0,
             playbackError = null
         )
+        syncAndResolveArtworkForTrack(activeMedia, null)
     }
 
     fun removeQueueItemAt(index: Int) {

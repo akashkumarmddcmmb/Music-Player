@@ -3080,5 +3080,262 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("now_playing_studio_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("now_playing_feature_chips_row").assertDoesNotExist()
     }
+
+    @Test
+    fun `albumArtworkPipeline loadsEmbeddedAndMediaMetadataArtwork updatesOnTrackSwitch andFallsBackCleanly`() {
+        com.example.media.MediaArtworkLoader.clearCache()
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        val coverBytesTrack1 = createTestAlbumCoverPngBytes(android.graphics.Color.rgb(220, 40, 90))
+        val coverBytesTrack2 = createTestAlbumCoverPngBytes(android.graphics.Color.rgb(30, 140, 230))
+
+        val mp3WithApicFile = File(context.cacheDir, "track_with_id3_apic.mp3")
+        writeTestMp3WithId3ApicCover(mp3WithApicFile, coverBytesTrack1)
+
+        val wavWithoutArtFile = File(context.cacheDir, "track_without_artwork.wav")
+        SampleMediaGenerator(context).generateStereoWavFile(wavWithoutArtFile, durationSeconds = 2)
+
+        val trackWithArt = MediaEntity(
+            uriString = Uri.fromFile(mp3WithApicFile).toString(),
+            mediaStoreId = null,
+            title = "Track With Embedded Cover",
+            artist = "PulsePlay Studio",
+            album = "Visual Album",
+            folderName = "Music",
+            durationMs = 180_000L,
+            sizeBytes = mp3WithApicFile.length(),
+            mimeType = "audio/mpeg",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1_700_003_000L
+        )
+
+        val trackWithoutArt = MediaEntity(
+            uriString = Uri.fromFile(wavWithoutArtFile).toString(),
+            mediaStoreId = null,
+            title = "Track Without Cover",
+            artist = "PulsePlay Acoustic",
+            album = "Unplugged",
+            folderName = "Music",
+            durationMs = 120_000L,
+            sizeBytes = wavWithoutArtFile.length(),
+            mimeType = "audio/mpeg",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1_700_003_010L
+        )
+
+        val trackWithMetadataArt = MediaEntity(
+            uriString = "file:///storage/emulated/0/Music/Notification_Metadata_Track.mp3",
+            mediaStoreId = null,
+            title = "Notification Metadata Track",
+            artist = "PulsePlay Live",
+            album = "Session Art",
+            folderName = "Music",
+            durationMs = 200_000L,
+            sizeBytes = 4_096_000L,
+            mimeType = "audio/mpeg",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1_700_003_020L
+        )
+
+        // 1. Verify unified MediaArtworkLoader extracts ID3v2 APIC cover and populates MediaMetadata for both Notification & UI
+        val resolvedApic = com.example.media.MediaArtworkLoader.resolveArtworkMetadata(app, trackWithArt)
+        assertTrue("Embedded ID3v2 APIC artwork should be detected", resolvedApic.hasArtwork)
+        assertNotNull(resolvedApic.artworkData)
+        assertTrue(resolvedApic.artworkData!!.contentEquals(coverBytesTrack1))
+
+        val notificationMediaMetadata = com.example.media.MediaArtworkLoader.buildMediaMetadataForEntity(app, trackWithArt)
+        assertNotNull("MediaMetadata built for MediaSession notification must contain artworkData", notificationMediaMetadata.artworkData)
+        assertTrue(notificationMediaMetadata.artworkData!!.contentEquals(coverBytesTrack1))
+
+        val decodedBitmap = com.example.media.MediaArtworkLoader.loadArtworkBitmapBlocking(
+            context = app,
+            media = trackWithArt,
+            artworkData = resolvedApic.artworkData,
+            artworkUri = null,
+            targetSizePx = 512
+        )
+        assertNotNull("Valid embedded artwork bytes must decode to a non-null Bitmap", decodedBitmap)
+
+        // 2. Verify corrupt artwork bytes never crash and safely return null
+        val corruptBytes = byteArrayOf(0x00, 0x01, 0x02, 0x03, 0x7F)
+        val corruptBitmap = com.example.media.MediaArtworkLoader.loadArtworkBitmapBlocking(
+            context = app,
+            media = trackWithoutArt,
+            artworkData = corruptBytes,
+            artworkUri = null,
+            targetSizePx = 512
+        )
+        assertNull("Corrupt artwork bytes must safely return null without crashing", corruptBitmap)
+
+        // 3. Verify ViewModel queue & track switching (Artwork Track -> No-Artwork Track -> Metadata Artwork Track)
+        vm.setQueue(listOf(trackWithArt, trackWithoutArt, trackWithMetadataArt), initialIndex = 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertNotNull("Active track with embedded art must populate currentArtworkData", vm.playbackState.value.currentArtworkData)
+
+        // Switch to Next track (trackWithoutArt) -> stale artwork from previous track MUST be cleared immediately
+        vm.skipToNext()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackWithoutArt.uriString, vm.playbackState.value.currentMedia?.uriString)
+        assertNull("Switching to a track without artwork must clear previous track's artworkData", vm.playbackState.value.currentArtworkData)
+        assertNull("Switching to a track without artwork must clear previous track's artworkUri", vm.playbackState.value.currentArtworkUri)
+
+        // Switch to Next track (trackWithMetadataArt) and simulate ExoPlayer / Notification MediaMetadata update
+        vm.skipToNext()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackWithMetadataArt.uriString, vm.playbackState.value.currentMedia?.uriString)
+
+        val livePlayerMetadata = androidx.media3.common.MediaMetadata.Builder()
+            .setTitle(trackWithMetadataArt.title)
+            .setArtist(trackWithMetadataArt.artist)
+            .maybeSetArtworkData(coverBytesTrack2, androidx.media3.common.MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+            .build()
+        vm.onPlayerMediaMetadataUpdated(livePlayerMetadata)
+        assertNotNull("Live MediaMetadata.artworkData from ExoPlayer must update PlaybackUiState", vm.playbackState.value.currentArtworkData)
+        assertTrue(vm.playbackState.value.currentArtworkData!!.contentEquals(coverBytesTrack2))
+
+        // Switch Previous back to trackWithoutArt -> must not keep trackWithMetadataArt's photo
+        vm.skipToPrevious()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackWithoutArt.uriString, vm.playbackState.value.currentMedia?.uriString)
+        assertNull(vm.playbackState.value.currentArtworkData)
+
+        // Switch Previous back to trackWithArt -> must restore trackWithArt's cover
+        vm.skipToPrevious()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackWithArt.uriString, vm.playbackState.value.currentMedia?.uriString)
+        assertNotNull(vm.playbackState.value.currentArtworkData)
+        assertTrue(vm.playbackState.value.currentArtworkData!!.contentEquals(coverBytesTrack1))
+
+        // 4. Verify Compose UI renders real album artwork in Now Playing & Mini-Player when available, and placeholder when absent
+        var uiPlaybackState by mutableStateOf(
+            com.example.viewmodel.PlaybackUiState(
+                currentMedia = trackWithArt,
+                queue = listOf(trackWithArt, trackWithoutArt),
+                currentQueueIndex = 0,
+                isPlaying = true,
+                currentPositionMs = 15_000L,
+                durationMs = trackWithArt.durationMs,
+                currentArtworkData = coverBytesTrack1,
+                currentArtworkSource = "EmbeddedPicture"
+            )
+        )
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                androidx.compose.foundation.layout.Column(modifier = Modifier.requiredSize(DpSize(360.dp, 640.dp))) {
+                    com.example.ui.components.PersistentMiniPlayerBar(
+                        playbackState = uiPlaybackState,
+                        isSidePanelOpen = false,
+                        showSidePanelToggle = false,
+                        onExpandClick = {},
+                        onPlayPauseClick = {},
+                        onNextClick = {}
+                    )
+                    Box(modifier = Modifier.weight(1f)) {
+                        NowPlayingOverlayScreen(
+                            playbackState = uiPlaybackState,
+                            userPreferences = UserPreferencesState(),
+                            isFavorite = false,
+                            playerInstance = null,
+                            onCollapse = {},
+                            onPlayPause = {},
+                            onSeekTo = {},
+                            onPrevious = {},
+                            onNext = {},
+                            onToggleShuffle = {},
+                            onCycleRepeat = {},
+                            onSetPlaybackSpeed = {},
+                            onCycleAspectMode = {},
+                            onRotateVideo90 = {},
+                            onToggleFullscreen = {},
+                            onBrightnessGestureDelta = {},
+                            onVolumeGestureDelta = {},
+                            onPickSubtitleFileClick = {},
+                            onToggleSubtitlesEnabled = {},
+                            onSetSubtitleFontScale = {},
+                            onSetSubtitleOffsetMs = {},
+                            onToggleFavorite = {},
+                            onOpenEqualizer = {},
+                            onOpenStudio = {},
+                            onSelectQueueItem = {},
+                            onRemoveQueueItem = {},
+                            onRetryPlayback = {}
+                        )
+                    }
+                }
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        // When artwork is available: real album artwork image is shown in both Now Playing and Mini-Player (no generic MPEG disc placeholder)
+        composeTestRule.onNodeWithTag("now_playing_album_artwork_image").assertExists()
+        composeTestRule.onNodeWithTag("mini_player_artwork_image", useUnmergedTree = true).assertExists()
+        composeTestRule.onNodeWithTag("now_playing_default_artwork_placeholder").assertDoesNotExist()
+
+        // Switch UI state to trackWithoutArt -> default visualizer placeholder is shown and stale album artwork image is gone
+        uiPlaybackState = com.example.viewmodel.PlaybackUiState(
+            currentMedia = trackWithoutArt,
+            queue = listOf(trackWithArt, trackWithoutArt),
+            currentQueueIndex = 1,
+            isPlaying = true,
+            currentPositionMs = 5_000L,
+            durationMs = trackWithoutArt.durationMs,
+            currentArtworkData = null,
+            currentArtworkUri = null
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("now_playing_default_artwork_placeholder").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_album_artwork_image").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("mini_player_artwork_image", useUnmergedTree = true).assertDoesNotExist()
+
+        mp3WithApicFile.delete()
+        wavWithoutArtFile.delete()
+    }
+
+    private fun createTestAlbumCoverPngBytes(color: Int): ByteArray {
+        val bmp = android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888)
+        bmp.eraseColor(color)
+        val out = java.io.ByteArrayOutputStream()
+        bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+        return out.toByteArray()
+    }
+
+    private fun writeTestMp3WithId3ApicCover(targetFile: File, imageBytes: ByteArray) {
+        val mimeBytes = "image/png".toByteArray(Charsets.ISO_8859_1)
+        // APIC payload: encoding(1=0) + mime + 0x00 + picType(1=3 front cover) + desc(0x00) + imageBytes
+        val framePayloadSize = 1 + mimeBytes.size + 1 + 1 + 1 + imageBytes.size
+        val totalTagPayloadSize = 10 + framePayloadSize // 10-byte APIC frame header + payload
+        val out = java.io.ByteArrayOutputStream()
+        // ID3v2.3 header (10 bytes)
+        out.write(byteArrayOf('I'.code.toByte(), 'D'.code.toByte(), '3'.code.toByte(), 3, 0, 0))
+        // Synchsafe 28-bit tag size
+        out.write((totalTagPayloadSize shr 21) and 0x7F)
+        out.write((totalTagPayloadSize shr 14) and 0x7F)
+        out.write((totalTagPayloadSize shr 7) and 0x7F)
+        out.write(totalTagPayloadSize and 0x7F)
+
+        // APIC frame header (10 bytes for ID3v2.3: 4-byte ID + 4-byte big-endian size + 2-byte flags)
+        out.write("APIC".toByteArray(Charsets.ISO_8859_1))
+        out.write((framePayloadSize shr 24) and 0xFF)
+        out.write((framePayloadSize shr 16) and 0xFF)
+        out.write((framePayloadSize shr 8) and 0xFF)
+        out.write(framePayloadSize and 0xFF)
+        out.write(0)
+        out.write(0)
+
+        // APIC frame payload
+        out.write(0) // ISO-8859-1 encoding
+        out.write(mimeBytes)
+        out.write(0) // null terminator for MIME
+        out.write(3) // Front Cover picture type
+        out.write(0) // empty description null terminator
+        out.write(imageBytes)
+
+        // Minimal dummy MPEG frame bytes so file size > 64 bytes
+        out.write(ByteArray(128) { 0xFF.toByte() })
+        targetFile.writeBytes(out.toByteArray())
+    }
 }
+
 

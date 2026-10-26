@@ -66,6 +66,21 @@ class MediaProcessorEngine(
     private val tempDir: File
         get() = File(context.cacheDir, "pulse_processing_tmp").apply { mkdirs() }
 
+    /**
+     * Safely removes any orphaned temporary media processing files left behind by process death.
+     */
+    fun cleanupOrphanedTempFiles(): Int {
+        var deletedCount = 0
+        runCatching {
+            tempDir.listFiles()?.forEach { file ->
+                if (file.isFile && file.delete()) {
+                    deletedCount++
+                }
+            }
+        }
+        return deletedCount
+    }
+
     suspend fun executeAudioTrim(
         sourceMedia: MediaEntity,
         startMs: Long,
@@ -762,10 +777,10 @@ class MediaProcessorEngine(
             }
 
             val mime = inputFormat.getString(MediaFormat.KEY_MIME)!!
-            val sampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+            var sampleRate = if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
                 inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             } else 44100
-            val channels = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+            var channels = if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
                 inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
             } else 2
 
@@ -791,6 +806,7 @@ class MediaProcessorEngine(
                 var totalPcmBytesWritten = 0
                 var inputDone = false
                 var outputDone = false
+                var eosWaitPolls = 0
                 val bufferInfo = MediaCodec.BufferInfo()
                 val durationWindowUs = (endUs - startUs).coerceAtLeast(1_000L)
 
@@ -819,26 +835,42 @@ class MediaProcessorEngine(
                     }
 
                     val outIdx = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
-                    if (outIdx >= 0) {
-                        val outBuf = decoder.getOutputBuffer(outIdx)
-                        if (outBuf != null && bufferInfo.size > 0 && bufferInfo.presentationTimeUs >= startUs) {
-                            val chunk = ByteArray(bufferInfo.size)
-                            outBuf.position(bufferInfo.offset)
-                            outBuf.limit(bufferInfo.offset + bufferInfo.size)
-                            outBuf.get(chunk)
-                            raf.write(chunk)
-                            totalPcmBytesWritten += chunk.size
+                    when {
+                        outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                            eosWaitPolls = 0
+                            val outFmt = decoder.outputFormat
+                            if (outFmt.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                                sampleRate = outFmt.getInteger(MediaFormat.KEY_SAMPLE_RATE).coerceIn(8000, 96000)
+                            }
+                            if (outFmt.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                                channels = outFmt.getInteger(MediaFormat.KEY_CHANNEL_COUNT).coerceIn(1, 2)
+                            }
+                        }
+                        outIdx >= 0 -> {
+                            eosWaitPolls = 0
+                            val outBuf = decoder.getOutputBuffer(outIdx)
+                            if (outBuf != null && bufferInfo.size > 0 && bufferInfo.presentationTimeUs >= startUs) {
+                                val chunk = ByteArray(bufferInfo.size)
+                                outBuf.position(bufferInfo.offset)
+                                outBuf.limit(bufferInfo.offset + bufferInfo.size)
+                                outBuf.get(chunk)
+                                raf.write(chunk)
+                                totalPcmBytesWritten += chunk.size
 
-                            val pct = (10 + ((bufferInfo.presentationTimeUs - startUs).coerceAtLeast(0L) * 85L / durationWindowUs))
-                                .toInt().coerceIn(10, 95)
-                            onProgress(pct)
+                                val pct = (10 + ((bufferInfo.presentationTimeUs - startUs).coerceAtLeast(0L) * 85L / durationWindowUs))
+                                    .toInt().coerceIn(10, 95)
+                                onProgress(pct)
+                            }
+                            decoder.releaseOutputBuffer(outIdx, false)
+                            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                outputDone = true
+                            }
                         }
-                        decoder.releaseOutputBuffer(outIdx, false)
-                        if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                            outputDone = true
+                        outIdx == MediaCodec.INFO_TRY_AGAIN_LATER && inputDone -> {
+                            if (++eosWaitPolls >= 100) {
+                                break
+                            }
                         }
-                    } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER && inputDone) {
-                        break
                     }
                 }
 

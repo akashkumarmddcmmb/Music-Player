@@ -49,7 +49,17 @@ import com.example.media.SubtitleFormat
 import com.example.media.SubtitleLoadResult
 import com.example.media.SubtitleParser
 import com.example.service.PulsePlaybackService
+import com.example.ui.components.InAppNotification
+import com.example.ui.components.InAppNotificationManager
+import com.example.ui.components.InAppNotificationType
 import com.example.ui.theme.AppThemeMode
+import com.example.update.AppUpdateManager
+import com.example.update.GitHubReleaseInfo
+import com.example.update.PlayStoreUpdateState
+import com.example.update.UpdateCheckState
+import com.example.update.UpdateDistributionChannel
+import com.example.update.UpdateManager
+import com.example.update.UpdateSourceEvaluation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -167,6 +177,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     val preferencesRepository = UserPreferencesRepository(application)
     val processorEngine = MediaProcessorEngine(application, dao)
     val equalizerController = EqualizerController()
+    val appUpdateManager = AppUpdateManager(application)
+    val updateManager = UpdateManager(
+        context = application,
+        appUpdateManager = appUpdateManager,
+        externalScope = viewModelScope
+    )
+    val updateState: StateFlow<UpdateCheckState> = updateManager.gitHubState
+    val playStoreUpdateState: StateFlow<PlayStoreUpdateState> = updateManager.playStoreState
+    val updateSourceEvaluation: StateFlow<UpdateSourceEvaluation> = updateManager.sourceEvaluation
+    val activeUpdateChannel: StateFlow<UpdateDistributionChannel> = updateManager.activeChannel
+    val updatePolicyBlockMessage: StateFlow<String?> = updateManager.lastPolicyBlockMessage
 
     // Navigation & Overlay States
     private val tabBackStack = ArrayDeque<PrimaryTab>()
@@ -216,8 +237,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     val isScanningLibrary: StateFlow<Boolean> = _isScanningLibrary.asStateFlow()
     private var pendingRescanAfterCurrent: Boolean = false
 
-    private val _statusBannerMessage = MutableStateFlow<String?>(null)
-    val statusBannerMessage: StateFlow<String?> = _statusBannerMessage.asStateFlow()
+    val notificationManager = InAppNotificationManager(viewModelScope)
+    val statusBannerNotification: StateFlow<InAppNotification?> = notificationManager.currentNotification
+    val statusBannerMessage: StateFlow<String?> = notificationManager.currentMessage
 
     // Preferences & Equalizer State
     val userPreferences: StateFlow<UserPreferencesState> = preferencesRepository.preferencesFlow
@@ -276,7 +298,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private var progressPollingJob: Job? = null
     private var sleepTimerJob: Job? = null
     private var activeProcessingJob: Job? = null
+    private var activeUpdateJob: Job? = null
     private var artworkResolutionJob: Job? = null
+    private var subtitleErrorAutoDismissJob: Job? = null
     private var lastHistoryWriteTimeMs: Long = 0L
     private val decoderRecoveryAttemptsByUri = object : LinkedHashMap<String, Int>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean = size > 64
@@ -377,6 +401,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 viewModelScope.launch {
                     val prefs = userPreferences.first()
                     equalizerController.setStereoBalance(prefs.audioBalance)
+                    equalizerController.setPreampGainDb(prefs.preampGainDb)
                     equalizerController.bindToAudioSession(
                         audioSessionId = audioSessionId,
                         enabled = prefs.equalizerEnabled,
@@ -415,9 +440,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 media = nextEntity,
                 playerMediaMetadata = mediaItem?.mediaMetadata
             )
-            if (nextEntity != null) {
-                autoLoadMatchingSampleSubtitles(nextEntity)
-            }
+            resetOrLoadCompanionSubtitleForMedia(nextEntity)
         }
 
         override fun onTracksChanged(tracks: Tracks) {
@@ -675,6 +698,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                processorEngine.cleanupOrphanedTempFiles()
+            }
             dao.recoverInterruptedJobsOnStartup()
             refreshLibrary()
         }
@@ -690,9 +716,13 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             val initialPrefs = preferencesRepository.preferencesFlow.first()
+            initialPrefs.selectedUpdateChannel?.let { savedChannel ->
+                updateManager.selectChannel(savedChannel)
+            }
             Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
                 initialPrefs.allowExperimental4kSoftwareFallback
             equalizerController.setStereoBalance(initialPrefs.audioBalance)
+            equalizerController.setPreampGainDb(initialPrefs.preampGainDb)
             equalizerController.bindToAudioSession(
                 audioSessionId = PulsePlaybackService.serviceAudioSessionId.value,
                 enabled = initialPrefs.equalizerEnabled,
@@ -707,6 +737,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
                     prefs.allowExperimental4kSoftwareFallback
                 equalizerController.setStereoBalance(prefs.audioBalance)
+                equalizerController.setPreampGainDb(prefs.preampGainDb)
                 val currentSession = equalizerController.state.value
                 val effectiveEnabled = prefs.equalizerEnabled
                 val effectiveBands = if (currentSession.bands.any { it.currentLevelMb != 0 }) {
@@ -862,6 +893,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             val prefs = preferencesRepository.preferencesFlow.first()
             equalizerController.setStereoBalance(prefs.audioBalance)
+            equalizerController.setPreampGainDb(prefs.preampGainDb)
             if (snapshot.mediaItems.isEmpty()) {
                 if (player.mediaItemCount > 0) {
                     val currentAll = allMedia.value
@@ -1063,12 +1095,20 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         _searchQuery.value = query
     }
 
-    fun postStatusBannerMessage(message: String) {
-        _statusBannerMessage.value = message
+    fun postStatusBannerMessage(
+        message: String,
+        type: InAppNotificationType = InAppNotificationManager.classifyMessage(message),
+        durationMs: Long = notificationManager.defaultAutoDismissDurationMs
+    ) {
+        notificationManager.show(
+            message = message,
+            type = type,
+            durationMs = durationMs
+        )
     }
 
     fun dismissStatusBanner() {
-        _statusBannerMessage.value = null
+        notificationManager.dismiss()
     }
 
     fun onPermissionResult(granted: Boolean, permanentlyDenied: Boolean = false) {
@@ -1099,7 +1139,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         _studioTargetMedia.value = allMedia.value.firstOrNull()
                     }
                     if (showStatusFeedback) {
-                        _statusBannerMessage.value = "Scanned $count audio & video files across all folders."
+                        postStatusBannerMessage(
+                            "Scanned $count audio & video files across all folders.",
+                            InAppNotificationType.TEMPORARY_SUCCESS
+                        )
                     }
                 } while (pendingRescanAfterCurrent)
             } finally {
@@ -1114,7 +1157,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val generated = sampleGenerator.ensureLegalSampleMediaGenerated()
                 dao.upsertMediaItems(generated)
-                _statusBannerMessage.value = "Generated & verified ${generated.size} legal studio audio/video/subtitle fixtures."
+                postStatusBannerMessage(
+                    "Generated & verified ${generated.size} legal studio audio/video/subtitle fixtures.",
+                    InAppNotificationType.TEMPORARY_SUCCESS
+                )
             } finally {
                 _isScanningLibrary.value = false
             }
@@ -1127,12 +1173,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 is MediaLibraryRepository.SafImportResult.Success -> {
                     val entity = result.entity
                     val typeLabel = if (entity.mediaType == MediaType.VIDEO) "video" else "audio"
-                    _statusBannerMessage.value = "Imported $typeLabel '${entity.title}' (${entity.mimeType})."
+                    postStatusBannerMessage(
+                        "Imported $typeLabel '${entity.title}' (${entity.mimeType}).",
+                        InAppNotificationType.TEMPORARY_SUCCESS
+                    )
                     playMedia(entity, listOf(entity))
                     _isNowPlayingExpanded.value = true
                 }
                 is MediaLibraryRepository.SafImportResult.UnsupportedFormat -> {
-                    _statusBannerMessage.value = result.reason
+                    postStatusBannerMessage(result.reason, InAppNotificationType.PERSISTENT_ERROR)
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
@@ -1140,7 +1189,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 }
                 is MediaLibraryRepository.SafImportResult.CorruptedOrEmpty -> {
-                    _statusBannerMessage.value = result.reason
+                    postStatusBannerMessage(result.reason, InAppNotificationType.PERSISTENT_ERROR)
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
@@ -1148,7 +1197,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     )
                 }
                 is MediaLibraryRepository.SafImportResult.AccessDeniedOrNotFound -> {
-                    _statusBannerMessage.value = result.reason
+                    postStatusBannerMessage(result.reason, InAppNotificationType.PERSISTENT_ERROR)
                     _playbackState.value = _playbackState.value.copy(
                         isPlaying = false,
                         isBuffering = false,
@@ -1177,7 +1226,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         hasRenderedFirstFrame = false,
                         playbackError = corruptMsg
                     )
-                    _statusBannerMessage.value = corruptMsg
+                    postStatusBannerMessage(corruptMsg, InAppNotificationType.PERSISTENT_ERROR)
                     return@launch
                 }
             }
@@ -1191,7 +1240,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     hasRenderedFirstFrame = false,
                     playbackError = "File unavailable: '${media.title}' was moved, deleted, or its URI permission was revoked."
                 )
-                _statusBannerMessage.value = "File unavailable: ${media.title}"
+                postStatusBannerMessage("File unavailable: ${media.title}", InAppNotificationType.PERSISTENT_ERROR)
                 return@launch
             }
 
@@ -1300,6 +1349,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
             val sessionId = resolveActiveAudioSessionId(player)
             equalizerController.setStereoBalance(prefs.audioBalance)
+            equalizerController.setPreampGainDb(prefs.preampGainDb)
             equalizerController.bindToAudioSession(
                 audioSessionId = sessionId,
                 enabled = prefs.equalizerEnabled,
@@ -1309,8 +1359,6 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 isPlaybackActive = true
             )
             queryServiceAudioSessionIdIfController(player)
-
-            autoLoadMatchingSampleSubtitles(media)
 
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = media,
@@ -1329,6 +1377,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 currentArtworkUri = activeResolvedArtwork.artworkUri?.toString(),
                 currentArtworkSource = activeResolvedArtwork.sourceLabel
             )
+            resetOrLoadCompanionSubtitleForMedia(media)
             syncAndResolveArtworkForTrack(media, player.mediaMetadata)
             startProgressPolling()
         }
@@ -1374,6 +1423,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     durationMs = nextEntity.durationMs,
                     hasRenderedFirstFrame = false
                 )
+                resetOrLoadCompanionSubtitleForMedia(nextEntity)
                 syncAndResolveArtworkForTrack(nextEntity, player.currentMediaItem?.mediaMetadata)
             }
         } else if (queue.size > 1) {
@@ -1386,6 +1436,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 durationMs = nextEntity.durationMs,
                 hasRenderedFirstFrame = false
             )
+            resetOrLoadCompanionSubtitleForMedia(nextEntity)
             syncAndResolveArtworkForTrack(nextEntity, null)
         }
     }
@@ -1410,6 +1461,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         durationMs = prevEntity.durationMs,
                         hasRenderedFirstFrame = false
                     )
+                    resetOrLoadCompanionSubtitleForMedia(prevEntity)
                     syncAndResolveArtworkForTrack(prevEntity, player.currentMediaItem?.mediaMetadata)
                 }
             }
@@ -1423,6 +1475,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 durationMs = prevEntity.durationMs,
                 hasRenderedFirstFrame = false
             )
+            resetOrLoadCompanionSubtitleForMedia(prevEntity)
             syncAndResolveArtworkForTrack(prevEntity, null)
         }
     }
@@ -1464,7 +1517,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 sleepTimerRemainingMs = 0L,
                 sleepTimerStopAtEndOfTrack = false
             )
-            _statusBannerMessage.value = "Sleep Timer turned off."
+            postStatusBannerMessage("Sleep Timer turned off.", InAppNotificationType.TEMPORARY_INFO)
             return
         }
 
@@ -1474,7 +1527,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             sleepTimerRemainingMs = totalMs,
             sleepTimerStopAtEndOfTrack = false
         )
-        _statusBannerMessage.value = "Sleep Timer set for $minutes min (automatic stop)."
+        postStatusBannerMessage(
+            "Sleep Timer set for $minutes min (automatic stop).",
+            InAppNotificationType.TEMPORARY_INFO
+        )
 
         sleepTimerJob = viewModelScope.launch {
             while (isActive && _playbackState.value.sleepTimerRemainingMs > 0L) {
@@ -1491,11 +1547,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             sleepTimerRemainingMs = 0L,
             sleepTimerStopAtEndOfTrack = enabled
         )
-        _statusBannerMessage.value = if (enabled) {
-            "Sleep Timer: Will automatically stop at the end of the current track."
-        } else {
-            "Sleep Timer turned off."
-        }
+        postStatusBannerMessage(
+            if (enabled) {
+                "Sleep Timer: Will automatically stop at the end of the current track."
+            } else {
+                "Sleep Timer turned off."
+            },
+            InAppNotificationType.TEMPORARY_INFO
+        )
     }
 
     fun cancelSleepTimer() {
@@ -1527,7 +1586,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             sleepTimerRemainingMs = 0L,
             sleepTimerStopAtEndOfTrack = false
         )
-        _statusBannerMessage.value = message
+        postStatusBannerMessage(message, InAppNotificationType.TEMPORARY_INFO)
     }
 
     fun cycleVideoAspectMode() {
@@ -1593,7 +1652,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         decoderRecoveryAttempts = 0,
                         playbackError = corruptMsg
                     )
-                    _statusBannerMessage.value = corruptMsg
+                    postStatusBannerMessage(corruptMsg, InAppNotificationType.PERSISTENT_ERROR)
                     return
                 }
             }
@@ -1606,6 +1665,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             decoderRecoveryAttempts = 0,
             playbackError = null
         )
+        if (activeMedia?.uriString != current.currentMedia?.uriString) {
+            resetOrLoadCompanionSubtitleForMedia(activeMedia)
+        }
         syncAndResolveArtworkForTrack(activeMedia, null)
     }
 
@@ -1653,23 +1715,54 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             queueItems.forEach { item ->
                 mediaRepository.addMediaToPlaylist(plId, item.uriString)
             }
-            _statusBannerMessage.value = "Saved queue (${queueItems.size} tracks) to playlist '${playlistName.trim()}'"
+            postStatusBannerMessage(
+                "Saved queue (${queueItems.size} tracks) to playlist '${playlistName.trim()}'",
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
         }
     }
 
     // --- Synchronized Lyrics & Subtitles (SRT & WebVTT for Both Audio & Video) ---
-    private fun autoLoadMatchingSampleSubtitles(media: MediaEntity) {
-        val sampleSubs = sampleGenerator.getBundledSampleSubtitleFiles()
-        val preferredFile = if (media.mediaType == MediaType.AUDIO) {
-            // Prefer WebVTT or SRT synchronized lyrics for studio audio tracks
-            sampleSubs.firstOrNull { it.extension.equals("vtt", true) }
-                ?: sampleSubs.firstOrNull { it.extension.equals("srt", true) }
-        } else {
-            sampleSubs.firstOrNull { it.extension.equals("srt", true) }
-                ?: sampleSubs.firstOrNull { it.extension.equals("vtt", true) }
+    private fun scheduleTemporarySubtitleErrorDismiss(errorMsg: String) {
+        subtitleErrorAutoDismissJob?.cancel()
+        subtitleErrorAutoDismissJob = viewModelScope.launch {
+            delay(notificationManager.defaultAutoDismissDurationMs)
+            if (_playbackState.value.subtitleError == errorMsg) {
+                _playbackState.value = _playbackState.value.copy(subtitleError = null)
+            }
         }
-        if (preferredFile != null && preferredFile.exists()) {
-            loadSubtitleFromFile(preferredFile)
+    }
+
+    private fun resetOrLoadCompanionSubtitleForMedia(media: MediaEntity?) {
+        subtitleErrorAutoDismissJob?.cancel()
+        // Always clear any subtitle cues from the previous track so stale or sample text never persists
+        _playbackState.value = _playbackState.value.copy(
+            loadedSubtitleName = null,
+            loadedSubtitleFormat = null,
+            loadedSubtitleCues = emptyList(),
+            activeSubtitleText = null,
+            subtitleError = null
+        )
+        if (media == null || media.isGeneratedSample) return
+        val parsedUri = Uri.parse(media.uriString)
+        if (parsedUri.scheme != "file") return
+        val mediaFile = parsedUri.path?.let { File(it) } ?: return
+        val parentDir = mediaFile.parentFile ?: return
+        val baseName = mediaFile.nameWithoutExtension
+        if (baseName.isBlank() || baseName.equals("Pulse_Cinema_Test_Reel", ignoreCase = true)) return
+
+        val companionFile = listOf(
+            File(parentDir, "$baseName.srt"),
+            File(parentDir, "$baseName.vtt")
+        ).firstOrNull { candidate ->
+            if (!candidate.exists() || !candidate.isFile) return@firstOrNull false
+            val text = runCatching { candidate.readText() }.getOrDefault("")
+            !text.contains("Adjust font scale or sync offset in real time") &&
+                !text.contains("PulsePlay WebVTT Subtitle Stream Active") &&
+                !text.contains("Welcome to PulsePlay Original Cinema Engine")
+        }
+        if (companionFile != null) {
+            loadSubtitleFromFile(companionFile)
         }
     }
 
@@ -1678,6 +1771,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             val raw = runCatching { file.readText() }.getOrDefault("")
             when (val res = SubtitleParser.parseSubtitleContent(raw, file.name)) {
                 is SubtitleLoadResult.Success -> {
+                    subtitleErrorAutoDismissJob?.cancel()
                     _playbackState.value = _playbackState.value.copy(
                         loadedSubtitleName = res.sourceName,
                         loadedSubtitleFormat = res.format,
@@ -1690,6 +1784,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     _playbackState.value = _playbackState.value.copy(
                         subtitleError = res.reason
                     )
+                    scheduleTemporarySubtitleErrorDismiss(res.reason)
                 }
             }
         }
@@ -1704,6 +1799,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             )
             when (res) {
                 is SubtitleLoadResult.Success -> {
+                    subtitleErrorAutoDismissJob?.cancel()
                     _playbackState.value = _playbackState.value.copy(
                         loadedSubtitleName = res.sourceName,
                         loadedSubtitleFormat = res.format,
@@ -1711,13 +1807,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                         subtitleError = null
                     )
                     updateSubtitleCueForPosition(_playbackState.value.currentPositionMs)
-                    _statusBannerMessage.value = "Loaded ${res.format} lyrics/subtitles (${res.cues.size} cues)."
+                    postStatusBannerMessage(
+                        "Loaded ${res.format} lyrics/subtitles (${res.cues.size} cues).",
+                        InAppNotificationType.TEMPORARY_SUCCESS
+                    )
                 }
                 is SubtitleLoadResult.Error -> {
                     _playbackState.value = _playbackState.value.copy(
                         subtitleError = res.reason
                     )
-                    _statusBannerMessage.value = res.reason
+                    scheduleTemporarySubtitleErrorDismiss(res.reason)
+                    postStatusBannerMessage(res.reason, InAppNotificationType.TEMPORARY_WARNING)
                 }
             }
         }
@@ -1791,10 +1891,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    fun onAppBackgrounded() {
+    fun onAppBackgrounded(isEnteringPictureInPicture: Boolean = false) {
+        if (isEnteringPictureInPicture) {
+            return
+        }
         isAppInForeground = false
         stopProgressPolling()
         persistCurrentPlaybackPosition(force = true)
+        if (!userPreferences.value.backgroundPlaybackEnabled && activePlayer?.isPlaying == true) {
+            activePlayer?.pause()
+            _playbackState.value = _playbackState.value.copy(isPlaying = false)
+        }
     }
 
     private fun stopProgressPolling() {
@@ -1854,11 +1961,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun toggleFavorite(media: MediaEntity) {
         viewModelScope.launch {
             val added = mediaRepository.toggleFavorite(media.uriString)
-            _statusBannerMessage.value = if (added) {
-                "Added '${media.title}' to Favorites"
-            } else {
-                "Removed '${media.title}' from Favorites"
-            }
+            postStatusBannerMessage(
+                if (added) {
+                    "Added '${media.title}' to Favorites"
+                } else {
+                    "Removed '${media.title}' from Favorites"
+                },
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
         }
     }
 
@@ -1866,7 +1976,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         if (name.isBlank()) return
         viewModelScope.launch {
             mediaRepository.createPlaylist(name, description)
-            _statusBannerMessage.value = "Created playlist '$name'"
+            postStatusBannerMessage("Created playlist '$name'", InAppNotificationType.TEMPORARY_SUCCESS)
         }
     }
 
@@ -1876,14 +1986,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             if (_selectedPlaylistId.value == playlistId) {
                 _selectedPlaylistId.value = null
             }
-            _statusBannerMessage.value = "Playlist deleted"
+            postStatusBannerMessage("Playlist deleted", InAppNotificationType.TEMPORARY_INFO)
         }
     }
 
     fun addTrackToPlaylist(playlistId: Long, media: MediaEntity) {
         viewModelScope.launch {
             mediaRepository.addMediaToPlaylist(playlistId, media.uriString)
-            _statusBannerMessage.value = "Added '${media.title}' to playlist"
+            postStatusBannerMessage("Added '${media.title}' to playlist", InAppNotificationType.TEMPORARY_SUCCESS)
         }
     }
 
@@ -1910,6 +2020,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setPreampGainDb(gainDb: Float) {
         equalizerController.setPreampGainDb(gainDb)
+        viewModelScope.launch {
+            preferencesRepository.setPreampGainDb(gainDb)
+        }
     }
 
     private fun saveEqualizerToPreferences() {
@@ -1936,10 +2049,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             val outcome = processorEngine.executeAudioTrim(source, startMs, endMs, outputExt)
             when (outcome) {
                 is ProcessingOutcome.Success -> {
-                    _statusBannerMessage.value = outcome.summary
+                    postStatusBannerMessage(outcome.summary, InAppNotificationType.TEMPORARY_SUCCESS)
                 }
                 is ProcessingOutcome.Failure -> {
-                    _statusBannerMessage.value = outcome.errorMessage
+                    postStatusBannerMessage(outcome.errorMessage, InAppNotificationType.PERSISTENT_ERROR)
                 }
             }
         }
@@ -1963,10 +2076,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             )
             when (outcome) {
                 is ProcessingOutcome.Success -> {
-                    _statusBannerMessage.value = outcome.summary
+                    postStatusBannerMessage(outcome.summary, InAppNotificationType.TEMPORARY_SUCCESS)
                 }
                 is ProcessingOutcome.Failure -> {
-                    _statusBannerMessage.value = outcome.errorMessage
+                    postStatusBannerMessage(outcome.errorMessage, InAppNotificationType.PERSISTENT_ERROR)
                 }
             }
         }
@@ -1988,10 +2101,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             )
             when (outcome) {
                 is ProcessingOutcome.Success -> {
-                    _statusBannerMessage.value = outcome.summary
+                    postStatusBannerMessage(outcome.summary, InAppNotificationType.TEMPORARY_SUCCESS)
                 }
                 is ProcessingOutcome.Failure -> {
-                    _statusBannerMessage.value = outcome.errorMessage
+                    postStatusBannerMessage(outcome.errorMessage, InAppNotificationType.PERSISTENT_ERROR)
                 }
             }
         }
@@ -2000,7 +2113,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun cancelActiveProcessingJob() {
         activeProcessingJob?.cancel()
         activeProcessingJob = null
-        _statusBannerMessage.value = "Active media processing job cancelled."
+        postStatusBannerMessage(
+            "Active media processing job cancelled.",
+            InAppNotificationType.TEMPORARY_INFO
+        )
     }
 
     fun clearCompletedProcessingJobs() {
@@ -2101,7 +2217,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun clearPlaybackHistoryOnly() {
         viewModelScope.launch {
             mediaRepository.clearPlaybackHistoryOnly()
-            _statusBannerMessage.value = "Cleared local playback history. Your media files remain untouched."
+            postStatusBannerMessage(
+                "Cleared local playback history. Your media files remain untouched.",
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
         }
     }
 
@@ -2119,7 +2238,191 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 savedBandLevelsMb = listOf(0, 0, 0, 0, 0),
                 isPlaybackActive = activePlayer?.isPlaying == true
             )
-            _statusBannerMessage.value = "All application preferences reset to defaults."
+            postStatusBannerMessage(
+                "All application preferences reset to defaults.",
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
+        }
+    }
+
+    // --- GitHub Release Auto-Updater Actions ---
+    fun setGitHubRepositorySlug(slug: String) {
+        viewModelScope.launch {
+            preferencesRepository.setGitHubRepositorySlug(slug.trim())
+            postStatusBannerMessage(
+                if (slug.isBlank()) {
+                    "Cleared custom GitHub repository slug."
+                } else {
+                    "Saved GitHub repository: ${AppUpdateManager.normalizeRepositorySlug(slug)}"
+                },
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
+        }
+    }
+
+    fun setIncludePrereleaseUpdates(include: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setIncludePrereleaseUpdates(include)
+        }
+    }
+
+    fun selectUpdateChannel(channel: UpdateDistributionChannel) {
+        updateManager.selectChannel(channel)
+        // Switching providers must not trigger the other provider's update flow or leave stale status messages visible
+        dismissStatusBanner()
+        viewModelScope.launch {
+            preferencesRepository.setSelectedUpdateChannel(channel)
+        }
+    }
+
+    fun checkForAppUpdates() {
+        activeUpdateJob?.cancel()
+        activeUpdateJob = viewModelScope.launch {
+            val prefs = preferencesRepository.preferencesFlow.first()
+            val result = updateManager.checkGitHubUpdates(
+                configuredRepositorySlug = prefs.githubRepositorySlug,
+                includePrereleases = prefs.includePrereleaseUpdates
+            )
+            when (result) {
+                is UpdateCheckState.UpdateAvailable -> {
+                    postStatusBannerMessage(
+                        "Update available: ${result.releaseInfo.tagName} (${result.releaseInfo.apkAsset.name})",
+                        InAppNotificationType.TEMPORARY_INFO
+                    )
+                }
+                is UpdateCheckState.UpToDate -> {
+                    postStatusBannerMessage(
+                        "PulsePlay v${result.installedVersionName} is up to date.",
+                        InAppNotificationType.TEMPORARY_SUCCESS
+                    )
+                }
+                is UpdateCheckState.ConfigurationRequired -> {
+                    postStatusBannerMessage(
+                        result.message,
+                        InAppNotificationType.TEMPORARY_WARNING
+                    )
+                }
+                is UpdateCheckState.VerificationFailed -> {
+                    postStatusBannerMessage(
+                        result.reason,
+                        InAppNotificationType.PERSISTENT_ERROR
+                    )
+                }
+                is UpdateCheckState.NetworkError -> {
+                    postStatusBannerMessage(
+                        result.reason,
+                        InAppNotificationType.PERSISTENT_ERROR
+                    )
+                }
+                else -> {}
+            }
+        }
+    }
+
+    fun downloadAvailableUpdate(releaseInfo: GitHubReleaseInfo) {
+        activeUpdateJob?.cancel()
+        activeUpdateJob = viewModelScope.launch {
+            val result = updateManager.downloadAndVerifyGitHubUpdate(releaseInfo)
+            when (result) {
+                is UpdateCheckState.ReadyToInstall -> {
+                    postStatusBannerMessage(
+                        "Verified ${result.releaseInfo.apkAsset.name} (SHA-256 OK). Ready to install.",
+                        InAppNotificationType.TEMPORARY_SUCCESS
+                    )
+                }
+                is UpdateCheckState.VerificationFailed -> {
+                    postStatusBannerMessage(result.reason, InAppNotificationType.PERSISTENT_ERROR)
+                }
+                is UpdateCheckState.DownloadFailed -> {
+                    postStatusBannerMessage(result.reason, InAppNotificationType.PERSISTENT_ERROR)
+                }
+                else -> {}
+            }
+        }
+    }
+
+    fun cancelUpdateDownload() {
+        updateManager.cancelGitHubDownload()
+        activeUpdateJob?.cancel()
+        activeUpdateJob = null
+        postStatusBannerMessage("Update download cancelled.", InAppNotificationType.TEMPORARY_INFO)
+    }
+
+    fun installVerifiedUpdate() {
+        val launched = updateManager.installVerifiedGitHubUpdate()
+        if (!launched) {
+            val st = updateManager.gitHubState.value
+            if (st is UpdateCheckState.InstallationPending && st.requiresUnknownSourcesPermission) {
+                postStatusBannerMessage(st.statusMessage, InAppNotificationType.PERSISTENT_ERROR)
+            } else if (st is UpdateCheckState.VerificationFailed) {
+                postStatusBannerMessage(st.reason, InAppNotificationType.PERSISTENT_ERROR)
+            }
+        }
+    }
+
+    fun checkForPlayStoreUpdates() {
+        activeUpdateJob?.cancel()
+        activeUpdateJob = viewModelScope.launch {
+            val result = updateManager.checkPlayStoreUpdates()
+            when (result) {
+                is PlayStoreUpdateState.UpdateAvailable -> {
+                    postStatusBannerMessage(result.statusMessage, InAppNotificationType.TEMPORARY_INFO)
+                }
+                is PlayStoreUpdateState.NoUpdateAvailable -> {
+                    postStatusBannerMessage(result.statusMessage, InAppNotificationType.TEMPORARY_SUCCESS)
+                }
+                is PlayStoreUpdateState.DownloadedReadyToComplete -> {
+                    postStatusBannerMessage(result.promptMessage, InAppNotificationType.TEMPORARY_INFO)
+                }
+                is PlayStoreUpdateState.DeveloperTriggeredUpdateInProgress -> {
+                    postStatusBannerMessage(result.statusMessage, InAppNotificationType.TEMPORARY_INFO)
+                }
+                is PlayStoreUpdateState.PlayStoreUnavailableOrUnpublished -> {
+                    postStatusBannerMessage(result.reason, InAppNotificationType.TEMPORARY_WARNING)
+                }
+                is PlayStoreUpdateState.UpdateFailed -> {
+                    postStatusBannerMessage(result.reason, InAppNotificationType.PERSISTENT_ERROR)
+                }
+                else -> {}
+            }
+        }
+    }
+
+    fun startPlayFlexibleUpdate(activity: android.app.Activity?) {
+        if (activity == null) return
+        updateManager.startPlayFlexibleUpdate(activity)
+    }
+
+    fun startPlayImmediateUpdate(activity: android.app.Activity?) {
+        if (activity == null) return
+        updateManager.startPlayImmediateUpdate(activity)
+    }
+
+    fun completePlayFlexibleUpdate() {
+        viewModelScope.launch {
+            val completed = updateManager.completePlayFlexibleUpdate()
+            if (completed) {
+                postStatusBannerMessage(
+                    "Completing Google Play update installation...",
+                    InAppNotificationType.TEMPORARY_INFO
+                )
+            }
+        }
+    }
+
+    fun openOfficialPlayStoreListing() {
+        val opened = updateManager.openOfficialPlayStoreListing()
+        if (!opened) {
+            postStatusBannerMessage(
+                "Unable to open Google Play Store listing on this device.",
+                InAppNotificationType.TEMPORARY_WARNING
+            )
+        }
+    }
+
+    fun checkAndResumePlayUpdateIfNeeded(activity: android.app.Activity?) {
+        viewModelScope.launch {
+            updateManager.onActivityResumed(activity)
         }
     }
 
@@ -2151,6 +2454,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         progressPollingJob?.cancel()
         sleepTimerJob?.cancel()
         activeProcessingJob?.cancel()
+        activeUpdateJob?.cancel()
+        artworkResolutionJob?.cancel()
+        subtitleErrorAutoDismissJob?.cancel()
+        notificationManager.cancelPendingJobs()
+        updateManager.cancelPendingDismissJobs()
         equalizerController.releaseEffects()
         activePlayer?.removeListener(playerListener)
         activePlayer = null

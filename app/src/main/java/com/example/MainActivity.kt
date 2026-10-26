@@ -2,6 +2,7 @@ package com.example
 
 import android.Manifest
 import android.app.Activity
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -101,6 +103,8 @@ import com.example.media.MediaFileActionsHelper
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.RingtoneOutcome
 import com.example.media.ShareOutcome
+import com.example.ui.components.InAppNotificationBanner
+import com.example.ui.components.InAppNotificationType
 import com.example.ui.components.MediaFileInformationDialog
 import com.example.ui.components.PersistentMiniPlayerBar
 import com.example.ui.components.RingtonePermissionDialog
@@ -175,6 +179,27 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+private fun enterVideoPictureInPictureMode(
+    activity: Activity?,
+    videoWidth: Int,
+    videoHeight: Int
+): Boolean {
+    if (activity == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false
+    val hasPipFeature = activity.packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)
+    if (!hasPipFeature) return false
+    return runCatching {
+        val rawW = if (videoWidth > 0) videoWidth else 16
+        val rawH = if (videoHeight > 0) videoHeight else 9
+        // Android PiP requires aspect ratio between 1:2.39 and 2.39:1
+        val ratioFloat = (rawW.toFloat() / rawH.toFloat()).coerceIn(0.42f, 2.38f)
+        val num = (ratioFloat * 1000).toInt().coerceAtLeast(100)
+        val params = PictureInPictureParams.Builder()
+            .setAspectRatio(Rational(num, 1000))
+            .build()
+        activity.enterPictureInPictureMode(params)
+    }.getOrDefault(false)
 }
 
 private tailrec fun Context.findHostActivity(): Activity? = when (this) {
@@ -255,11 +280,16 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val videoSurfacePlayer by viewModel.videoSurfacePlayerFlow.collectAsStateWithLifecycle()
     val userPreferences by viewModel.userPreferences.collectAsStateWithLifecycle()
     val eqState by viewModel.equalizerState.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+    val playStoreUpdateState by viewModel.playStoreUpdateState.collectAsStateWithLifecycle()
+    val updateSourceEvaluation by viewModel.updateSourceEvaluation.collectAsStateWithLifecycle()
+    val activeUpdateChannel by viewModel.activeUpdateChannel.collectAsStateWithLifecycle()
+    val updatePolicyBlockMessage by viewModel.updatePolicyBlockMessage.collectAsStateWithLifecycle()
 
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val hasMediaPermission by viewModel.hasMediaPermission.collectAsStateWithLifecycle()
     val permissionPermanentlyDenied by viewModel.permissionPermanentlyDenied.collectAsStateWithLifecycle()
-    val statusBanner by viewModel.statusBannerMessage.collectAsStateWithLifecycle()
+    val statusBannerNotification by viewModel.statusBannerNotification.collectAsStateWithLifecycle()
 
     val isNowPlayingExpanded by viewModel.isNowPlayingExpanded.collectAsStateWithLifecycle()
     val isStudioSheetOpen by viewModel.isStudioSheetOpen.collectAsStateWithLifecycle()
@@ -275,15 +305,24 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         when (val outcome = MediaFileActionsHelper.setAudioAsRingtone(context, media)) {
             is RingtoneOutcome.Success -> {
                 pendingRingtoneMedia = null
-                viewModel.postStatusBannerMessage(outcome.message)
+                viewModel.postStatusBannerMessage(
+                    outcome.message,
+                    InAppNotificationType.TEMPORARY_SUCCESS
+                )
             }
             is RingtoneOutcome.PermissionRequired -> {
                 pendingRingtoneMedia = media
-                viewModel.postStatusBannerMessage(outcome.message)
+                viewModel.postStatusBannerMessage(
+                    outcome.message,
+                    InAppNotificationType.PERSISTENT_ERROR
+                )
             }
             is RingtoneOutcome.Failure -> {
                 pendingRingtoneMedia = null
-                viewModel.postStatusBannerMessage(outcome.errorMessage)
+                viewModel.postStatusBannerMessage(
+                    outcome.errorMessage,
+                    InAppNotificationType.PERSISTENT_ERROR
+                )
             }
         }
     }
@@ -305,6 +344,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 Lifecycle.Event.ON_RESUME -> {
                     isActivityResumed = true
                     viewModel.onAppForegrounded()
+                    viewModel.checkAndResumePlayUpdateIfNeeded(activity)
                     val pending = pendingRingtoneMedia
                     if (pending != null && MediaFileActionsHelper.canWriteSystemSettings(context)) {
                         applyRingtoneForMedia(pending)
@@ -313,9 +353,13 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 Lifecycle.Event.ON_PAUSE,
                 Lifecycle.Event.ON_STOP,
                 Lifecycle.Event.ON_DESTROY -> {
-                    isActivityResumed = false
-                    viewModel.onAppBackgrounded()
-                    PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(activity?.window, false)
+                    val isPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N &&
+                        activity?.isInPictureInPictureMode == true
+                    isActivityResumed = isPip
+                    viewModel.onAppBackgrounded(isEnteringPictureInPicture = isPip)
+                    if (!isPip) {
+                        PlayerHandoffAndVideoPolicy.applyWindowKeepScreenOn(activity?.window, false)
+                    }
                 }
                 else -> Unit
             }
@@ -653,123 +697,158 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
 
     // Full-screen Overlays: Studio Editor or Now Playing
     if (isStudioSheetOpen) {
-        StudioEditorOverlayScreen(
-            allMedia = allMedia,
-            initialTargetMedia = studioTargetMedia,
-            conversionProfiles = viewModel.conversionProfiles,
-            processingJobs = processingJobs,
-            onClose = { viewModel.closeStudioSheet() },
-            onPreviewSegment = { media, startMs ->
-                viewModel.playMedia(media, listOf(media))
-                viewModel.seekTo(startMs)
-            },
-            onRunAudioTrim = { src, start, end, ext ->
-                viewModel.runAudioTrimJob(src, start, end, ext)
-            },
-            onRunVideoTrimRotate = { src, start, end, rot, crop ->
-                viewModel.runVideoTrimAndRotateJob(src, start, end, rot, crop)
-            },
-            onRunConversionOrExtraction = { src, profId, kbps, isExtract ->
-                viewModel.runConversionOrExtractionJob(src, profId, kbps, isExtract)
-            },
-            onCancelActiveJob = { viewModel.cancelActiveProcessingJob() },
-            onClearCompletedJobs = { viewModel.clearCompletedProcessingJobs() },
-            onPlayExportedUri = { outUri ->
-                val exported = allMedia.find { it.uriString == outUri }
-                if (exported != null) {
-                    viewModel.closeStudioSheet()
-                    viewModel.playMedia(exported, allMedia)
-                    viewModel.setNowPlayingExpanded(true)
+        Box(modifier = Modifier.fillMaxSize()) {
+            StudioEditorOverlayScreen(
+                allMedia = allMedia,
+                initialTargetMedia = studioTargetMedia,
+                conversionProfiles = viewModel.conversionProfiles,
+                processingJobs = processingJobs,
+                onClose = { viewModel.closeStudioSheet() },
+                onPreviewSegment = { media, startMs ->
+                    viewModel.playMedia(media, listOf(media))
+                    viewModel.seekTo(startMs)
+                },
+                onRunAudioTrim = { src, start, end, ext ->
+                    viewModel.runAudioTrimJob(src, start, end, ext)
+                },
+                onRunVideoTrimRotate = { src, start, end, rot, crop ->
+                    viewModel.runVideoTrimAndRotateJob(src, start, end, rot, crop)
+                },
+                onRunConversionOrExtraction = { src, profId, kbps, isExtract ->
+                    viewModel.runConversionOrExtractionJob(src, profId, kbps, isExtract)
+                },
+                onCancelActiveJob = { viewModel.cancelActiveProcessingJob() },
+                onClearCompletedJobs = { viewModel.clearCompletedProcessingJobs() },
+                onPlayExportedUri = { outUri ->
+                    val exported = allMedia.find { it.uriString == outUri }
+                    if (exported != null) {
+                        viewModel.closeStudioSheet()
+                        viewModel.playMedia(exported, allMedia)
+                        viewModel.setNowPlayingExpanded(true)
+                    }
                 }
-            }
-        )
+            )
+            InAppNotificationBanner(
+                notification = statusBannerNotification,
+                onDismiss = { viewModel.dismissStatusBanner() },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+            )
+        }
         return
     }
 
     if (isNowPlayingExpanded) {
-        NowPlayingOverlayScreen(
-            playbackState = playbackState,
-            userPreferences = userPreferences,
-            isFavorite = playbackState.currentMedia?.let { favoriteUris.contains(it.uriString) } ?: false,
-            playerInstance = videoSurfacePlayer ?: viewModel.getPlayerInstanceForVideoSurface(),
-            onCollapse = { viewModel.setNowPlayingExpanded(false) },
-            onPlayPause = { viewModel.togglePlayPause() },
-            onSeekTo = { viewModel.seekTo(it) },
-            onPrevious = { viewModel.skipToPrevious() },
-            onNext = { viewModel.skipToNext() },
-            onToggleShuffle = { viewModel.toggleShuffle() },
-            onCycleRepeat = { viewModel.cycleRepeatMode() },
-            onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
-            onCycleAspectMode = { viewModel.cycleVideoAspectMode() },
-            onRotateVideo90 = { viewModel.rotateVideoView90Degrees() },
-            onToggleFullscreen = { viewModel.setFullscreenVideo(it) },
-            onToggleControlsLock = { viewModel.setVideoControlsLocked(it) },
-            onSelectVideoOrientation = { viewModel.setVideoOrientationPreference(it) },
-            onToggleKeepScreenOn = { viewModel.setKeepScreenOnDuringVideo(it) },
-            onToggleVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
-            onBrightnessGestureDelta = { viewModel.adjustBrightnessGesture(it) },
-            onVolumeGestureDelta = { viewModel.adjustVolumeGesture(it) },
-            onPickSubtitleFileClick = {
-                safSubtitleLauncher.launch(arrayOf("text/*", "application/x-subrip", "*/*"))
-            },
-            onToggleSubtitlesEnabled = { viewModel.setSubtitlesEnabled(it) },
-            onSetSubtitleFontScale = { viewModel.setSubtitleFontScale(it) },
-            onSetSubtitleOffsetMs = { viewModel.setSubtitleSyncOffsetMs(it) },
-            onSetSleepTimerMinutes = { viewModel.setSleepTimerMinutes(it) },
-            onSetSleepTimerEndOfTrack = { viewModel.setSleepTimerEndOfTrack(it) },
-            onToggleFavorite = {
-                playbackState.currentMedia?.let { viewModel.toggleFavorite(it) }
-            },
-            onOpenEqualizer = { viewModel.setEqualizerSheetOpen(true) },
-            onOpenStudio = {
-                viewModel.setNowPlayingExpanded(false)
-                viewModel.openStudioForMedia(playbackState.currentMedia)
-            },
-            onShareCurrentMedia = {
-                playbackState.currentMedia?.let { media ->
-                    when (val outcome = MediaFileActionsHelper.shareMediaFile(context, media)) {
-                        is ShareOutcome.Success -> {
-                            viewModel.postStatusBannerMessage(
-                                "Sharing '${media.title}' (${outcome.mimeType})"
-                            )
-                        }
-                        is ShareOutcome.Failure -> {
-                            viewModel.postStatusBannerMessage(outcome.errorMessage)
+        Box(modifier = Modifier.fillMaxSize()) {
+            NowPlayingOverlayScreen(
+                playbackState = playbackState,
+                userPreferences = userPreferences,
+                isFavorite = playbackState.currentMedia?.let { favoriteUris.contains(it.uriString) } ?: false,
+                playerInstance = videoSurfacePlayer ?: viewModel.getPlayerInstanceForVideoSurface(),
+                onCollapse = { viewModel.setNowPlayingExpanded(false) },
+                onPlayPause = { viewModel.togglePlayPause() },
+                onSeekTo = { viewModel.seekTo(it) },
+                onPrevious = { viewModel.skipToPrevious() },
+                onNext = { viewModel.skipToNext() },
+                onToggleShuffle = { viewModel.toggleShuffle() },
+                onCycleRepeat = { viewModel.cycleRepeatMode() },
+                onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
+                onCycleAspectMode = { viewModel.cycleVideoAspectMode() },
+                onRotateVideo90 = { viewModel.rotateVideoView90Degrees() },
+                onToggleFullscreen = { viewModel.setFullscreenVideo(it) },
+                onToggleControlsLock = { viewModel.setVideoControlsLocked(it) },
+                onSelectVideoOrientation = { viewModel.setVideoOrientationPreference(it) },
+                onToggleKeepScreenOn = { viewModel.setKeepScreenOnDuringVideo(it) },
+                onToggleVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
+                onBrightnessGestureDelta = { viewModel.adjustBrightnessGesture(it) },
+                onVolumeGestureDelta = { viewModel.adjustVolumeGesture(it) },
+                onPickSubtitleFileClick = {
+                    safSubtitleLauncher.launch(arrayOf("text/*", "application/x-subrip", "*/*"))
+                },
+                onToggleSubtitlesEnabled = { viewModel.setSubtitlesEnabled(it) },
+                onSetSubtitleFontScale = { viewModel.setSubtitleFontScale(it) },
+                onSetSubtitleOffsetMs = { viewModel.setSubtitleSyncOffsetMs(it) },
+                onSetSleepTimerMinutes = { viewModel.setSleepTimerMinutes(it) },
+                onSetSleepTimerEndOfTrack = { viewModel.setSleepTimerEndOfTrack(it) },
+                onToggleFavorite = {
+                    playbackState.currentMedia?.let { viewModel.toggleFavorite(it) }
+                },
+                onOpenEqualizer = { viewModel.setEqualizerSheetOpen(true) },
+                onOpenStudio = {
+                    viewModel.setNowPlayingExpanded(false)
+                    viewModel.openStudioForMedia(playbackState.currentMedia)
+                },
+                onShareCurrentMedia = {
+                    playbackState.currentMedia?.let { media ->
+                        when (val outcome = MediaFileActionsHelper.shareMediaFile(context, media)) {
+                            is ShareOutcome.Success -> {
+                                viewModel.postStatusBannerMessage(
+                                    "Sharing '${media.title}' (${outcome.mimeType})",
+                                    InAppNotificationType.TEMPORARY_INFO
+                                )
+                            }
+                            is ShareOutcome.Failure -> {
+                                viewModel.postStatusBannerMessage(
+                                    outcome.errorMessage,
+                                    InAppNotificationType.PERSISTENT_ERROR
+                                )
+                            }
                         }
                     }
+                },
+                onSetRingtoneCurrentMedia = {
+                    playbackState.currentMedia?.let { media ->
+                        applyRingtoneForMedia(media)
+                    }
+                },
+                onAddToPlaylistCurrentMedia = {
+                    playbackState.currentMedia?.let { media ->
+                        pendingPlaylistAddMedia = media
+                    }
+                },
+                onShowFileInfoCurrentMedia = {
+                    playbackState.currentMedia?.let { media ->
+                        activeFileInfo = MediaFileActionsHelper.extractDetailedMediaFileInfo(context, media)
+                    }
+                },
+                onSelectQueueItem = { item ->
+                    viewModel.playMedia(item, playbackState.queue)
+                },
+                onRemoveQueueItem = { idx ->
+                    viewModel.removeQueueItemAt(idx)
+                },
+                onMoveQueueItem = { fromIdx, toIdx ->
+                    viewModel.moveQueueItem(fromIdx, toIdx)
+                },
+                onSaveQueueAsPlaylist = { playlistName ->
+                    viewModel.saveCurrentQueueAsPlaylist(playlistName)
+                },
+                onRetryPlayback = { viewModel.retryCurrentPlayback() },
+                onSelectAudioTrack = { track -> viewModel.selectAudioTrack(track) },
+                onVideoSurfaceAttached = { attached -> viewModel.onVideoSurfaceAttached(attached) },
+                onEnterPipClick = {
+                    val w = playbackState.decodedVideoWidth.takeIf { it > 0 }
+                        ?: playbackState.currentMedia?.width ?: 16
+                    val h = playbackState.decodedVideoHeight.takeIf { it > 0 }
+                        ?: playbackState.currentMedia?.height ?: 9
+                    val entered = enterVideoPictureInPictureMode(activity, w, h)
+                    if (!entered) {
+                        viewModel.postStatusBannerMessage(
+                            "Picture-in-Picture is not supported on this device/environment.",
+                            InAppNotificationType.TEMPORARY_WARNING
+                        )
+                    }
                 }
-            },
-            onSetRingtoneCurrentMedia = {
-                playbackState.currentMedia?.let { media ->
-                    applyRingtoneForMedia(media)
-                }
-            },
-            onAddToPlaylistCurrentMedia = {
-                playbackState.currentMedia?.let { media ->
-                    pendingPlaylistAddMedia = media
-                }
-            },
-            onShowFileInfoCurrentMedia = {
-                playbackState.currentMedia?.let { media ->
-                    activeFileInfo = MediaFileActionsHelper.extractDetailedMediaFileInfo(context, media)
-                }
-            },
-            onSelectQueueItem = { item ->
-                viewModel.playMedia(item, playbackState.queue)
-            },
-            onRemoveQueueItem = { idx ->
-                viewModel.removeQueueItemAt(idx)
-            },
-            onMoveQueueItem = { fromIdx, toIdx ->
-                viewModel.moveQueueItem(fromIdx, toIdx)
-            },
-            onSaveQueueAsPlaylist = { playlistName ->
-                viewModel.saveCurrentQueueAsPlaylist(playlistName)
-            },
-            onRetryPlayback = { viewModel.retryCurrentPlayback() },
-            onSelectAudioTrack = { track -> viewModel.selectAudioTrack(track) },
-            onVideoSurfaceAttached = { attached -> viewModel.onVideoSurfaceAttached(attached) }
-        )
+            )
+            InAppNotificationBanner(
+                notification = statusBannerNotification,
+                onDismiss = { viewModel.dismissStatusBanner() },
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+            )
+        }
         return
     }
 
@@ -963,37 +1042,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    // Status Feedback Banner
-                    AnimatedVisibility(visible = statusBanner != null) {
-                        statusBanner?.let { msg ->
-                            Surface(
-                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 4.dp)
-                                    .testTag("status_feedback_banner")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = msg,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    IconButton(onClick = { viewModel.dismissStatusBanner() }) {
-                                        Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = "Dismiss message"
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    // Shared Lifecycle-Aware Status Feedback Banner
+                    InAppNotificationBanner(
+                        notification = statusBannerNotification,
+                        onDismiss = { viewModel.dismissStatusBanner() }
+                    )
 
                     // Search, Sort & Quick Action Header on Home, Videos, Music, and Library tabs
                     if (selectedTab != PrimaryTab.SETTINGS) {
@@ -1243,7 +1296,24 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                         viewModel.setOptionalAdsConfig(enabled, consent)
                                     },
                                     onClearHistoryOnlyClick = { viewModel.clearPlaybackHistoryOnly() },
-                                    onResetPreferencesClick = { viewModel.resetAllPreferences() }
+                                    onResetPreferencesClick = { viewModel.resetAllPreferences() },
+                                    updateState = updateState,
+                                    playStoreState = playStoreUpdateState,
+                                    sourceEvaluation = updateSourceEvaluation,
+                                    activeUpdateChannel = activeUpdateChannel,
+                                    policyBlockMessage = updatePolicyBlockMessage,
+                                    onSelectUpdateChannel = { viewModel.selectUpdateChannel(it) },
+                                    onSetGitHubRepositorySlug = { viewModel.setGitHubRepositorySlug(it) },
+                                    onSetIncludePrereleaseUpdates = { viewModel.setIncludePrereleaseUpdates(it) },
+                                    onCheckForUpdatesClick = { viewModel.checkForAppUpdates() },
+                                    onDownloadUpdateClick = { viewModel.downloadAvailableUpdate(it) },
+                                    onCancelUpdateDownloadClick = { viewModel.cancelUpdateDownload() },
+                                    onInstallVerifiedUpdateClick = { viewModel.installVerifiedUpdate() },
+                                    onCheckPlayStoreUpdatesClick = { viewModel.checkForPlayStoreUpdates() },
+                                    onStartPlayFlexibleUpdateClick = { viewModel.startPlayFlexibleUpdate(activity) },
+                                    onStartPlayImmediateUpdateClick = { viewModel.startPlayImmediateUpdate(activity) },
+                                    onCompletePlayFlexibleUpdateClick = { viewModel.completePlayFlexibleUpdate() },
+                                    onOpenPlayStoreListingClick = { viewModel.openOfficialPlayStoreListing() }
                                 )
                             }
                         }

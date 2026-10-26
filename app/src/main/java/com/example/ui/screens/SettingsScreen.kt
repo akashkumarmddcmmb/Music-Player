@@ -29,6 +29,8 @@ import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -36,8 +38,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -59,6 +63,13 @@ import com.example.data.preferences.SortOption
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
 import com.example.ui.theme.AppThemeMode
+import com.example.update.AppUpdateManager
+import com.example.update.GitHubReleaseInfo
+import com.example.update.PlayStoreUpdateState
+import com.example.update.UpdateCheckState
+import com.example.update.UpdateDistributionChannel
+import com.example.update.UpdateSettingsScreen
+import com.example.update.UpdateSourceEvaluation
 import kotlin.math.abs
 
 @Composable
@@ -90,7 +101,24 @@ fun ProfileAndSettingsScreen(
     onRequestMediaPermissionClick: () -> Unit,
     onSetOptionalAdsConfig: (Boolean, Boolean) -> Unit,
     onClearHistoryOnlyClick: () -> Unit,
-    onResetPreferencesClick: () -> Unit
+    onResetPreferencesClick: () -> Unit,
+    updateState: UpdateCheckState = UpdateCheckState.Idle,
+    playStoreState: PlayStoreUpdateState = PlayStoreUpdateState.Idle,
+    sourceEvaluation: UpdateSourceEvaluation? = null,
+    activeUpdateChannel: UpdateDistributionChannel = UpdateDistributionChannel.GITHUB_RELEASES,
+    policyBlockMessage: String? = null,
+    onSelectUpdateChannel: (UpdateDistributionChannel) -> Unit = {},
+    onSetGitHubRepositorySlug: (String) -> Unit = {},
+    onSetIncludePrereleaseUpdates: (Boolean) -> Unit = {},
+    onCheckForUpdatesClick: () -> Unit = {},
+    onDownloadUpdateClick: (GitHubReleaseInfo) -> Unit = {},
+    onCancelUpdateDownloadClick: () -> Unit = {},
+    onInstallVerifiedUpdateClick: () -> Unit = {},
+    onCheckPlayStoreUpdatesClick: () -> Unit = {},
+    onStartPlayFlexibleUpdateClick: () -> Unit = {},
+    onStartPlayImmediateUpdateClick: () -> Unit = {},
+    onCompletePlayFlexibleUpdateClick: () -> Unit = {},
+    onOpenPlayStoreListingClick: () -> Unit = {}
 ) {
     var showClearHistoryDialog by remember { mutableStateOf(false) }
     var showResetPrefsDialog by remember { mutableStateOf(false) }
@@ -594,7 +622,7 @@ fun ProfileAndSettingsScreen(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "PulsePlay never uploads media, filenames, thumbnails, playlists, or playback history. Network permissions (INTERNET / ACCESS_NETWORK_STATE) are explicitly stripped from the manifest.",
+                    text = "PulsePlay never uploads media, filenames, thumbnails, playlists, or playback history. All media playback, library indexing, equalizer DSP, and studio editing operate 100% offline. Network access is used exclusively when you manually check for or download an app update from GitHub Releases.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -699,6 +727,33 @@ fun ProfileAndSettingsScreen(
                     Text("View Third-Party Notices & Licenses")
                 }
             }
+        }
+
+        // App Updates (Dual Distribution: GitHub Releases + Google Play Store)
+        item {
+            UpdateSettingsScreen(
+                installedVersionName = BuildConfig.VERSION_NAME,
+                installedVersionCode = BuildConfig.VERSION_CODE.toLong(),
+                githubRepositorySlug = userPreferences.githubRepositorySlug,
+                includePrereleaseUpdates = userPreferences.includePrereleaseUpdates,
+                updateState = updateState,
+                playStoreState = playStoreState,
+                sourceEvaluation = sourceEvaluation,
+                activeChannel = activeUpdateChannel,
+                policyBlockMessage = policyBlockMessage,
+                onSelectChannel = onSelectUpdateChannel,
+                onSetGitHubRepositorySlug = onSetGitHubRepositorySlug,
+                onSetIncludePrereleaseUpdates = onSetIncludePrereleaseUpdates,
+                onCheckForUpdatesClick = onCheckForUpdatesClick,
+                onDownloadUpdateClick = onDownloadUpdateClick,
+                onCancelUpdateDownloadClick = onCancelUpdateDownloadClick,
+                onInstallVerifiedUpdateClick = onInstallVerifiedUpdateClick,
+                onCheckPlayStoreUpdatesClick = onCheckPlayStoreUpdatesClick,
+                onStartPlayFlexibleUpdateClick = onStartPlayFlexibleUpdateClick,
+                onStartPlayImmediateUpdateClick = onStartPlayImmediateUpdateClick,
+                onCompletePlayFlexibleUpdateClick = onCompletePlayFlexibleUpdateClick,
+                onOpenPlayStoreListingClick = onOpenPlayStoreListingClick
+            )
         }
     }
 }

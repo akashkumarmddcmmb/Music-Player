@@ -113,44 +113,18 @@ class SampleMediaGenerator(private val context: Context) {
             )
         }
 
-        // 4. Generate Real Playable MP4 Video (H.264 Video + AAC Audio) + Companion SRT & VTT Subtitles
+        // 4. Generate Real Playable MP4 Video (H.264 Video + AAC Audio)
+        // Remove any legacy auto-generated sample subtitle files so explanatory/promotional text
+        // never auto-attaches to audio or video playback.
         val mp4File = File(sampleDir, "Pulse_Cinema_Test_Reel.mp4")
         val srtFile = File(sampleDir, "Pulse_Cinema_Test_Reel.srt")
         val vttFile = File(sampleDir, "Pulse_Cinema_Test_Reel.vtt")
 
-        if (!srtFile.exists()) {
-            srtFile.writeText(
-                """
-                1
-                00:00:00,200 --> 00:00:02,000
-                Welcome to PulsePlay Original Cinema Engine
-
-                2
-                00:00:02,100 --> 00:00:04,000
-                Testing real-time SRT/WebVTT subtitle sync & styling
-
-                3
-                00:00:04,100 --> 00:00:06,000
-                100% Offline • Zero Network • MediaCodec Verified
-                """.trimIndent()
-            )
+        if (srtFile.exists()) {
+            runCatching { srtFile.delete() }
         }
-
-        if (!vttFile.exists()) {
-            vttFile.writeText(
-                """
-                WEBVTT
-
-                00:00.200 --> 00:02.000
-                PulsePlay WebVTT Subtitle Stream Active
-
-                00:02.100 --> 00:04.000
-                Adjust font scale or sync offset in real time
-
-                00:04.100 --> 00:06.000
-                Ready for Video Trimming & Audio Extraction
-                """.trimIndent()
-            )
+        if (vttFile.exists()) {
+            runCatching { vttFile.delete() }
         }
 
         if (!mp4File.exists() || mp4File.length() < 1024L || !hasValidAvcConfig(mp4File)) {
@@ -192,13 +166,7 @@ class SampleMediaGenerator(private val context: Context) {
         results
     }
 
-    fun getBundledSampleSubtitleFiles(): List<File> {
-        val sampleDir = File(context.filesDir, "pulse_samples")
-        return listOf(
-            File(sampleDir, "Pulse_Cinema_Test_Reel.srt"),
-            File(sampleDir, "Pulse_Cinema_Test_Reel.vtt")
-        ).filter { it.exists() }
-    }
+    fun getBundledSampleSubtitleFiles(): List<File> = emptyList()
 
     /**
      * Verifies that an existing MP4 file on disk has an `avcC` box whose first SPS NAL unit

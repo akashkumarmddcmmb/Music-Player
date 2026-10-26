@@ -1,4 +1,4 @@
-name: Android CI & GitHub Release
+name: Android CI, GitHub Release & Google Play Bundle
 
 on:
   push:
@@ -14,18 +14,39 @@ on:
         default: false
         type: boolean
       release_tag:
-        description: "Release version tag (e.g., v1.0.0) when triggered manually"
+        description: "Release version tag (e.g., v1.0.1) when triggered manually"
         required: false
-        default: "v1.0.0"
+        default: "v1.0.1"
         type: string
       prerelease:
-        description: "Mark release as pre-release"
+        description: "Mark GitHub release as pre-release"
         required: false
         default: false
         type: boolean
+      build_play_bundle:
+        description: "Build signed Google Play Android App Bundle (:app:bundleRelease)"
+        required: false
+        default: false
+        type: boolean
+      publish_to_play_store:
+        description: "Upload signed AAB to Google Play Console (requires GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret)"
+        required: false
+        default: false
+        type: boolean
+      play_track:
+        description: "Google Play release track (internal/alpha/beta recommended before production)"
+        required: false
+        default: "internal"
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
 
+# Least-privilege default permissions for all jobs (including pull_request)
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -33,9 +54,16 @@ concurrency:
 
 jobs:
   build-verify-and-release:
-    name: Test, Build APK & Publish Release
+    name: Test, Lint, Build APK & Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    permissions:
+      contents: write
+
+    outputs:
+      release_tag: ${{ steps.version_meta.outputs.release_tag }}
+      version_name: ${{ steps.version_meta.outputs.version_name }}
+      version_code: ${{ steps.version_meta.outputs.version_code }}
 
     steps:
       - name: Checkout Repository
@@ -51,6 +79,23 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      - name: Resolve Monotonic Version Metadata Across Channels
+        id: version_meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            RAW_TAG="${GITHUB_REF_NAME}"
+          elif [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && -n "${{ inputs.release_tag }}" ]]; then
+            RAW_TAG="${{ inputs.release_tag }}"
+          else
+            RAW_TAG="v1.0.${GITHUB_RUN_NUMBER}"
+          fi
+          CLEAN_VERSION="${RAW_TAG#v}"
+          # Monotonically increasing versionCode across GitHub Releases and Google Play tracks
+          MONOTONIC_CODE=$(( 100 + ${GITHUB_RUN_NUMBER:-1} ))
+          echo "release_tag=${RAW_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version_code=${MONOTONIC_CODE}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Debug Keystore Exists for Reproducible Debug Signing
         run: |
@@ -70,17 +115,36 @@ jobs:
         run: chmod +x gradlew
 
       - name: Execute Unit & Robolectric Tests
+        env:
+          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
+      - name: Execute Android Lint Verification
+        env:
+          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: ./gradlew :app:lintDebug --no-daemon
+
       - name: Assemble Installable Debug APK
+        env:
+          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: ./gradlew :app:assembleDebug --no-daemon
 
       - name: Assemble Signed Release APK & AAB (If Release Secrets Configured)
         id: release_signing
+        if: github.event_name != 'pull_request'
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
@@ -88,7 +152,7 @@ jobs:
             ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
             echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Release keystore secrets not configured; packaging verified installable Debug APK."
+            echo "Release keystore secrets not configured; packaging verified Debug-signed APK only (clearly labeled as debug)."
             echo "signed_release_built=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -96,10 +160,11 @@ jobs:
         id: prepare_assets
         run: |
           mkdir -p release-assets
-          cp app/build/outputs/apk/debug/app-debug.apk release-assets/PulsePlay-debug.apk
+          VER="${{ steps.version_meta.outputs.version_name }}"
+          cp app/build/outputs/apk/debug/app-debug.apk "release-assets/PulsePlay-v${VER}-debug.apk"
           if [ "${{ steps.release_signing.outputs.signed_release_built }}" = "true" ]; then
-            cp app/build/outputs/apk/release/app-release.apk release-assets/PulsePlay-release.apk
-            cp app/build/outputs/bundle/release/app-release.aab release-assets/PulsePlay-release.aab
+            cp app/build/outputs/apk/release/app-release.apk "release-assets/PulsePlay-v${VER}-release.apk"
+            cp app/build/outputs/bundle/release/app-release.aab "release-assets/PulsePlay-v${VER}-release.aab"
           fi
           cd release-assets
           sha256sum * > SHA256SUMS.txt
@@ -108,28 +173,136 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: pulseplay-apk-artifacts
+          name: pulseplay-apk-artifacts-v${{ steps.version_meta.outputs.version_name }}
           path: release-assets/*
           if-no-files-found: error
           retention-days: 14
           overwrite: true
 
+      - name: Upload Diagnostic Test & Lint Reports on Failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulseplay-failure-diagnostics-${{ github.run_number }}
+          path: |
+            app/build/reports/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Publish GitHub Release
         if: >
           success() &&
+          github.event_name != 'pull_request' &&
           (startsWith(github.ref, 'refs/tags/v') ||
            (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true))
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
-          name: "PulsePlay ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}"
+          tag_name: ${{ steps.version_meta.outputs.release_tag }}
+          name: "PulsePlay ${{ steps.version_meta.outputs.release_tag }}"
           prerelease: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
           generate_release_notes: true
+          body: |
+            ### PulsePlay ${{ steps.version_meta.outputs.release_tag }}
+            - **versionName**: `${{ steps.version_meta.outputs.version_name }}`
+            - **versionCode**: `${{ steps.version_meta.outputs.version_code }}`
+            - **Signed Production Release Built**: `${{ steps.release_signing.outputs.signed_release_built == 'true' && 'Yes (Release Keystore)' || 'No (Debug-Signed Build Only)' }}`
+            - Verify downloaded APK integrity against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
           files: |
             release-assets/*
 
       - name: Clean Up Temporary Release Keystore
+        if: always()
+        run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
+
+  google-play-bundle:
+    name: Google Play Store Bundle & Track Deployment (Manual / Guarded)
+    needs: build-verify-and-release
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.build_play_bundle == true || inputs.publish_to_play_store == true)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Ensure Gradle Wrapper is Executable
+        run: chmod +x gradlew
+
+      - name: Build Signed Google Play Release Bundle (:app:bundleRelease)
+        id: build_aab
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          APP_VERSION_NAME: ${{ needs.build-verify-and-release.outputs.version_name }}
+          APP_VERSION_CODE: ${{ needs.build-verify-and-release.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "ERROR: Google Play App Bundles require RELEASE_KEYSTORE_BASE64, STORE_PASSWORD, and KEY_PASSWORD secrets."
+            exit 1
+          fi
+          echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
+          export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          ./gradlew :app:bundleRelease --no-daemon
+          mkdir -p play-bundle-artifacts
+          VER="${{ needs.build-verify-and-release.outputs.version_name }}"
+          CODE="${{ needs.build-verify-and-release.outputs.version_code }}"
+          cp app/build/outputs/bundle/release/app-release.aab "play-bundle-artifacts/PulsePlay-v${VER}-vc${CODE}-release.aab"
+          cd play-bundle-artifacts
+          sha256sum * > SHA256SUMS-AAB.txt
+
+      - name: Upload Signed Google Play AAB Artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pulseplay-play-store-aab-v${{ needs.build-verify-and-release.outputs.version_name }}
+          path: play-bundle-artifacts/*
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+      - name: Verify Play Console Credentials Before Upload
+        id: play_credentials
+        if: inputs.publish_to_play_store == true
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret is not configured yet. Skipping Play Console upload; signed AAB artifact has been archived for manual Play Console upload."
+            echo "can_upload=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_upload=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish Signed AAB to Google Play Track (${{ inputs.play_track }})
+        if: inputs.publish_to_play_store == true && steps.play_credentials.outputs.can_upload == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.aistudio.pulseplay.mpxvqr
+          releaseFiles: play-bundle-artifacts/*.aab
+          track: ${{ inputs.play_track }}
+          status: completed
+
+      - name: Clean Up Temporary Upload Keystore
         if: always()
         run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"

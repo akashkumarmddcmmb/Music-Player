@@ -118,13 +118,16 @@ class PulsePlaybackService : MediaSessionService() {
                     } else {
                         HardwareEqualizerState.presetCurveForIndex(prefs.equalizerPresetIndex)
                     }
+                    val currentDsp = EqualizerController.sharedAudioProcessor.getDspConfig()
                     EqualizerController.sharedAudioProcessor.updateDspConfig(
                         EqualizerDspConfig(
                             isEnabled = prefs.equalizerEnabled,
-                            bypassForHardwareEffect = false,
+                            bypassForHardwareEffect = currentDsp.bypassForHardwareEffect,
                             bandLevelsMb = resolvedBands,
                             bandFrequenciesHz = HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ,
-                            bassBoostStrength = prefs.bassBoostStrength
+                            bassBoostStrength = prefs.bassBoostStrength,
+                            stereoBalance = prefs.audioBalance,
+                            preampGainDb = prefs.preampGainDb
                         )
                     )
                 }

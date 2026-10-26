@@ -62,6 +62,8 @@ import kotlin.math.sqrt
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.getValue
@@ -74,6 +76,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.DpSize
@@ -827,9 +830,17 @@ class ExampleRobolectricTest {
             PackageManager.GET_PERMISSIONS
         )
         val requestedPerms = pkgInfo.requestedPermissions?.toList().orEmpty()
-        assertFalse(
-            "INTERNET permission must not be present in offline-first manifest",
+        assertTrue(
+            "INTERNET permission must be present for user-initiated GitHub Releases update checks",
             requestedPerms.contains(android.Manifest.permission.INTERNET)
+        )
+        assertTrue(
+            "REQUEST_INSTALL_PACKAGES permission must be present for user-initiated APK update installation",
+            requestedPerms.contains(android.Manifest.permission.REQUEST_INSTALL_PACKAGES)
+        )
+        assertFalse(
+            "Location permissions must never be requested",
+            requestedPerms.contains(android.Manifest.permission.ACCESS_FINE_LOCATION)
         )
 
         val testMp4 = File(context.cacheDir, "iso_mux_test.mp4")
@@ -3431,6 +3442,985 @@ class ExampleRobolectricTest {
         out.write(ByteArray(128) { 0xFF.toByte() })
         targetFile.writeBytes(out.toByteArray())
     }
+
+    @Test
+    fun testAudioAndVideoMediaSwitchDoesNotShowExplanatorySubtitleTextWhilePreservingRealSubtitles() {
+        val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+        val vm = com.example.viewmodel.PulsePlayViewModel(app)
+
+        val audioFile1 = File(app.cacheDir, "track_one_clean.mp3").apply {
+            writeBytes(ByteArray(256) { 0x55 })
+        }
+        val audioFile2 = File(app.cacheDir, "track_two_clean.mp3").apply {
+            writeBytes(ByteArray(256) { 0x66 })
+        }
+        val videoFile1 = File(app.cacheDir, "clip_one_clean.mp4").apply {
+            writeBytes(ByteArray(512) { 0x77 })
+        }
+
+        val song1 = MediaEntity(
+            uriString = Uri.fromFile(audioFile1).toString(),
+            mediaStoreId = null,
+            title = "Clean Song One",
+            artist = "Studio Artist",
+            album = "Clean Album",
+            folderName = "Music",
+            durationMs = 180_000L,
+            sizeBytes = audioFile1.length(),
+            mimeType = "audio/mpeg",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1710000100L
+        )
+        val song2 = song1.copy(
+            uriString = Uri.fromFile(audioFile2).toString(),
+            title = "Clean Song Two"
+        )
+        val video1 = MediaEntity(
+            uriString = Uri.fromFile(videoFile1).toString(),
+            mediaStoreId = null,
+            title = "Clean Video One",
+            artist = "",
+            album = "Clips",
+            folderName = "Videos",
+            durationMs = 60_000L,
+            sizeBytes = videoFile1.length(),
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 1280,
+            height = 720,
+            dateAddedEpochSec = 1710000200L
+        )
+
+        // 1. Play Audio Song 1 -> no explanatory subtitle text or auto-loaded sample cues
+        vm.setQueue(listOf(song1, song2, video1), initialIndex = 0)
+        vm.seekTo(2_500L)
+        assertNull("Audio track should not auto-load explanatory subtitle text", vm.playbackState.value.activeSubtitleText)
+        assertTrue("Audio track should have empty subtitle cues by default", vm.playbackState.value.loadedSubtitleCues.isEmpty())
+
+        // 2. Skip to Next (Audio Song 2) -> still no explanatory subtitle text
+        vm.skipToNext()
+        vm.seekTo(2_500L)
+        assertEquals("Clean Song Two", vm.playbackState.value.currentMedia?.title)
+        assertNull("Next audio track must not show explanatory subtitle text", vm.playbackState.value.activeSubtitleText)
+
+        // 3. Explicitly load a real user SRT subtitle file and verify real subtitle functionality works
+        val customSrt = File(app.cacheDir, "user_lyrics.srt").apply {
+            writeText(
+                """
+                1
+                00:00:01,000 --> 00:00:05,000
+                Real user synchronized lyric line
+                """.trimIndent()
+            )
+        }
+        vm.loadSubtitleFromFile(customSrt)
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        vm.seekTo(2_500L)
+        assertEquals("Real user synchronized lyric line", vm.playbackState.value.activeSubtitleText)
+
+        // Verify sync offset calculation with SubtitleParser remains functional
+        val shiftedCue = com.example.media.SubtitleParser.findActiveCueText(
+            cues = vm.playbackState.value.loadedSubtitleCues,
+            playbackPositionMs = 500L,
+            syncOffsetMs = -1_000L
+        )
+        assertEquals("Real user synchronized lyric line", shiftedCue)
+
+        // 4. Switch to Video 1 -> previous track's subtitle cues are cleared and no explanatory text appears
+        vm.skipToNext()
+        vm.seekTo(2_500L)
+        assertEquals("Clean Video One", vm.playbackState.value.currentMedia?.title)
+        assertNull("Switching to video track must clear previous subtitle text and not show explanatory text", vm.playbackState.value.activeSubtitleText)
+        assertTrue("Switching tracks must clear previous subtitle cues", vm.playbackState.value.loadedSubtitleCues.isEmpty())
+
+        // 5. Render NowPlayingOverlayScreen for Audio and verify active_lyrics_banner is not shown by default
+        vm.setQueue(listOf(song1, song2), initialIndex = 0)
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                NowPlayingOverlayScreen(
+                    playbackState = vm.playbackState.value,
+                    userPreferences = UserPreferencesState(subtitlesEnabledByDefault = true),
+                    isFavorite = false,
+                    playerInstance = null,
+                    onCollapse = {},
+                    onPlayPause = {},
+                    onSeekTo = {},
+                    onPrevious = {},
+                    onNext = {},
+                    onToggleShuffle = {},
+                    onCycleRepeat = {},
+                    onSetPlaybackSpeed = {},
+                    onCycleAspectMode = {},
+                    onRotateVideo90 = {},
+                    onToggleFullscreen = {},
+                    onSelectVideoOrientation = {},
+                    onBrightnessGestureDelta = {},
+                    onVolumeGestureDelta = {},
+                    onPickSubtitleFileClick = {},
+                    onToggleSubtitlesEnabled = {},
+                    onSetSubtitleFontScale = {},
+                    onSetSubtitleOffsetMs = {},
+                    onToggleFavorite = {},
+                    onOpenEqualizer = {},
+                    onOpenStudio = {},
+                    onSelectQueueItem = {},
+                    onRemoveQueueItem = {},
+                    onRetryPlayback = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("active_lyrics_banner").fetchSemanticsNodes().size)
+        assertEquals(0, composeTestRule.onAllNodesWithTag("active_subtitle_overlay").fetchSemanticsNodes().size)
+
+        audioFile1.delete()
+        audioFile2.delete()
+        videoFile1.delete()
+        customSrt.delete()
+    }
+
+    @Test
+    fun `githubAppUpdateManager parsesReleases comparesSemanticVersions verifiesSha256AndApkAndHandlesConfigRequired`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val updateManager = com.example.update.AppUpdateManager(app)
+
+        // 1. Semantic version comparisons (v-prefix, multi-part, pre-release vs stable)
+        assertTrue(com.example.update.AppUpdateManager.compareSemanticVersions("1.3.0", "1.2.9") > 0)
+        assertTrue(com.example.update.AppUpdateManager.compareSemanticVersions("v2.0.0", "1.9.9") > 0)
+        assertEquals(0, com.example.update.AppUpdateManager.compareSemanticVersions("v1.2.0", "1.2.0"))
+        assertTrue(
+            "Stable release 1.2.0 must rank higher than pre-release 1.2.0-beta.1",
+            com.example.update.AppUpdateManager.compareSemanticVersions("1.2.0", "1.2.0-beta.1") > 0
+        )
+        assertTrue(
+            com.example.update.AppUpdateManager.isRemoteReleaseNewer(
+                remoteVersionName = "1.3.0",
+                remoteVersionCode = 13L,
+                installedVersionName = "1.2.0",
+                installedVersionCode = 12L
+            )
+        )
+        assertFalse(
+            "Same version must not be flagged as newer",
+            com.example.update.AppUpdateManager.isRemoteReleaseNewer(
+                remoteVersionName = "1.2.0",
+                remoteVersionCode = 12L,
+                installedVersionName = "1.2.0",
+                installedVersionCode = 12L
+            )
+        )
+        assertFalse(
+            "Older version must never trigger downgrade",
+            com.example.update.AppUpdateManager.isRemoteReleaseNewer(
+                remoteVersionName = "1.1.0",
+                remoteVersionCode = 11L,
+                installedVersionName = "1.2.0",
+                installedVersionCode = 12L
+            )
+        )
+
+        // 2. Parse GitHub Release JSON with APK asset, SHA256SUMS.txt asset, and embedded SHA-256 in body
+        val sampleSha256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        val releaseJson = org.json.JSONObject().apply {
+            put("tag_name", "v1.4.0")
+            put("name", "PulsePlay v1.4.0")
+            put("body", "### What's New\n- versionCode: 14\n- Checksum: $sampleSha256  PulsePlay-v1.4.0-release.apk")
+            put("prerelease", false)
+            put("draft", false)
+            put("published_at", "2026-10-26T00:00:00Z")
+            put("html_url", "https://github.com/example-org/pulseplay/releases/tag/v1.4.0")
+            val assetsArray = org.json.JSONArray()
+            assetsArray.put(
+                org.json.JSONObject().apply {
+                    put("name", "PulsePlay-v1.4.0-release.apk")
+                    put("browser_download_url", "https://github.com/example-org/pulseplay/releases/download/v1.4.0/PulsePlay-v1.4.0-release.apk")
+                    put("size", 12_582_912L)
+                    put("content_type", "application/vnd.android.package-archive")
+                }
+            )
+            assetsArray.put(
+                org.json.JSONObject().apply {
+                    put("name", "SHA256SUMS.txt")
+                    put("browser_download_url", "https://github.com/example-org/pulseplay/releases/download/v1.4.0/SHA256SUMS.txt")
+                    put("size", 128L)
+                    put("content_type", "text/plain")
+                }
+            )
+            put("assets", assetsArray)
+        }
+
+        val parsedRelease = com.example.update.AppUpdateManager.parseGitHubReleaseJson(releaseJson)
+        assertNotNull(parsedRelease)
+        assertEquals("v1.4.0", parsedRelease!!.tagName)
+        assertEquals("1.4.0", parsedRelease.versionName)
+        assertEquals(14L, parsedRelease.remoteVersionCode)
+        assertEquals("PulsePlay-v1.4.0-release.apk", parsedRelease.apkAsset.name)
+        assertNotNull(parsedRelease.checksumAsset)
+        assertEquals(sampleSha256, parsedRelease.expectedSha256)
+
+        // 3. Verify SHA-256 computation and checksum mismatch detection
+        val dummyApkFile = File(app.cacheDir, "dummy_update.apk").apply {
+            writeBytes(ByteArray(256) { 0x42 })
+        }
+        val computedHash = com.example.update.AppUpdateManager.computeFileSha256Hex(dummyApkFile)
+        assertEquals(64, computedHash.length)
+
+        val mismatchVerification = updateManager.verifyDownloadedApk(
+            apkFile = dummyApkFile,
+            expectedSha256Hex = "0000000000000000000000000000000000000000000000000000000000000000"
+        )
+        assertFalse(
+            "Mismatched SHA-256 must fail verification before package installer is ever invoked",
+            mismatchVerification.isValid
+        )
+        assertTrue(
+            mismatchVerification.errorReason.orEmpty().contains("SHA-256 checksum mismatch")
+        )
+
+        val invalidArchiveVerification = updateManager.verifyDownloadedApk(
+            apkFile = dummyApkFile,
+            expectedSha256Hex = computedHash
+        )
+        assertFalse(
+            "Corrupt/unparseable APK file must fail PackageManager archive inspection even if hash matches",
+            invalidArchiveVerification.isValid
+        )
+        dummyApkFile.delete()
+
+        // 4. Empty repository slug must emit ConfigurationRequired (never a hardcoded fake owner/repo)
+        val unconfiguredState = updateManager.checkForUpdates(
+            configuredRepositorySlug = "",
+            includePrereleases = false
+        )
+        assertTrue(
+            "Blank repository slug must return ConfigurationRequired",
+            unconfiguredState is com.example.update.UpdateCheckState.ConfigurationRequired
+        )
+    }
+
+    @Test
+    fun `studioEditorUndoRedoHistory orphanedTempCleanup videoPipAndSettingsUpdateUiWorkEndToEnd`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+
+        // 1. Test orphaned temp file cleanup in MediaProcessorEngine
+        val engine = MediaProcessorEngine(app, database.pulseDao())
+        val tmpDir = File(app.cacheDir, "pulse_processing_tmp").apply { mkdirs() }
+        val staleTemp = File(tmpDir, "trim_tmp_999999.wav").apply {
+            writeBytes(ByteArray(128) { 0x11 })
+        }
+        assertTrue(staleTemp.exists())
+        val deletedCount = engine.cleanupOrphanedTempFiles()
+        assertTrue("cleanupOrphanedTempFiles must remove orphaned temp files in pulse_processing_tmp", deletedCount >= 1)
+        assertFalse(staleTemp.exists())
+
+        // 2. Test EditorUndoRedoHistory parameter stack
+        val initialSnap = com.example.ui.screens.EditorParameterSnapshot(
+            mode = com.example.ui.screens.StudioMode.AUDIO_TRIM,
+            trimStartFraction = 0.0f,
+            trimEndFraction = 1.0f,
+            audioTrimFormat = "wav",
+            videoRotationDegrees = 0,
+            selectedProfileId = "WAV_PCM_16BIT"
+        )
+        val history = com.example.ui.screens.EditorUndoRedoHistory(initialSnap)
+        assertFalse(history.canUndo)
+        assertFalse(history.canRedo)
+
+        val editedSnap1 = initialSnap.copy(trimStartFraction = 0.2f, trimEndFraction = 0.8f)
+        val editedSnap2 = editedSnap1.copy(audioTrimFormat = "m4a", videoRotationDegrees = 90)
+        history.recordChange(editedSnap1)
+        assertTrue(history.canUndo)
+        history.recordChange(editedSnap2)
+
+        val undone1 = history.undo()
+        assertEquals(editedSnap1, undone1)
+        assertTrue(history.canRedo)
+
+        val undone2 = history.undo()
+        assertEquals(initialSnap, undone2)
+        assertFalse(history.canUndo)
+
+        val redone1 = history.redo()
+        assertEquals(editedSnap1, redone1)
+
+        // 3. Verify Studio UI Undo/Redo buttons and Settings GitHub Update UI + Video PiP chip
+        val sampleVideo = MediaEntity(
+            uriString = "file:///storage/emulated/0/Movies/pip_test_clip.mp4",
+            mediaStoreId = null,
+            title = "PiP Test Clip",
+            artist = "PulsePlay",
+            album = "Videos",
+            folderName = "Movies",
+            durationMs = 60_000L,
+            sizeBytes = 4_096_000L,
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 1920,
+            height = 1080,
+            dateAddedEpochSec = 1710001000L
+        )
+
+        var pipClicked = false
+        var checkUpdatesClicked = false
+        var activeView by mutableStateOf("VIDEO")
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(DpSize(800.dp, 2400.dp))) {
+                    when (activeView) {
+                        "VIDEO" -> {
+                            NowPlayingOverlayScreen(
+                                playbackState = com.example.viewmodel.PlaybackUiState(
+                                    currentMedia = sampleVideo,
+                                    queue = listOf(sampleVideo),
+                                    currentQueueIndex = 0,
+                                    isPlaying = true,
+                                    currentPositionMs = 10_000L,
+                                    durationMs = sampleVideo.durationMs
+                                ),
+                                userPreferences = UserPreferencesState(),
+                                isFavorite = false,
+                                playerInstance = null,
+                                onCollapse = {},
+                                onPlayPause = {},
+                                onSeekTo = {},
+                                onPrevious = {},
+                                onNext = {},
+                                onToggleShuffle = {},
+                                onCycleRepeat = {},
+                                onSetPlaybackSpeed = {},
+                                onCycleAspectMode = {},
+                                onRotateVideo90 = {},
+                                onToggleFullscreen = {},
+                                onEnterPipClick = { pipClicked = true },
+                                onBrightnessGestureDelta = {},
+                                onVolumeGestureDelta = {},
+                                onPickSubtitleFileClick = {},
+                                onToggleSubtitlesEnabled = {},
+                                onSetSubtitleFontScale = {},
+                                onSetSubtitleOffsetMs = {},
+                                onToggleFavorite = {},
+                                onOpenEqualizer = {},
+                                onOpenStudio = {},
+                                onSelectQueueItem = {},
+                                onRemoveQueueItem = {},
+                                onRetryPlayback = {}
+                            )
+                        }
+                        "STUDIO" -> {
+                            com.example.ui.screens.StudioEditorOverlayScreen(
+                                allMedia = listOf(sampleVideo),
+                                initialTargetMedia = sampleVideo,
+                                conversionProfiles = ConversionCapabilityRegistry.getSupportedProfiles(),
+                                processingJobs = emptyList(),
+                                onClose = {},
+                                onPreviewSegment = { _, _ -> },
+                                onRunAudioTrim = { _, _, _, _ -> },
+                                onRunVideoTrimRotate = { _, _, _, _, _ -> },
+                                onRunConversionOrExtraction = { _, _, _, _ -> },
+                                onCancelActiveJob = {},
+                                onClearCompletedJobs = {},
+                                onPlayExportedUri = {}
+                            )
+                        }
+                        "SETTINGS" -> {
+                            com.example.ui.screens.ProfileAndSettingsScreen(
+                                userPreferences = UserPreferencesState(
+                                    githubRepositorySlug = "example-owner/pulseplay"
+                                ),
+                                hasMediaPermission = true,
+                                historyCount = 2,
+                                updateState = com.example.update.UpdateCheckState.UpToDate(
+                                    installedVersionName = "1.2.0",
+                                    installedVersionCode = 3L,
+                                    latestRemoteTag = "v1.2.0"
+                                ),
+                                onSetThemeMode = {},
+                                onSetDynamicColor = {},
+                                onSetDefaultSpeed = {},
+                                onSetResumePlayback = {},
+                                onSetRecordHistory = {},
+                                onSetBackgroundPlayback = {},
+                                onSetKeepScreenOnDuringVideo = {},
+                                onSetVideoGestureControls = {},
+                                onSetVideoOrientationPref = {},
+                                onSetAllowExperimental4kSoftwareFallback = {},
+                                onSetAudioBalance = {},
+                                onSetPreampGainDb = {},
+                                onSetSleepTimerMinutes = {},
+                                onSetSleepTimerEndOfTrack = {},
+                                onSetSubtitlesEnabled = {},
+                                onSetSubtitleScale = {},
+                                onSetDefaultSort = {},
+                                onSetGitHubRepositorySlug = {},
+                                onSetIncludePrereleaseUpdates = {},
+                                onCheckForUpdatesClick = { checkUpdatesClicked = true },
+                                onDownloadUpdateClick = {},
+                                onCancelUpdateDownloadClick = {},
+                                onInstallVerifiedUpdateClick = {},
+                                onOpenEqualizerClick = {},
+                                onRequestMediaPermissionClick = {},
+                                onSetOptionalAdsConfig = { _, _ -> },
+                                onClearHistoryOnlyClick = {},
+                                onResetPreferencesClick = {}
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        // Verify PiP button in Video Player HUD
+        composeTestRule.onNodeWithTag("video_pip_chip")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertTrue("PiP button should invoke onEnterPipClick", pipClicked)
+
+        // Switch to Studio Editor and verify Undo/Redo buttons exist
+        activeView = "STUDIO"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("studio_undo_button").assertExists()
+        composeTestRule.onNodeWithTag("studio_redo_button").assertExists()
+
+        // Switch to Settings and verify GitHub Update controls exist
+        activeView = "SETTINGS"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("settings_screen_list")
+            .performSemanticsAction(SemanticsActions.ScrollToIndex) { it(7) }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("installed_version_label").assertExists()
+        composeTestRule.onNodeWithTag("github_repo_slug_input").assertExists()
+        composeTestRule.onNodeWithTag("check_for_updates_button")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertTrue("Check for Updates button must trigger callback", checkUpdatesClicked)
+    }
+
+    @Test
+    fun `dualUpdateDistribution gitHubAndPlayStoreProviders sourcePolicy signingProtectionAndDataPreservationWorkEndToEnd`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+
+        // 1. UpdateSourcePolicy multi-signal evaluation:
+        //    a) Verified Google Play installation (com.android.vending)
+        val playSignals = com.example.update.InstallSourceSignals(
+            installingPackageName = "com.android.vending",
+            initiatingPackageName = "com.android.vending",
+            originatingPackageName = null,
+            installedSigningCertSha256Set = setOf("aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"),
+            isPlayStoreAppInstalledOnDevice = true
+        )
+        val playEvaluation = com.example.update.UpdateSourcePolicy.evaluateSignals(playSignals)
+        assertEquals(com.example.update.InstallChannel.GOOGLE_PLAY, playEvaluation.detectedChannel)
+        assertEquals(com.example.update.UpdateDistributionChannel.GOOGLE_PLAY, playEvaluation.recommendedChannel)
+        assertFalse("Play-installed app must not auto-install GitHub APKs", playEvaluation.canAutoInstallGitHubApk)
+        assertTrue("Play-installed app must block GitHub APK overwrite", playEvaluation.blockGitHubApkOverwriteOfPlayInstall)
+
+        //    b) Spoofed initiatingPackageName where installingPackageName is packageinstaller must NOT be treated as Google Play
+        val spoofedSignals = com.example.update.InstallSourceSignals(
+            installingPackageName = "com.google.android.packageinstaller",
+            initiatingPackageName = "com.android.vending",
+            originatingPackageName = "com.example.browser",
+            installedSigningCertSha256Set = setOf("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"),
+            isPlayStoreAppInstalledOnDevice = true
+        )
+        val spoofedEval = com.example.update.UpdateSourcePolicy.evaluateSignals(spoofedSignals)
+        assertEquals(com.example.update.InstallChannel.GITHUB_OR_SIDELOAD, spoofedEval.detectedChannel)
+
+        //    c) Unknown / ambiguous installation source offers both channels safely without assuming source
+        val unknownSignals = com.example.update.InstallSourceSignals(
+            installingPackageName = null,
+            initiatingPackageName = null,
+            originatingPackageName = null,
+            installedSigningCertSha256Set = setOf("11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff"),
+            isPlayStoreAppInstalledOnDevice = false
+        )
+        val unknownEval = com.example.update.UpdateSourcePolicy.evaluateSignals(unknownSignals)
+        assertEquals(com.example.update.InstallChannel.UNKNOWN, unknownEval.detectedChannel)
+        assertTrue(unknownEval.allowedChannels.contains(com.example.update.UpdateDistributionChannel.GITHUB_RELEASES))
+        assertTrue(unknownEval.allowedChannels.contains(com.example.update.UpdateDistributionChannel.GOOGLE_PLAY))
+
+        // 2. Prevent a GitHub update from replacing a Play-installed app & reject incompatible signing certificates
+        val blockedPlayCrossUpdate = com.example.update.UpdateSourcePolicy.validateGitHubApkInstallAttempt(
+            evaluation = playEvaluation,
+            installedVersionCode = 10L,
+            candidateVersionCode = 11L,
+            candidateSigningCertSha256Set = playSignals.installedSigningCertSha256Set
+        )
+        assertFalse("GitHub APK must never replace a Play-installed app", blockedPlayCrossUpdate.isAllowed)
+        assertTrue(blockedPlayCrossUpdate.reason.contains("Blocked by UpdateSourcePolicy"))
+
+        val mismatchedCertValidation = com.example.update.UpdateSourcePolicy.validateGitHubApkInstallAttempt(
+            evaluation = spoofedEval,
+            installedVersionCode = 10L,
+            candidateVersionCode = 11L,
+            candidateSigningCertSha256Set = setOf("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+        )
+        assertFalse("Incompatible signing certificate must be rejected before package installer", mismatchedCertValidation.isAllowed)
+        assertTrue(mismatchedCertValidation.requiresManualMigration)
+        assertTrue(mismatchedCertValidation.reason.contains("Incompatible signing certificate"))
+        assertNotNull(mismatchedCertValidation.migrationInstructions)
+
+        // 3. Monotonic versionCode ordering across channels
+        assertTrue(com.example.update.UpdateSourcePolicy.validateMonotonicVersionCode(10L, 11L))
+        assertFalse(com.example.update.UpdateSourcePolicy.validateMonotonicVersionCode(10L, 10L))
+        assertFalse(com.example.update.UpdateSourcePolicy.validateMonotonicVersionCode(10L, 9L))
+
+        // 4. Official Google Play In-App Updates provider tested against Play Core's FakeAppUpdateManager:
+        //    - No update available handling
+        //    - Flexible update availability, background download progress, DownloadedReadyToComplete, and completeUpdate()
+        //    - High-priority Immediate update availability and resume on interrupted update
+        val fakePlayCore = com.google.android.play.core.appupdate.testing.FakeAppUpdateManager(app)
+        val playProvider = com.example.update.PlayStoreUpdateProvider(
+            context = app,
+            playCoreManagerProvider = { fakePlayCore }
+        )
+
+        // 4a. Play update unavailable / not published
+        fakePlayCore.setUpdateNotAvailable()
+        val noUpdateState = playProvider.checkForPlayStoreUpdate()
+        assertTrue(
+            "When no update is available on Play Store, provider must return NoUpdateAvailable (never fake success)",
+            noUpdateState is com.example.update.PlayStoreUpdateState.NoUpdateAvailable
+        )
+
+        // 4b. Flexible Play update flow + background download progress + completion confirmation
+        val targetPlayVersionCode = BuildConfig.VERSION_CODE + 15
+        fakePlayCore.setUpdateAvailable(targetPlayVersionCode, com.google.android.play.core.install.model.AppUpdateType.FLEXIBLE)
+        fakePlayCore.setUpdatePriority(2)
+        fakePlayCore.setClientVersionStalenessDays(3)
+        val availState = playProvider.checkForPlayStoreUpdate()
+        assertTrue(availState is com.example.update.PlayStoreUpdateState.UpdateAvailable)
+        val avail = availState as com.example.update.PlayStoreUpdateState.UpdateAvailable
+        assertEquals(targetPlayVersionCode, avail.availableVersionCode)
+        assertTrue(avail.isFlexibleAllowed)
+        assertEquals(com.google.android.play.core.install.model.AppUpdateType.FLEXIBLE, avail.recommendedUpdateType)
+
+        // Simulate background download progress via InstallStateUpdatedListener
+        fakePlayCore.setTotalBytesToDownload(10_000_000L)
+        fakePlayCore.setBytesDownloaded(4_500_000L)
+        playProvider.handleInstallStateUpdate(
+            com.google.android.play.core.install.InstallState.zza(
+                com.google.android.play.core.install.model.InstallStatus.DOWNLOADING,
+                4_500_000L,
+                10_000_000L,
+                com.google.android.play.core.install.model.InstallErrorCode.NO_ERROR,
+                app.packageName
+            )
+        )
+        val downloadingState = playProvider.state.value
+        assertTrue(downloadingState is com.example.update.PlayStoreUpdateState.FlexibleDownloading)
+        assertEquals(45, (downloadingState as com.example.update.PlayStoreUpdateState.FlexibleDownloading).progressPercent)
+
+        // Simulate background download finishing -> DownloadedReadyToComplete
+        playProvider.handleInstallStateUpdate(
+            com.google.android.play.core.install.InstallState.zza(
+                com.google.android.play.core.install.model.InstallStatus.DOWNLOADED,
+                10_000_000L,
+                10_000_000L,
+                com.google.android.play.core.install.model.InstallErrorCode.NO_ERROR,
+                app.packageName
+            )
+        )
+        assertTrue(playProvider.state.value is com.example.update.PlayStoreUpdateState.DownloadedReadyToComplete)
+
+        // 4c. High-priority Immediate update recommendation (priority >= 4)
+        val criticalVersionCode = BuildConfig.VERSION_CODE + 25
+        fakePlayCore.setUpdateAvailable(criticalVersionCode, com.google.android.play.core.install.model.AppUpdateType.IMMEDIATE)
+        fakePlayCore.setUpdatePriority(5)
+        val immediateAvail = playProvider.checkForPlayStoreUpdate()
+        assertTrue(immediateAvail is com.example.update.PlayStoreUpdateState.UpdateAvailable)
+        val imm = immediateAvail as com.example.update.PlayStoreUpdateState.UpdateAvailable
+        assertTrue(imm.isImmediateAllowed)
+        assertEquals(com.google.android.play.core.install.model.AppUpdateType.IMMEDIATE, imm.recommendedUpdateType)
+
+        // 5. Shared UpdateManager enforces Play-install protection & preserves Room DB + DataStore preferences
+        val dao = database.pulseDao()
+        val prefsRepo = UserPreferencesRepository(app)
+        prefsRepo.setGitHubRepositorySlug("official-org/pulseplay")
+        val playlistId = dao.insertPlaylist(
+            com.example.data.local.PlaylistEntity(
+                name = "Pre-Update Playlist",
+                description = "Must survive update checks and in-place upgrades"
+            )
+        )
+
+        val sharedUpdateManager = com.example.update.UpdateManager(
+            context = app,
+            playStoreProvider = playProvider
+        )
+        // Simulate Google Play installation in UpdateManager
+        sharedUpdateManager.refreshInstallSourceEvaluation(playSignals)
+        assertFalse(
+            "Selecting GitHub channel must be rejected when app is installed from Google Play",
+            sharedUpdateManager.selectChannel(com.example.update.UpdateDistributionChannel.GITHUB_RELEASES)
+        )
+        val blockedGhCheck = sharedUpdateManager.checkGitHubUpdates("official-org/pulseplay")
+        assertTrue(blockedGhCheck is com.example.update.UpdateCheckState.VerificationFailed)
+
+        // Verify Room playlists and DataStore preferences are 100% intact
+        val playlistsAfterCheck = dao.observePlaylistsWithCount().first()
+        assertTrue(playlistsAfterCheck.any { it.playlistId == playlistId && it.name == "Pre-Update Playlist" })
+        assertEquals("official-org/pulseplay", prefsRepo.preferencesFlow.first().githubRepositorySlug)
+
+        // 6. Verify UpdateSettingsScreen UI renders ONLY the selected provider panel at a time
+        var playCheckClicked = false
+        var flexibleClicked = false
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(DpSize(800.dp, 2400.dp))) {
+                    com.example.update.UpdateSettingsScreen(
+                        installedVersionName = "1.2.0",
+                        installedVersionCode = 12L,
+                        githubRepositorySlug = "official-org/pulseplay",
+                        includePrereleaseUpdates = false,
+                        updateState = com.example.update.UpdateCheckState.Idle,
+                        playStoreState = avail,
+                        sourceEvaluation = playEvaluation,
+                        activeChannel = com.example.update.UpdateDistributionChannel.GOOGLE_PLAY,
+                        policyBlockMessage = sharedUpdateManager.lastPolicyBlockMessage.value,
+                        onSetGitHubRepositorySlug = {},
+                        onSetIncludePrereleaseUpdates = {},
+                        onCheckForUpdatesClick = {},
+                        onDownloadUpdateClick = {},
+                        onCancelUpdateDownloadClick = {},
+                        onInstallVerifiedUpdateClick = {},
+                        onCheckPlayStoreUpdatesClick = { playCheckClicked = true },
+                        onStartPlayFlexibleUpdateClick = { flexibleClicked = true }
+                    )
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("install_source_badge").assertExists()
+        // While Google Play Store is selected, only Play Store controls exist and GitHub controls are hidden
+        composeTestRule.onNodeWithTag("play_store_update_section").assertExists()
+        composeTestRule.onNodeWithTag("github_update_section").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("check_play_store_updates_button")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.onNodeWithTag("play_flexible_update_button")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertTrue(playCheckClicked)
+        assertTrue(flexibleClicked)
+
+        // Switching to GitHub Releases panel displays only the GitHub panel + Play-install policy block banner
+        composeTestRule.onNodeWithTag("update_channel_chip_github")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("github_update_section").assertExists()
+        composeTestRule.onNodeWithTag("play_install_blocks_github_banner").assertExists()
+        composeTestRule.onNodeWithTag("play_store_update_section").assertDoesNotExist()
+    }
+
+    @Test
+    fun `updateSettingsScreen exclusiveProviderPanels repeatedSwitching reopenRestorationAndProviderActionsWorkCorrectly`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val prefsRepo = UserPreferencesRepository(app)
+        val updateManager = com.example.update.UpdateManager(context = app)
+
+        var gitHubCheckInvocations = 0
+        var gitHubSaveRepoInvocations = 0
+        var playCheckInvocations = 0
+        var playListingInvocations = 0
+        var activeChannel by androidx.compose.runtime.mutableStateOf(updateManager.activeChannel.value)
+        var isSettingsScreenOpen by androidx.compose.runtime.mutableStateOf(true)
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(DpSize(800.dp, 2000.dp))) {
+                    if (isSettingsScreenOpen) {
+                        com.example.update.UpdateSettingsScreen(
+                            installedVersionName = "1.2.0",
+                            installedVersionCode = 12L,
+                            githubRepositorySlug = "official-org/pulseplay",
+                            includePrereleaseUpdates = false,
+                            updateState = updateManager.gitHubState.value,
+                            playStoreState = updateManager.playStoreState.value,
+                            sourceEvaluation = updateManager.sourceEvaluation.value,
+                            activeChannel = activeChannel,
+                            policyBlockMessage = updateManager.lastPolicyBlockMessage.value,
+                            onSelectChannel = { selected ->
+                                updateManager.selectChannel(selected)
+                                activeChannel = updateManager.activeChannel.value
+                                kotlinx.coroutines.runBlocking {
+                                    prefsRepo.setSelectedUpdateChannel(selected)
+                                }
+                            },
+                            onSetGitHubRepositorySlug = { gitHubSaveRepoInvocations++ },
+                            onSetIncludePrereleaseUpdates = {},
+                            onCheckForUpdatesClick = { gitHubCheckInvocations++ },
+                            onDownloadUpdateClick = {},
+                            onCancelUpdateDownloadClick = {},
+                            onInstallVerifiedUpdateClick = {},
+                            onCheckPlayStoreUpdatesClick = { playCheckInvocations++ },
+                            onOpenPlayStoreListingClick = { playListingInvocations++ }
+                        )
+                    } else {
+                        androidx.compose.material3.Text(text = "Home Screen")
+                    }
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. Select GitHub: only GitHub update controls are visible; Google Play panel is completely absent
+        composeTestRule.onNodeWithTag("update_channel_chip_github")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("github_update_section").assertExists()
+        composeTestRule.onNodeWithTag("github_repo_slug_input").assertExists()
+        composeTestRule.onNodeWithTag("include_prerelease_updates_switch").assertExists()
+        composeTestRule.onNodeWithTag("save_github_repo_slug_button").assertExists()
+        composeTestRule.onNodeWithTag("check_for_updates_button").assertExists()
+        composeTestRule.onNodeWithTag("github_update_state_panel").assertExists()
+
+        composeTestRule.onNodeWithTag("play_store_update_section").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("check_play_store_updates_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("open_play_store_listing_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("play_store_update_state_panel").assertDoesNotExist()
+
+        // Verify GitHub update actions invoke only the GitHub provider
+        composeTestRule.onNodeWithTag("save_github_repo_slug_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.onNodeWithTag("check_for_updates_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(1, gitHubSaveRepoInvocations)
+        assertEquals(1, gitHubCheckInvocations)
+        assertEquals("GitHub actions must never invoke Play Store provider", 0, playCheckInvocations)
+
+        // 2. Select Google Play Store: only Play update controls are visible; GitHub panel is completely absent
+        composeTestRule.onNodeWithTag("update_channel_chip_play")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+
+        // Switching providers must not trigger any update check automatically
+        assertEquals(1, gitHubCheckInvocations)
+        assertEquals(0, playCheckInvocations)
+
+        composeTestRule.onNodeWithTag("play_store_update_section").assertExists()
+        composeTestRule.onNodeWithTag("check_play_store_updates_button").assertExists()
+        composeTestRule.onNodeWithTag("open_play_store_listing_button").assertExists()
+        composeTestRule.onNodeWithTag("play_store_update_state_panel").assertExists()
+
+        composeTestRule.onNodeWithTag("github_update_section").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("github_repo_slug_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("include_prerelease_updates_switch").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("save_github_repo_slug_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("check_for_updates_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("github_update_state_panel").assertDoesNotExist()
+
+        // Verify Google Play update actions invoke only the Play Store provider
+        composeTestRule.onNodeWithTag("check_play_store_updates_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.onNodeWithTag("open_play_store_listing_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(1, playCheckInvocations)
+        assertEquals(1, playListingInvocations)
+        assertEquals("Play Store actions must never invoke GitHub provider", 1, gitHubCheckInvocations)
+
+        // 3. Switch between them repeatedly: exactly one provider panel remains visible at all times
+        repeat(4) {
+            composeTestRule.onNodeWithTag("update_channel_chip_github")
+                .performSemanticsAction(SemanticsActions.OnClick)
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("github_update_section").assertExists()
+            composeTestRule.onNodeWithTag("play_store_update_section").assertDoesNotExist()
+
+            composeTestRule.onNodeWithTag("update_channel_chip_play")
+                .performSemanticsAction(SemanticsActions.OnClick)
+            composeTestRule.waitForIdle()
+            composeTestRule.onNodeWithTag("play_store_update_section").assertExists()
+            composeTestRule.onNodeWithTag("github_update_section").assertDoesNotExist()
+        }
+
+        // 4. Close Settings and reopen Settings: the previously selected provider (Google Play Store) is restored
+        isSettingsScreenOpen = false
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("update_settings_screen_card").assertDoesNotExist()
+
+        isSettingsScreenOpen = true
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("update_settings_screen_card").assertExists()
+        composeTestRule.onNodeWithTag("play_store_update_section").assertExists()
+        composeTestRule.onNodeWithTag("github_update_section").assertDoesNotExist()
+        assertEquals(
+            com.example.update.UpdateDistributionChannel.GOOGLE_PLAY,
+            prefsRepo.preferencesFlow.first().selectedUpdateChannel
+        )
+    }
+
+    @Test
+    fun temporaryNotificationsAutoDismissAndPersistentErrorsRemainVisible_acceptanceTest() {
+        com.example.update.UpdateProviderSelectionSessionStore.clearForTesting()
+
+        var currentNotification by mutableStateOf<com.example.ui.components.InAppNotification?>(null)
+        var currentGitHubState by mutableStateOf<com.example.update.UpdateCheckState>(
+            com.example.update.UpdateCheckState.Idle
+        )
+        var currentPlayState by mutableStateOf<com.example.update.PlayStoreUpdateState>(
+            com.example.update.PlayStoreUpdateState.Idle
+        )
+        var configuredRepoSlug by mutableStateOf("")
+
+        val showTempNotification: (String, com.example.ui.components.InAppNotificationType) -> Unit = { msg, type ->
+            currentNotification = com.example.ui.components.InAppNotification(
+                message = msg,
+                type = type,
+                durationMs = 3_500L
+            )
+        }
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    com.example.ui.components.InAppNotificationBanner(
+                        notification = currentNotification,
+                        onDismiss = { currentNotification = null }
+                    )
+                    com.example.update.UpdateSettingsScreen(
+                        installedVersionName = "1.0.0",
+                        installedVersionCode = 1L,
+                        githubRepositorySlug = configuredRepoSlug,
+                        includePrereleaseUpdates = false,
+                        updateState = currentGitHubState,
+                        playStoreState = currentPlayState,
+                        activeChannel = com.example.update.UpdateDistributionChannel.GITHUB_RELEASES,
+                        autoDismissDurationMs = 3_500L,
+                        onSelectChannel = {},
+                        onSetGitHubRepositorySlug = { configuredRepoSlug = it },
+                        onSetIncludePrereleaseUpdates = {},
+                        onCheckForUpdatesClick = {
+                            if (configuredRepoSlug.isBlank()) {
+                                val warnMsg = "Configure your GitHub repository ('owner/repo') in Settings to check for official APK updates."
+                                currentGitHubState = com.example.update.UpdateCheckState.ConfigurationRequired(warnMsg)
+                                showTempNotification(
+                                    warnMsg,
+                                    com.example.ui.components.InAppNotificationType.TEMPORARY_WARNING
+                                )
+                            } else {
+                                currentGitHubState = com.example.update.UpdateCheckState.UpToDate(
+                                    installedVersionName = "1.0.0",
+                                    installedVersionCode = 1L,
+                                    latestRemoteTag = "v1.0.0"
+                                )
+                                showTempNotification(
+                                    "PulsePlay v1.0.0 is up to date.",
+                                    com.example.ui.components.InAppNotificationType.TEMPORARY_SUCCESS
+                                )
+                            }
+                        },
+                        onDownloadUpdateClick = {},
+                        onCancelUpdateDownloadClick = {},
+                        onInstallVerifiedUpdateClick = {}
+                    )
+                }
+            }
+        }
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.waitForIdle()
+
+        // 1. Trigger GitHub configuration warning when repository is not configured
+        composeTestRule.onNodeWithTag("check_for_updates_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.waitForIdle()
+
+        // Both the top status banner and the GitHub panel warning appear immediately
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("Repository Configuration Required").assertExists()
+        assertEquals("Repository configuration must remain unchanged", "", configuredRepoSlug)
+
+        // Still visible at 2.5 seconds (before the 3.5s dismissal window completes)
+        composeTestRule.mainClock.advanceTimeBy(2_500L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("Repository Configuration Required").assertExists()
+
+        // Automatically disappears after ~3.5 seconds without tapping X/close
+        composeTestRule.mainClock.advanceTimeBy(1_200L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Repository Configuration Required").assertDoesNotExist()
+        assertEquals("Repository configuration must still remain unchanged", "", configuredRepoSlug)
+
+        // 2. Trigger again while repository is still unconfigured: warning must appear again and auto-dismiss again
+        composeTestRule.onNodeWithTag("check_for_updates_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("Repository Configuration Required").assertExists()
+
+        // Advance 2.0s, then re-trigger the exact same message: timer must restart for a full 3.5s
+        composeTestRule.mainClock.advanceTimeBy(2_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("check_for_updates_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.waitForIdle()
+
+        // 2.0s after re-trigger (4.0s total since first trigger, but only 2.0s since restart), must STILL be visible
+        composeTestRule.mainClock.advanceTimeBy(2_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("Repository Configuration Required").assertExists()
+
+        // Complete the remaining 1.7s of the restarted 3.5s timer: now it auto-dismisses
+        composeTestRule.mainClock.advanceTimeBy(1_700L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Repository Configuration Required").assertDoesNotExist()
+
+        // 3. Configure repository and trigger an ordinary update-check result ("UpToDate")
+        configuredRepoSlug = "pulseplay-org/pulseplay"
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.onNodeWithTag("check_for_updates_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("You are running the latest version (v1.0.0).").assertExists()
+
+        // After ~3.5 seconds, ordinary update-check result disappears automatically without user interaction
+        composeTestRule.mainClock.advanceTimeBy(3_600L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertDoesNotExist()
+        composeTestRule.onNodeWithText("You are running the latest version (v1.0.0).").assertDoesNotExist()
+
+        // 4. Verify important, persistent security/verification errors and ongoing downloads are NOT hidden prematurely
+        val criticalErrorMsg = "SHA-256 checksum mismatch: APK integrity verification failed."
+        currentGitHubState = com.example.update.UpdateCheckState.VerificationFailed(
+            releaseInfo = null,
+            reason = criticalErrorMsg
+        )
+        showTempNotification(
+            criticalErrorMsg,
+            com.example.ui.components.InAppNotificationType.PERSISTENT_ERROR
+        )
+        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("APK Verification Failed").assertExists()
+
+        // Advance 6 full seconds: persistent error must remain visible until explicitly dismissed or resolved
+        composeTestRule.mainClock.advanceTimeBy(6_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("status_feedback_banner").assertExists()
+        composeTestRule.onNodeWithText("APK Verification Failed").assertExists()
+
+        composeTestRule.mainClock.autoAdvance = true
+    }
 }
-
-

@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.example.ui.theme.AppThemeMode
+import com.example.update.UpdateDistributionChannel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -49,12 +50,17 @@ data class UserPreferencesState(
     val equalizerEnabled: Boolean = false,
     val equalizerPresetIndex: Int = 0,
     val bassBoostStrength: Int = 0, // 0..1000
+    val preampGainDb: Float = 0.0f, // -12.0f .. +12.0f
     val customBandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
     // Optional 4K Software Decoding Fallback (Strictly disabled by default to protect CPU/thermal/battery)
     val allowExperimental4kSoftwareFallback: Boolean = false,
     // Phase 14: Optional Advertising Module (Strictly disabled by default for privacy)
     val optionalAdsModuleEnabled: Boolean = false,
-    val optionalAdsConsentGranted: Boolean = false
+    val optionalAdsConsentGranted: Boolean = false,
+    // GitHub Release & Dual-Distribution Auto-Update Configuration
+    val githubRepositorySlug: String = "",
+    val includePrereleaseUpdates: Boolean = false,
+    val selectedUpdateChannel: UpdateDistributionChannel? = null
 )
 
 class UserPreferencesRepository(private val context: Context) {
@@ -77,10 +83,14 @@ class UserPreferencesRepository(private val context: Context) {
         val EQ_ENABLED = booleanPreferencesKey("equalizer_enabled")
         val EQ_PRESET = intPreferencesKey("equalizer_preset_index")
         val BASS_STRENGTH = intPreferencesKey("bass_boost_strength")
+        val PREAMP_GAIN_DB = floatPreferencesKey("preamp_gain_db")
         val EQ_BANDS_CSV = stringPreferencesKey("equalizer_bands_csv")
         val ALLOW_4K_SW_FALLBACK = booleanPreferencesKey("allow_experimental_4k_software_fallback")
         val OPTIONAL_ADS_ENABLED = booleanPreferencesKey("optional_ads_module_enabled")
         val OPTIONAL_ADS_CONSENT = booleanPreferencesKey("optional_ads_consent_granted")
+        val GITHUB_REPO_SLUG = stringPreferencesKey("github_repository_slug")
+        val INCLUDE_PRERELEASE_UPDATES = booleanPreferencesKey("include_prerelease_updates")
+        val SELECTED_UPDATE_CHANNEL = stringPreferencesKey("selected_update_channel")
     }
 
     val preferencesFlow: Flow<UserPreferencesState> = context.pulseDataStore.data.map { prefs ->
@@ -95,6 +105,10 @@ class UserPreferencesRepository(private val context: Context) {
         val orientationPref = prefs[Keys.VIDEO_ORIENTATION_PREF]?.let {
             runCatching { VideoOrientationPreference.valueOf(it) }.getOrNull()
         } ?: VideoOrientationPreference.AUTO
+
+        val savedUpdateChannel = prefs[Keys.SELECTED_UPDATE_CHANNEL]?.let {
+            runCatching { UpdateDistributionChannel.valueOf(it) }.getOrNull()
+        }
 
         val bandsCsv = prefs[Keys.EQ_BANDS_CSV] ?: "0,0,0,0,0"
         val parsedBands = bandsCsv.split(",")
@@ -119,10 +133,14 @@ class UserPreferencesRepository(private val context: Context) {
             equalizerEnabled = prefs[Keys.EQ_ENABLED] ?: false,
             equalizerPresetIndex = prefs[Keys.EQ_PRESET] ?: 0,
             bassBoostStrength = (prefs[Keys.BASS_STRENGTH] ?: 0).coerceIn(0, 1000),
+            preampGainDb = (prefs[Keys.PREAMP_GAIN_DB] ?: 0.0f).coerceIn(-12.0f, 12.0f),
             customBandLevelsMb = parsedBands,
             allowExperimental4kSoftwareFallback = prefs[Keys.ALLOW_4K_SW_FALLBACK] ?: false,
             optionalAdsModuleEnabled = prefs[Keys.OPTIONAL_ADS_ENABLED] ?: false,
-            optionalAdsConsentGranted = prefs[Keys.OPTIONAL_ADS_CONSENT] ?: false
+            optionalAdsConsentGranted = prefs[Keys.OPTIONAL_ADS_CONSENT] ?: false,
+            githubRepositorySlug = prefs[Keys.GITHUB_REPO_SLUG] ?: "",
+            includePrereleaseUpdates = prefs[Keys.INCLUDE_PRERELEASE_UPDATES] ?: false,
+            selectedUpdateChannel = savedUpdateChannel
         )
     }
 
@@ -166,6 +184,10 @@ class UserPreferencesRepository(private val context: Context) {
         context.pulseDataStore.edit { it[Keys.AUDIO_BALANCE] = balance.coerceIn(-1.0f, 1.0f) }
     }
 
+    suspend fun setPreampGainDb(gainDb: Float) {
+        context.pulseDataStore.edit { it[Keys.PREAMP_GAIN_DB] = gainDb.coerceIn(-12.0f, 12.0f) }
+    }
+
     suspend fun setSubtitlesEnabled(enabled: Boolean) {
         context.pulseDataStore.edit { it[Keys.SUBTITLES_ENABLED] = enabled }
     }
@@ -206,6 +228,24 @@ class UserPreferencesRepository(private val context: Context) {
         context.pulseDataStore.edit { prefs ->
             prefs[Keys.OPTIONAL_ADS_ENABLED] = enabled
             prefs[Keys.OPTIONAL_ADS_CONSENT] = if (enabled) consentGranted else false
+        }
+    }
+
+    suspend fun setGitHubRepositorySlug(slug: String) {
+        context.pulseDataStore.edit { prefs ->
+            prefs[Keys.GITHUB_REPO_SLUG] = slug.trim()
+        }
+    }
+
+    suspend fun setIncludePrereleaseUpdates(include: Boolean) {
+        context.pulseDataStore.edit { prefs ->
+            prefs[Keys.INCLUDE_PRERELEASE_UPDATES] = include
+        }
+    }
+
+    suspend fun setSelectedUpdateChannel(channel: UpdateDistributionChannel) {
+        context.pulseDataStore.edit { prefs ->
+            prefs[Keys.SELECTED_UPDATE_CHANNEL] = channel.name
         }
     }
 

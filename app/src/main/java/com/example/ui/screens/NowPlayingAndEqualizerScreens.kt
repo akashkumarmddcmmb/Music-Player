@@ -76,6 +76,7 @@ import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
@@ -216,6 +217,7 @@ fun NowPlayingOverlayScreen(
     onSetRingtoneCurrentMedia: () -> Unit = {},
     onAddToPlaylistCurrentMedia: () -> Unit = {},
     onShowFileInfoCurrentMedia: () -> Unit = {},
+    onEnterPipClick: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     val context = LocalContext.current
@@ -394,6 +396,7 @@ fun NowPlayingOverlayScreen(
                     onOpenStudio = onOpenStudio,
                     onSelectAudioTrack = onSelectAudioTrack,
                     onVideoSurfaceAttached = onVideoSurfaceAttached,
+                    onEnterPipClick = onEnterPipClick,
                     onRetryPlayback = onRetryPlayback
                 )
             } else if (isLandscapeViewport) {
@@ -1294,6 +1297,7 @@ private fun ImmersiveVideoCinemaLayout(
     onOpenStudio: () -> Unit,
     onSelectAudioTrack: (AudioTrackOption) -> Unit = {},
     onVideoSurfaceAttached: (Boolean) -> Unit = {},
+    onEnterPipClick: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     var containerWidthPx by remember { mutableIntStateOf(1280) }
@@ -1787,34 +1791,6 @@ private fun ImmersiveVideoCinemaLayout(
                                             .weight(1f, fill = false)
                                             .testTag("video_resolution_meta_label")
                                     )
-                                    if (isCompactHudHeight) {
-                                        Text(
-                                            text = "• ${playbackState.decoderStatusLabel}",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (playbackState.isDecoderVerified) {
-                                                CinemaNeonGreen.copy(alpha = 0.9f)
-                                            } else {
-                                                Color.White.copy(alpha = 0.6f)
-                                            },
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.testTag("video_decoder_status_badge")
-                                        )
-                                    }
-                                }
-                                if (!isCompactHudHeight) {
-                                    Text(
-                                        text = playbackState.decoderStatusLabel,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (playbackState.isDecoderVerified) {
-                                            CinemaNeonGreen.copy(alpha = 0.9f)
-                                        } else {
-                                            Color.White.copy(alpha = 0.6f)
-                                        },
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.testTag("video_decoder_status_badge")
-                                    )
                                 }
                             }
                         }
@@ -1866,6 +1842,20 @@ private fun ImmersiveVideoCinemaLayout(
                                 Icon(
                                     imageVector = Icons.Default.Equalizer,
                                     contentDescription = "Equalizer",
+                                    tint = Color.White
+                                )
+                            }
+                            // Picture-in-Picture (PiP) Icon
+                            IconButton(
+                                onClick = {
+                                    notifyUserInteraction()
+                                    onEnterPipClick()
+                                },
+                                modifier = Modifier.testTag("video_pip_chip")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.PictureInPictureAlt,
+                                    contentDescription = "Picture-in-Picture",
                                     tint = Color.White
                                 )
                             }

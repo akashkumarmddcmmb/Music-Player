@@ -12,8 +12,19 @@ android {
     applicationId = "com.aistudio.pulseplay.mpxvqr"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0.0"
+    val resolvedVersionCode = (project.findProperty("APP_VERSION_CODE")?.toString()?.toIntOrNull()
+      ?: System.getenv("APP_VERSION_CODE")?.toIntOrNull()
+      ?: 1).coerceAtLeast(1)
+    val resolvedVersionName = (project.findProperty("APP_VERSION_NAME")?.toString()
+      ?: System.getenv("APP_VERSION_NAME")
+      ?: "1.0.0").removePrefix("v").trim().ifEmpty { "1.0.0" }
+    val resolvedGitHubRepo = (project.findProperty("GITHUB_REPOSITORY")?.toString()
+      ?: System.getenv("GITHUB_REPOSITORY")
+      ?: "").trim()
+
+    versionCode = resolvedVersionCode
+    versionName = resolvedVersionName
+    buildConfigField("String", "GITHUB_REPOSITORY", "\"$resolvedGitHubRepo\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -94,6 +105,8 @@ dependencies {
   implementation(libs.androidx.media3.session)
   implementation(libs.androidx.media3.ui)
   implementation(libs.androidx.media3.common)
+  implementation(libs.google.play.app.update)
+  implementation(libs.google.play.app.update.ktx)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
 

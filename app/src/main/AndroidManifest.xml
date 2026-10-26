@@ -26,7 +26,9 @@
         android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
-    <!-- Explicitly offline-first: No INTERNET, ACCESS_NETWORK_STATE, CAMERA, RECORD_AUDIO, or LOCATION permissions declared -->
+    <!-- GitHub Release Self-Updater Permissions (Used exclusively for user-triggered GitHub Release checks/downloads and verified APK package installation; all media playback, scanning, and editing remain 100% offline) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:allowBackup="true"

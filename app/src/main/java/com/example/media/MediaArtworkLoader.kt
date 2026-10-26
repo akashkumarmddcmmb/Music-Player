@@ -4,12 +4,9 @@ import android.content.ContentUris
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.net.Uri
-import android.os.Build
 import android.provider.MediaStore
 import android.util.LruCache
-import android.util.Size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
@@ -25,14 +22,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
+import java.io.InputStream
 import java.nio.charset.Charset
 import java.util.Arrays
 
 /**
  * Resolved artwork payload for a media item, unifying Media3 [MediaMetadata] (`artworkData` and
- * `artworkUri`), embedded audio/video tags (`MediaMetadataRetriever` / ID3v2 `APIC`), and
- * MediaStore album art so that the System Notification, Main Now Playing Screen, Landscape Deck,
- * Side Panel, and Mini-Player all display the exact same album artwork.
+ * `artworkUri`), embedded audio/video tags (ID3v2 `APIC`/`PIC`, FLAC `PICTURE`, MP4/M4A `covr`),
+ * and MediaStore album art so that the System Notification, Main Now Playing Screen, Landscape Deck,
+ * Side Panel, and Mini-Player all display the exact same album artwork without triggering native
+ * `MediaMetadataRetrieverJNI` error logs on tracks without embedded pictures.
  */
 data class ResolvedMediaArtwork(
     val mediaUri: String,
@@ -76,7 +75,7 @@ object MediaArtworkLoader {
         }
     }
 
-    private val metadataCache = object : LruCache<String, ResolvedMediaArtwork>(128) {}
+    private val metadataCache = object : LruCache<String, ResolvedMediaArtwork>(256) {}
 
     fun clearCache() {
         synchronized(bitmapCache) {
@@ -169,10 +168,9 @@ object MediaArtworkLoader {
     /**
      * Resolves artwork metadata (`artworkData` bytes and/or `artworkUri`) for [media], combining:
      * 1. Active Media3 [playerMetadata] (`artworkData` / `artworkUri`) if present
-     * 2. Embedded picture in the audio/video file (`MediaMetadataRetriever.getEmbeddedPicture()` or ID3v2 `APIC`)
+     * 2. Embedded picture in the audio/video file (ID3v2 `APIC`/`PIC`, FLAC `PICTURE`, MP4 `covr`)
      * 3. MediaStore album art URI (`content://media/external/audio/albumart/<albumId>`)
-     * 4. Explicit [MediaEntity.thumbnailUri] if populated
-     * 5. Companion cover image file in the same directory (`cover.jpg`, `<filename>.jpg`, etc.)
+     * 4. Companion cover image file in the same directory (`cover.jpg`, `<filename>.jpg`, etc.)
      */
     fun resolveArtworkMetadata(
         context: Context,
@@ -197,13 +195,11 @@ object MediaArtworkLoader {
 
         synchronized(metadataCache) {
             metadataCache.get(media.uriString)?.let { cached ->
-                if (cached.hasArtwork) {
-                    return cached
-                }
+                return cached
             }
         }
 
-        // 1. Try embedded picture from MediaMetadataRetriever or ID3v2 APIC tag
+        // 1. Try embedded picture from container tags (ID3v2 APIC/PIC, FLAC PICTURE, MP4 covr)
         val embeddedBytes = extractEmbeddedArtworkBytes(context, media.uriString)
         if (embeddedBytes != null && embeddedBytes.isNotEmpty()) {
             val resolved = ResolvedMediaArtwork(
@@ -286,7 +282,7 @@ object MediaArtworkLoader {
     /**
      * Loads and downsamples the album artwork [Bitmap] for [media], using in-memory [LruCache]
      * first and falling back to decoding [artworkData], [artworkUri], embedded file tags, or
-     * MediaStore thumbnails. Never throws on corrupt or missing images.
+     * MediaStore album art. Never throws on corrupt or missing images.
      */
     fun loadArtworkBitmapBlocking(
         context: Context,
@@ -341,21 +337,6 @@ object MediaArtworkLoader {
             }
         }
 
-        // 4. Android Q+ ContentResolver.loadThumbnail fallback for content:// media URIs
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && mediaUri.startsWith("content://")) {
-            val thumb = runCatching {
-                context.contentResolver.loadThumbnail(
-                    Uri.parse(mediaUri),
-                    Size(safeTargetPx, safeTargetPx),
-                    null
-                )
-            }.getOrNull()
-            if (thumb != null && thumb.width > 0 && thumb.height > 0) {
-                putInCache(mediaUri, dataHash, artworkUri, safeTargetPx, thumb)
-                return thumb
-            }
-        }
-
         return null
     }
 
@@ -374,52 +355,20 @@ object MediaArtworkLoader {
     }
 
     /**
-     * Extracts embedded cover picture bytes (`APIC` / `covr` / `PICTURE`) from an audio/video URI.
-     * Uses Android's [MediaMetadataRetriever] first, and falls back to direct ID3v2 `APIC` frame
-     * parsing for local files so embedded MP3 artwork works reliably across all runtimes.
+     * Extracts embedded cover picture bytes (`APIC` / `PIC` / `covr` / `PICTURE`) from an audio/video URI
+     * in pure Kotlin without calling `MediaMetadataRetriever.getEmbeddedPicture()`, avoiding native
+     * `E/MediaMetadataRetrieverJNI: getEmbeddedPicture: Call to getEmbeddedPicture failed.` log spam
+     * when scanning tracks without embedded cover art.
      */
     fun extractEmbeddedArtworkBytes(context: Context, uriString: String): ByteArray? {
         if (uriString.isBlank()) return null
         val parsed = runCatching { Uri.parse(uriString) }.getOrNull() ?: return null
-
-        // 1. Try MediaMetadataRetriever.getEmbeddedPicture()
-        val retrieverBytes = runCatching {
-            val retriever = MediaMetadataRetriever()
-            try {
-                when (parsed.scheme?.lowercase()) {
-                    "file" -> {
-                        val path = parsed.path
-                        if (!path.isNullOrBlank() && File(path).exists()) {
-                            retriever.setDataSource(path)
-                        }
-                    }
-                    "content" -> {
-                        context.contentResolver.openFileDescriptor(parsed, "r")?.use { pfd ->
-                            retriever.setDataSource(pfd.fileDescriptor)
-                        } ?: retriever.setDataSource(context, parsed)
-                    }
-                    else -> {
-                        retriever.setDataSource(context, parsed)
-                    }
-                }
-                retriever.embeddedPicture
-            } finally {
-                runCatching { retriever.release() }
-            }
-        }.getOrNull()
-
-        if (retrieverBytes != null && retrieverBytes.isNotEmpty()) {
-            return retrieverBytes
-        }
-
-        // 2. Fallback: Direct ID3v2 APIC frame extraction for local or content-URI MP3/audio files
         return extractId3v2ApicPictureBytes(context, parsed)
     }
 
     /**
-     * Parses ID3v2.3 / ID3v2.4 `APIC` (Attached Picture) frames directly from the header of an
-     * audio stream if `MediaMetadataRetriever` did not return the embedded picture (e.g. in JVM
-     * unit tests or certain custom ID3v2 tags).
+     * Parses ID3v2 (`APIC` / `PIC`), FLAC (`PICTURE`), and MP4/M4A (`covr`) embedded picture frames
+     * directly from the container stream.
      */
     fun extractId3v2ApicPictureBytes(context: Context, uri: Uri): ByteArray? {
         return runCatching {
@@ -434,90 +383,269 @@ object MediaArtworkLoader {
             } ?: return null
 
             inputStream.use { stream ->
-                val header = ByteArray(10)
-                if (stream.read(header) != 10) return null
-                if (header[0] != 'I'.code.toByte() ||
-                    header[1] != 'D'.code.toByte() ||
-                    header[2] != '3'.code.toByte()
+                val header = ByteArray(12)
+                val readHeader = readFully(stream, header, 12)
+                if (readHeader < 10) return null
+
+                // 1. WAV ("RIFF"...."WAVE") has no standard cover image in the header
+                if (readHeader >= 12 &&
+                    header[0] == 'R'.code.toByte() &&
+                    header[1] == 'I'.code.toByte() &&
+                    header[2] == 'F'.code.toByte() &&
+                    header[3] == 'F'.code.toByte() &&
+                    header[8] == 'W'.code.toByte() &&
+                    header[9] == 'A'.code.toByte() &&
+                    header[10] == 'V'.code.toByte() &&
+                    header[11] == 'E'.code.toByte()
                 ) {
                     return null
                 }
-                val versionMajor = header[3].toInt() and 0xFF
-                val tagSize = ((header[6].toInt() and 0x7F) shl 21) or
-                    ((header[7].toInt() and 0x7F) shl 14) or
-                    ((header[8].toInt() and 0x7F) shl 7) or
-                    (header[9].toInt() and 0x7F)
-                val maxRead = tagSize.coerceIn(0, 4 * 1024 * 1024)
-                if (maxRead <= 10) return null
 
-                val tagBytes = ByteArray(maxRead)
-                var totalRead = 0
-                while (totalRead < maxRead) {
-                    val r = stream.read(tagBytes, totalRead, maxRead - totalRead)
-                    if (r <= 0) break
-                    totalRead += r
+                // 2. ID3v2 ("ID3") tag header
+                if (header[0] == 'I'.code.toByte() &&
+                    header[1] == 'D'.code.toByte() &&
+                    header[2] == '3'.code.toByte()
+                ) {
+                    val versionMajor = header[3].toInt() and 0xFF
+                    val flags = header[5].toInt() and 0xFF
+                    val tagSize = ((header[6].toInt() and 0x7F) shl 21) or
+                        ((header[7].toInt() and 0x7F) shl 14) or
+                        ((header[8].toInt() and 0x7F) shl 7) or
+                        (header[9].toInt() and 0x7F)
+                    val maxRead = tagSize.coerceIn(0, 4 * 1024 * 1024)
+                    if (maxRead <= 10) return null
+
+                    val tagBytes = ByteArray(maxRead)
+                    var initialCopied = 0
+                    val extraFromHeader = readHeader - 10
+                    if (extraFromHeader > 0) {
+                        val copyLen = extraFromHeader.coerceAtMost(maxRead)
+                        System.arraycopy(header, 10, tagBytes, 0, copyLen)
+                        initialCopied = copyLen
+                    }
+                    val restRead = readFully(stream, tagBytes, maxRead - initialCopied, initialCopied)
+                    val totalRead = initialCopied + restRead
+                    return parseId3v2FramesForPicture(tagBytes, totalRead, versionMajor, flags)
                 }
 
-                var pos = 0
-                while (pos + 10 <= totalRead) {
-                    val f0 = tagBytes[pos].toInt() and 0xFF
-                    val f1 = tagBytes[pos + 1].toInt() and 0xFF
-                    val f2 = tagBytes[pos + 2].toInt() and 0xFF
-                    val f3 = tagBytes[pos + 3].toInt() and 0xFF
-                    if (f0 == 0 && f1 == 0 && f2 == 0 && f3 == 0) break
-
-                    val frameId = String(
-                        byteArrayOf(tagBytes[pos], tagBytes[pos + 1], tagBytes[pos + 2], tagBytes[pos + 3]),
-                        Charset.forName("ISO-8859-1")
-                    )
-                    val frameSize = if (versionMajor == 4) {
-                        ((tagBytes[pos + 4].toInt() and 0x7F) shl 21) or
-                            ((tagBytes[pos + 5].toInt() and 0x7F) shl 14) or
-                            ((tagBytes[pos + 6].toInt() and 0x7F) shl 7) or
-                            (tagBytes[pos + 7].toInt() and 0x7F)
-                    } else {
-                        ((tagBytes[pos + 4].toInt() and 0xFF) shl 24) or
-                            ((tagBytes[pos + 5].toInt() and 0xFF) shl 16) or
-                            ((tagBytes[pos + 6].toInt() and 0xFF) shl 8) or
-                            (tagBytes[pos + 7].toInt() and 0xFF)
-                    }
-                    pos += 10
-                    if (frameSize <= 0 || pos + frameSize > totalRead) break
-
-                    if (frameId == "APIC" && frameSize > 16) {
-                        val frameEnd = pos + frameSize
-                        val encoding = tagBytes[pos].toInt() and 0xFF
-                        var cursor = pos + 1
-                        // Null-terminated MIME type (ISO-8859-1)
-                        while (cursor < frameEnd && tagBytes[cursor].toInt() != 0) {
-                            cursor++
-                        }
-                        cursor++ // skip null terminator
-                        if (cursor >= frameEnd) break
-                        cursor++ // skip picture type byte (1 byte)
-                        // Skip null-terminated description based on text encoding
-                        if (encoding == 1 || encoding == 2) {
-                            while (cursor + 1 < frameEnd &&
-                                !(tagBytes[cursor].toInt() == 0 && tagBytes[cursor + 1].toInt() == 0)
-                            ) {
-                                cursor += 2
-                            }
-                            cursor += 2
-                        } else {
-                            while (cursor < frameEnd && tagBytes[cursor].toInt() != 0) {
-                                cursor++
-                            }
-                            cursor++
-                        }
-                        if (cursor < frameEnd) {
-                            return tagBytes.copyOfRange(cursor, frameEnd)
-                        }
-                    }
-                    pos += frameSize
+                // 3. FLAC ("fLaC") stream with METADATA_BLOCK_PICTURE (block type 6)
+                if (header[0] == 'f'.code.toByte() &&
+                    header[1] == 'L'.code.toByte() &&
+                    header[2] == 'a'.code.toByte() &&
+                    header[3] == 'C'.code.toByte()
+                ) {
+                    return parseFlacPictureBlock(stream, header, readHeader)
                 }
+
+                // 4. MP4 / M4A container ("ftyp" at offset 4..7) with "covr" -> "data" atom
+                if (readHeader >= 8 &&
+                    header[4] == 'f'.code.toByte() &&
+                    header[5] == 't'.code.toByte() &&
+                    header[6] == 'y'.code.toByte() &&
+                    header[7] == 'p'.code.toByte()
+                ) {
+                    return parseMp4CovrAtom(stream, header, readHeader)
+                }
+
                 null
             }
         }.getOrNull()
+    }
+
+    private fun readFully(stream: InputStream, buffer: ByteArray, length: Int, offset: Int = 0): Int {
+        var total = 0
+        while (total < length) {
+            val r = stream.read(buffer, offset + total, length - total)
+            if (r <= 0) break
+            total += r
+        }
+        return total
+    }
+
+    private fun parseId3v2FramesForPicture(
+        tagBytes: ByteArray,
+        totalRead: Int,
+        versionMajor: Int,
+        tagFlags: Int
+    ): ByteArray? {
+        var pos = 0
+        // Skip optional ID3v2.3 / ID3v2.4 extended header if bit 6 is set
+        if ((tagFlags and 0x40) != 0 && totalRead >= 4) {
+            val extSize = if (versionMajor == 4) {
+                ((tagBytes[0].toInt() and 0x7F) shl 21) or
+                    ((tagBytes[1].toInt() and 0x7F) shl 14) or
+                    ((tagBytes[2].toInt() and 0x7F) shl 7) or
+                    (tagBytes[3].toInt() and 0x7F)
+            } else {
+                ((tagBytes[0].toInt() and 0xFF) shl 24) or
+                    ((tagBytes[1].toInt() and 0xFF) shl 16) or
+                    ((tagBytes[2].toInt() and 0xFF) shl 8) or
+                    (tagBytes[3].toInt() and 0xFF) + 4
+            }
+            if (extSize in 4 until totalRead) {
+                pos = extSize
+            }
+        }
+
+        if (versionMajor == 2) {
+            // ID3v2.2 uses 6-byte frame headers (3-byte ID + 3-byte size) and "PIC" frame ID
+            while (pos + 6 <= totalRead) {
+                if (tagBytes[pos].toInt() == 0 && tagBytes[pos + 1].toInt() == 0 && tagBytes[pos + 2].toInt() == 0) break
+                val frameId = String(byteArrayOf(tagBytes[pos], tagBytes[pos + 1], tagBytes[pos + 2]), Charset.forName("ISO-8859-1"))
+                val frameSize = ((tagBytes[pos + 3].toInt() and 0xFF) shl 16) or
+                    ((tagBytes[pos + 4].toInt() and 0xFF) shl 8) or
+                    (tagBytes[pos + 5].toInt() and 0xFF)
+                pos += 6
+                if (frameSize <= 0 || pos + frameSize > totalRead) break
+                if (frameId == "PIC" && frameSize > 10) {
+                    val frameEnd = pos + frameSize
+                    findImageHeaderOffset(tagBytes, pos + 5, frameEnd)?.let { imgStart ->
+                        return tagBytes.copyOfRange(imgStart, frameEnd)
+                    }
+                }
+                pos += frameSize
+            }
+            return null
+        }
+
+        while (pos + 10 <= totalRead) {
+            val f0 = tagBytes[pos].toInt() and 0xFF
+            val f1 = tagBytes[pos + 1].toInt() and 0xFF
+            val f2 = tagBytes[pos + 2].toInt() and 0xFF
+            val f3 = tagBytes[pos + 3].toInt() and 0xFF
+            if (f0 == 0 && f1 == 0 && f2 == 0 && f3 == 0) break
+
+            val frameId = String(
+                byteArrayOf(tagBytes[pos], tagBytes[pos + 1], tagBytes[pos + 2], tagBytes[pos + 3]),
+                Charset.forName("ISO-8859-1")
+            )
+            val frameSize = if (versionMajor == 4) {
+                ((tagBytes[pos + 4].toInt() and 0x7F) shl 21) or
+                    ((tagBytes[pos + 5].toInt() and 0x7F) shl 14) or
+                    ((tagBytes[pos + 6].toInt() and 0x7F) shl 7) or
+                    (tagBytes[pos + 7].toInt() and 0x7F)
+            } else {
+                ((tagBytes[pos + 4].toInt() and 0xFF) shl 24) or
+                    ((tagBytes[pos + 5].toInt() and 0xFF) shl 16) or
+                    ((tagBytes[pos + 6].toInt() and 0xFF) shl 8) or
+                    (tagBytes[pos + 7].toInt() and 0xFF)
+            }
+            pos += 10
+            if (frameSize <= 0 || pos + frameSize > totalRead) break
+
+            if (frameId == "APIC" && frameSize > 16) {
+                val frameEnd = pos + frameSize
+                val encoding = tagBytes[pos].toInt() and 0xFF
+                var cursor = pos + 1
+                // Null-terminated MIME type (ISO-8859-1)
+                while (cursor < frameEnd && tagBytes[cursor].toInt() != 0) {
+                    cursor++
+                }
+                cursor++ // skip null terminator
+                if (cursor < frameEnd) {
+                    cursor++ // skip picture type byte (1 byte)
+                    // Skip null-terminated description based on text encoding
+                    if (encoding == 1 || encoding == 2) {
+                        while (cursor + 1 < frameEnd &&
+                            !(tagBytes[cursor].toInt() == 0 && tagBytes[cursor + 1].toInt() == 0)
+                        ) {
+                            cursor += 2
+                        }
+                        cursor += 2
+                    } else {
+                        while (cursor < frameEnd && tagBytes[cursor].toInt() != 0) {
+                            cursor++
+                        }
+                        cursor++
+                    }
+                    if (cursor < frameEnd) {
+                        val candidate = tagBytes.copyOfRange(cursor, frameEnd)
+                        if (hasValidImageMagicHeader(candidate)) {
+                            return candidate
+                        }
+                    }
+                }
+                // Fallback scan for JPEG/PNG/WebP magic bytes inside the APIC frame payload
+                findImageHeaderOffset(tagBytes, pos + 1, frameEnd)?.let { imgStart ->
+                    return tagBytes.copyOfRange(imgStart, frameEnd)
+                }
+            }
+            pos += frameSize
+        }
+        return null
+    }
+
+    private fun parseFlacPictureBlock(stream: InputStream, initialHeader: ByteArray, initialLen: Int): ByteArray? {
+        val maxProbe = 2 * 1024 * 1024
+        val buf = ByteArray(maxProbe)
+        System.arraycopy(initialHeader, 0, buf, 0, initialLen)
+        val extra = readFully(stream, buf, maxProbe - initialLen, initialLen)
+        val total = initialLen + extra
+        var pos = 4
+        while (pos + 4 <= total) {
+            val headerByte = buf[pos].toInt() and 0xFF
+            val isLast = (headerByte and 0x80) != 0
+            val blockType = headerByte and 0x7F
+            val blockLen = ((buf[pos + 1].toInt() and 0xFF) shl 16) or
+                ((buf[pos + 2].toInt() and 0xFF) shl 8) or
+                (buf[pos + 3].toInt() and 0xFF)
+            pos += 4
+            if (blockLen < 0 || pos + blockLen > total) break
+            if (blockType == 6 && blockLen > 32) {
+                val blockEnd = pos + blockLen
+                findImageHeaderOffset(buf, pos, blockEnd)?.let { imgStart ->
+                    return buf.copyOfRange(imgStart, blockEnd)
+                }
+            }
+            pos += blockLen
+            if (isLast) break
+        }
+        return null
+    }
+
+    private fun parseMp4CovrAtom(stream: InputStream, initialHeader: ByteArray, initialLen: Int): ByteArray? {
+        val maxProbe = 2 * 1024 * 1024
+        val buf = ByteArray(maxProbe)
+        System.arraycopy(initialHeader, 0, buf, 0, initialLen)
+        val extra = readFully(stream, buf, maxProbe - initialLen, initialLen)
+        val total = initialLen + extra
+        var i = 0
+        while (i + 24 < total) {
+            if (buf[i] == 'c'.code.toByte() &&
+                buf[i + 1] == 'o'.code.toByte() &&
+                buf[i + 2] == 'v'.code.toByte() &&
+                buf[i + 3] == 'r'.code.toByte() &&
+                i >= 4
+            ) {
+                val covrSize = ((buf[i - 4].toInt() and 0xFF) shl 24) or
+                    ((buf[i - 3].toInt() and 0xFF) shl 16) or
+                    ((buf[i - 2].toInt() and 0xFF) shl 8) or
+                    (buf[i - 1].toInt() and 0xFF)
+                val covrEnd = ((i - 4) + covrSize).coerceIn(i + 4, total)
+                findImageHeaderOffset(buf, i + 4, covrEnd)?.let { imgStart ->
+                    return buf.copyOfRange(imgStart, covrEnd)
+                }
+            }
+            i++
+        }
+        return null
+    }
+
+    private fun findImageHeaderOffset(buf: ByteArray, start: Int, end: Int): Int? {
+        var idx = start.coerceAtLeast(0)
+        val limit = (end - 4).coerceAtMost(buf.size - 4)
+        while (idx <= limit) {
+            val b0 = buf[idx].toInt() and 0xFF
+            val b1 = buf[idx + 1].toInt() and 0xFF
+            val b2 = buf[idx + 2].toInt() and 0xFF
+            val b3 = buf[idx + 3].toInt() and 0xFF
+            // JPEG: FF D8 FF
+            if (b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF) return idx
+            // PNG: 89 50 4E 47
+            if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47) return idx
+            idx++
+        }
+        return null
     }
 
     private fun resolveMediaStoreAlbumArtUri(context: Context, media: MediaEntity): Uri? {

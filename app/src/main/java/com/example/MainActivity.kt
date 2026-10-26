@@ -21,6 +21,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -35,9 +36,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -75,11 +78,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -791,7 +800,11 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         val isCompactHeight = maxHeight < 480.dp
         val canFitSideNowPlayingPanel = isLandscape && maxWidth >= 560.dp
         val isWideLandscape = maxWidth >= 840.dp || (isLandscape && maxWidth >= 700.dp)
-        val sidePanelTargetWidth = if (maxWidth >= 900.dp) 340.dp else 284.dp
+        val sidePanelTargetWidth = when {
+            maxWidth >= 900.dp -> 336.dp
+            maxWidth >= 740.dp -> 276.dp
+            else -> 248.dp
+        }
 
         val showRightNowPlayingPanel = canFitSideNowPlayingPanel && (
             userSidePanelOverride ?: (isWideLandscape && playbackState.currentMedia != null)
@@ -858,47 +871,93 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
-                // 1. LEFT: Compact Scrollable NavigationRail in Landscape / Expanded Width
+                // 1. LEFT: Adaptive NavigationRail in Landscape / Expanded Width
+                // Uses zero internal WindowInsets because Scaffold(contentWindowInsets = safeDrawing)
+                // already pads innerPadding, preventing double vertical insets from clipping Settings.
                 if (useNavigationRail) {
                     NavigationRail(
+                        windowInsets = WindowInsets(0, 0, 0, 0),
                         modifier = Modifier
                             .fillMaxHeight()
+                            .width(if (isCompactHeight) 74.dp else 80.dp)
                             .testTag("side_navigation_rail")
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxHeight()
+                                .padding(vertical = if (isCompactHeight) 2.dp else 8.dp)
                                 .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.CenterVertically),
+                            verticalArrangement = Arrangement.SpaceEvenly,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             primaryDestinations.forEach { dest ->
                                 val selected = selectedTab == dest.tab
-                                NavigationRailItem(
-                                    selected = selected,
-                                    onClick = { viewModel.selectPrimaryTab(dest.tab) },
-                                    icon = {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 4.dp)
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .selectable(
+                                            selected = selected,
+                                            onClick = { viewModel.selectPrimaryTab(dest.tab) },
+                                            role = Role.Tab
+                                        )
+                                        .padding(vertical = if (isCompactHeight) 3.dp else 6.dp)
+                                        .testTag(dest.testTag),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(
+                                                width = if (isCompactHeight) 48.dp else 56.dp,
+                                                height = if (isCompactHeight) 24.dp else 32.dp
+                                            )
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(
+                                                if (selected) {
+                                                    MaterialTheme.colorScheme.secondaryContainer
+                                                } else {
+                                                    Color.Transparent
+                                                }
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
                                         Icon(
                                             imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                            contentDescription = dest.label
+                                            contentDescription = dest.label,
+                                            tint = if (selected) {
+                                                MaterialTheme.colorScheme.onSecondaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            },
+                                            modifier = Modifier.size(if (isCompactHeight) 20.dp else 24.dp)
                                         )
-                                    },
-                                    label = {
-                                        Text(
-                                            text = dest.label,
-                                            maxLines = 1,
-                                            softWrap = false
-                                        )
-                                    },
-                                    alwaysShowLabel = true,
-                                    modifier = Modifier.testTag(dest.testTag)
-                                )
+                                    }
+                                    Spacer(modifier = Modifier.height(if (isCompactHeight) 2.dp else 4.dp))
+                                    Text(
+                                        text = dest.label,
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = if (isCompactHeight) 11.sp else 12.sp,
+                                            lineHeight = if (isCompactHeight) 13.sp else 14.sp,
+                                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium
+                                        ),
+                                        color = if (selected) {
+                                            MaterialTheme.colorScheme.onSurface
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }
                 }
 
-                // 2. CENTER: Main Content Area + Bottom Persistent Mini-Player (in Landscape/Rail mode)
+                // 2. CENTER: Main Content Area (with bottom Mini-Player only when Right Side Panel is not shown)
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -1190,10 +1249,10 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                         }
                     }
 
-                    // In Landscape / NavigationRail mode, Persistent Mini-Player is docked at the bottom of the
-                    // center column so it never overlaps the left NavigationRail, the song list, or the right Now Playing panel.
+                    // In Landscape / NavigationRail mode, only render PersistentMiniPlayerBar when the right-side
+                    // NowPlayingSidePanel is NOT visible, so duplicate playback panels never appear simultaneously.
                     if (useNavigationRail) {
-                        AnimatedVisibility(visible = playbackState.currentMedia != null) {
+                        AnimatedVisibility(visible = playbackState.currentMedia != null && !showRightNowPlayingPanel) {
                             PersistentMiniPlayerBar(
                                 playbackState = playbackState,
                                 onExpandClick = { viewModel.setNowPlayingExpanded(true) },

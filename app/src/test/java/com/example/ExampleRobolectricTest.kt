@@ -69,6 +69,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
@@ -2066,31 +2067,35 @@ class ExampleRobolectricTest {
             .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("persistent_mini_player").fetchSemanticsNodes().size)
 
-        // Collapse side panel again via its close button
+        // Collapse side panel again via its close button -> persistent mini-player returns
         composeTestRule.onNodeWithTag("side_panel_collapse_button")
             .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.waitForIdle()
         assertEquals(0, composeTestRule.onAllNodesWithTag("landscape_now_playing_panel").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("persistent_mini_player").assertExists()
 
-        // Re-enable side panel via the persistent mini-player side-panel button
+        // Re-enable side panel via the persistent mini-player side-panel button -> mini-player hides so only 1 panel shows
         composeTestRule.onNodeWithTag("mini_player_toggle_side_panel_button")
             .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("persistent_mini_player").fetchSemanticsNodes().size)
 
         // 3. Resize to LARGE LANDSCAPE (844dp x 390dp):
-        // Left NavigationRail + Center Content + Right Now Playing Side Panel + Bottom Mini-Player all coexist
+        // Left NavigationRail + Center Content + Right Now Playing Side Panel (NO duplicate bottom mini-player)
         viewportSize = DpSize(844.dp, 390.dp)
         composeTestRule.waitForIdle()
 
         composeTestRule.onNodeWithTag("side_navigation_rail").assertExists()
         composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
-        composeTestRule.onNodeWithTag("persistent_mini_player").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("persistent_mini_player").fetchSemanticsNodes().size)
         composeTestRule.onNodeWithTag("side_panel_play_pause_button").assertExists()
         composeTestRule.onNodeWithTag("side_panel_next_button").assertExists()
         composeTestRule.onNodeWithTag("side_panel_previous_button").assertExists()
 
-        // Switch tabs via Left NavigationRail (Music -> Videos -> Home) and verify playback state is preserved
+        // Switch tabs via Left NavigationRail (Music -> Videos -> Library -> Settings -> Home) and verify playback state is preserved
         composeTestRule.onNodeWithTag("nav_tab_music")
             .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.waitForIdle()
@@ -2100,6 +2105,16 @@ class ExampleRobolectricTest {
             .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.waitForIdle()
         assertEquals(PrimaryTab.VIDEOS, vm.selectedTab.value)
+
+        composeTestRule.onNodeWithTag("nav_tab_library")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(PrimaryTab.LIBRARY, vm.selectedTab.value)
+
+        composeTestRule.onNodeWithTag("nav_tab_settings")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(PrimaryTab.SETTINGS, vm.selectedTab.value)
 
         composeTestRule.onNodeWithTag("nav_tab_home")
             .performSemanticsAction(SemanticsActions.OnClick)
@@ -3291,6 +3306,86 @@ class ExampleRobolectricTest {
 
         mp3WithApicFile.delete()
         wavWithoutArtFile.delete()
+    }
+
+    @Test
+    fun landscapeHome_showsOnlySingleNowPlayingPanelAndAllowsSettingsAndTransportControls() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        val trackA = MediaEntity(
+            uriString = "file:///landscape_single_panel_a.wav",
+            mediaStoreId = null,
+            title = "Aurora Pulse",
+            artist = "PulsePlay Synth",
+            album = "Horizon Sessions",
+            folderName = "Music",
+            durationMs = 210_000L,
+            sizeBytes = 4096L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700002000L
+        )
+        val trackB = trackA.copy(
+            uriString = "file:///landscape_single_panel_b.wav",
+            title = "Midnight Echo"
+        )
+        vm.setQueue(listOf(trackA, trackB), initialIndex = 0)
+
+        var viewportSize by mutableStateOf(DpSize(800.dp, 360.dp))
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(viewportSize.width, viewportSize.height)) {
+                    PulsePlayAppRoot(viewModel = vm)
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // 1. In Landscape Home screen (800dp x 360dp), only the right-side NowPlayingSidePanel is shown;
+        // the bottom PersistentMiniPlayerBar is NOT rendered (no duplicate player).
+        composeTestRule.onNodeWithTag("landscape_now_playing_panel").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("persistent_mini_player").fetchSemanticsNodes().size)
+
+        // 2. Verify all 5 NavigationRail items (Home, Videos, Music, Library, Settings) exist and are clickable
+        composeTestRule.onNodeWithTag("nav_tab_home").assertExists().assertHasClickAction()
+        composeTestRule.onNodeWithTag("nav_tab_videos").assertExists().assertHasClickAction()
+        composeTestRule.onNodeWithTag("nav_tab_music").assertExists().assertHasClickAction()
+        composeTestRule.onNodeWithTag("nav_tab_library").assertExists().assertHasClickAction()
+        composeTestRule.onNodeWithTag("nav_tab_settings").assertExists().assertHasClickAction()
+
+        // 3. Verify right-side NowPlayingSidePanel has transport controls and they operate playback state
+        composeTestRule.onNodeWithTag("side_panel_play_pause_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_previous_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_next_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_shuffle_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_repeat_button").assertExists()
+        composeTestRule.onNodeWithTag("side_panel_seek_slider").assertExists()
+
+        // Trigger Next and Previous in right-side Now Playing panel
+        assertEquals("Aurora Pulse", vm.playbackState.value.currentMedia?.title)
+        composeTestRule.onNodeWithTag("side_panel_next_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals("Midnight Echo", vm.playbackState.value.currentMedia?.title)
+
+        composeTestRule.onNodeWithTag("side_panel_previous_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals("Aurora Pulse", vm.playbackState.value.currentMedia?.title)
+
+        // 4. Click Settings icon in NavigationRail -> opens Settings screen cleanly without interception
+        composeTestRule.onNodeWithTag("nav_tab_settings").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(PrimaryTab.SETTINGS, vm.selectedTab.value)
+        composeTestRule.onNodeWithTag("settings_screen_list").assertExists()
+
+        // 5. Switch to Portrait (390dp x 844dp) -> PersistentMiniPlayerBar is shown and side panel is hidden
+        viewportSize = DpSize(390.dp, 844.dp)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("persistent_mini_player").assertExists()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("landscape_now_playing_panel").fetchSemanticsNodes().size)
     }
 
     private fun createTestAlbumCoverPngBytes(color: Int): ByteArray {

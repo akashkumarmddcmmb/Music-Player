@@ -164,6 +164,7 @@ data class EqualizerDspConfig(
  * Multiband cascaded Direct Form II Transposed biquad filter bank with Bass Boost,
  * Left/Right Stereo Channel Balance, Preamp Gain, and soft-knee output protection.
  */
+@OptIn(UnstableApi::class)
 class MultiBandBiquadFilterBank(
     sampleRateHz: Int = 44100,
     channelCount: Int = 2

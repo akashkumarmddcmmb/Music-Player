@@ -153,9 +153,7 @@ fun UpdateSettingsScreen(
     }
 
     var repoSlugDraft by remember(githubRepositorySlug) {
-        mutableStateOf(
-            githubRepositorySlug.ifBlank { AppUpdateManager.DEFAULT_GITHUB_REPOSITORY }
-        )
+        mutableStateOf(githubRepositorySlug)
     }
     var showMigrationGuide by remember { mutableStateOf(false) }
 
@@ -402,7 +400,15 @@ fun UpdateSettingsScreen(
                                 value = repoSlugDraft,
                                 onValueChange = { repoSlugDraft = it },
                                 label = { Text("GitHub Repository (owner/repo)") },
-                                placeholder = { Text("e.g. your-org/pulseplay") },
+                                placeholder = {
+                                    Text(
+                                        if (AppUpdateManager.DEFAULT_GITHUB_REPOSITORY.isNotBlank()) {
+                                            AppUpdateManager.DEFAULT_GITHUB_REPOSITORY
+                                        } else {
+                                            "e.g. your-org/pulseplay"
+                                        }
+                                    )
+                                },
                                 singleLine = true,
                                 enabled = !isPlayInstalled,
                                 modifier = Modifier
@@ -449,9 +455,6 @@ fun UpdateSettingsScreen(
                                     onClick = {
                                         autoDismissedGitHubState = null
                                         gitHubTriggerTick++
-                                        if (repoSlugDraft.trim() != githubRepositorySlug) {
-                                            onSetGitHubRepositorySlug(repoSlugDraft)
-                                        }
                                         onCheckForUpdatesClick()
                                     },
                                     enabled = !isPlayInstalled &&

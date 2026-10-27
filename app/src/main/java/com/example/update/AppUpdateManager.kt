@@ -384,7 +384,7 @@ class AppUpdateManager(
         configuredRepositorySlug: String,
         includePrereleases: Boolean = false
     ): UpdateCheckState = withContext(ioDispatcher) {
-        val rawRepo = configuredRepositorySlug.trim().ifEmpty { DEFAULT_GITHUB_REPOSITORY }
+        val rawRepo = configuredRepositorySlug.trim()
         val normalizedRepo = normalizeRepositorySlug(rawRepo)
 
         if (normalizedRepo.isEmpty() || !isValidRepositorySlug(normalizedRepo)) {

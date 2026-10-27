@@ -572,6 +572,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
      * Handles [PlaybackException] with bounded decoder recovery for recoverable codec/surface errors,
      * never prematurely marking `isPlaying = true` before the player actually resumes (`STATE_READY` / `onIsPlayingChanged`).
      */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun handlePlayerError(error: PlaybackException) {
         val isDecoderFailure =
             error.errorCode == PlaybackException.ERROR_CODE_DECODER_INIT_FAILED ||

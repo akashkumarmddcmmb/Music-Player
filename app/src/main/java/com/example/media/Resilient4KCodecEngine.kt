@@ -605,7 +605,34 @@ object Resilient4KCodecEngine {
         if (width <= 0 || height <= 0) return null
 
         var modified = false
-        val adjusted = MediaFormat(source)
+        val adjusted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaFormat(source)
+        } else {
+            MediaFormat().apply {
+                val copyKeys = listOf(
+                    MediaFormat.KEY_MIME,
+                    MediaFormat.KEY_WIDTH,
+                    MediaFormat.KEY_HEIGHT,
+                    MediaFormat.KEY_MAX_WIDTH,
+                    MediaFormat.KEY_MAX_HEIGHT,
+                    MediaFormat.KEY_MAX_INPUT_SIZE,
+                    MediaFormat.KEY_OPERATING_RATE,
+                    MediaFormat.KEY_FRAME_RATE
+                )
+                for (key in copyKeys) {
+                    if (source.containsKey(key)) {
+                        when (key) {
+                            MediaFormat.KEY_MIME -> source.getString(key)?.let { setString(key, it) }
+                            MediaFormat.KEY_OPERATING_RATE, MediaFormat.KEY_FRAME_RATE -> {
+                                runCatching { setFloat(key, source.getFloat(key)) }
+                                    .onFailure { runCatching { setInteger(key, source.getInteger(key)) } }
+                            }
+                            else -> runCatching { setInteger(key, source.getInteger(key)) }
+                        }
+                    }
+                }
+            }
+        }
 
         // 1. Check if KEY_MAX_WIDTH / KEY_MAX_HEIGHT exceed the codec's documented max dimensions
         if (report.maxSupportedWidth >= width && source.containsKey(MediaFormat.KEY_MAX_WIDTH)) {

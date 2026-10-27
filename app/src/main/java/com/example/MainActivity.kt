@@ -107,6 +107,7 @@ import com.example.ui.components.InAppNotificationBanner
 import com.example.ui.components.InAppNotificationType
 import com.example.ui.components.MediaFileInformationDialog
 import com.example.ui.components.PersistentMiniPlayerBar
+import com.example.ui.components.AddToPlaylistDialog
 import com.example.ui.components.RingtonePermissionDialog
 import com.example.ui.screens.EqualizerBottomSheet
 import com.example.ui.screens.HomeDashboardScreen
@@ -584,56 +585,17 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     // Add to Playlist Dialog
     if (pendingPlaylistAddMedia != null) {
         val mediaToAdd = pendingPlaylistAddMedia!!
-        AlertDialog(
-            onDismissRequest = { pendingPlaylistAddMedia = null },
-            title = {
-                Text(
-                    text = "Add '${mediaToAdd.title}' to Playlist",
-                    maxLines = 1,
-                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                )
+        AddToPlaylistDialog(
+            media = mediaToAdd,
+            playlists = playlists,
+            onSelectPlaylist = { pl ->
+                viewModel.addTrackToPlaylist(pl.playlistId, mediaToAdd)
+                pendingPlaylistAddMedia = null
             },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                ) {
-                    if (playlists.isEmpty()) {
-                        Text(
-                            "No playlists yet. Create a new playlist instantly:",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                viewModel.createNewPlaylist("My Studio Favorites", "Local playlist")
-                            }
-                        ) {
-                            Text("Create 'My Studio Favorites'")
-                        }
-                    } else {
-                        playlists.forEach { pl ->
-                            TextButton(
-                                onClick = {
-                                    viewModel.addTrackToPlaylist(pl.playlistId, mediaToAdd)
-                                    pendingPlaylistAddMedia = null
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = "${pl.name} (${pl.itemCount} tracks)",
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
+            onCreatePlaylist = { name ->
+                viewModel.createNewPlaylist(name, "Local playlist")
             },
-            confirmButton = {
-                TextButton(onClick = { pendingPlaylistAddMedia = null }) {
-                    Text("Close")
-                }
-            }
+            onDismiss = { pendingPlaylistAddMedia = null }
         )
     }
 

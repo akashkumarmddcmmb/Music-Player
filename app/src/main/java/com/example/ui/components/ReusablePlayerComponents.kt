@@ -16,30 +16,56 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.ViewSidebar
+import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.HourglassTop
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RingVolume
+import androidx.compose.material.icons.filled.ScreenRotation
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
+import androidx.compose.ui.graphics.Color
+import com.example.data.local.PlaylistWithCount
+import com.example.data.preferences.UserPreferencesState
+import com.example.data.preferences.VideoOrientationPreference
+import com.example.viewmodel.AudioTrackOption
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -707,6 +733,995 @@ fun RingtonePermissionDialog(
                 modifier = Modifier.testTag("ringtone_cancel_button")
             ) {
                 Text("Cancel")
+            }
+        }
+    )
+}
+
+/**
+ * Centered, prominent Sleep Timer Dialog styled consistently with RingtonePermissionDialog.
+ * Contains active countdown, preset duration chips, End of Track toggle, remaining time badge,
+ * and accessible action buttons.
+ */
+@Composable
+fun SleepTimerDialog(
+    playbackState: PlaybackUiState,
+    onSetSleepTimerMinutes: (Int) -> Unit,
+    onSetSleepTimerEndOfTrack: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val presetMinutes = listOf(0, 5, 10, 15, 30, 45, 60)
+    val statusLabel = when {
+        playbackState.sleepTimerStopAtEndOfTrack -> "Stops at End of Track"
+        playbackState.sleepTimerRemainingMs > 0L -> "Remaining: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
+        else -> "Off"
+    }
+    val isTimerActive = playbackState.isSleepTimerActive
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 520.dp)
+            .testTag("sleep_timer_panel"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Bedtime,
+                    contentDescription = null,
+                    tint = if (isTimerActive) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Sleep Timer (Automatic Stop)",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("sleep_timer_dialog")
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (isTimerActive) {
+                        MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.5f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(
+                                text = "Current Status",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = statusLabel,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isTimerActive) {
+                                    MaterialTheme.colorScheme.tertiary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                modifier = Modifier.testTag("sleep_timer_status_text")
+                            )
+                        }
+                        if (isTimerActive && playbackState.sleepTimerRemainingMs > 0L) {
+                            Icon(
+                                imageVector = Icons.Default.HourglassTop,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "Automatically pauses music or video playback when the countdown finishes or the current track ends.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Text(
+                    text = "Set Timer Duration",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(presetMinutes) { mins ->
+                        val isSelected = if (mins == 0) {
+                            !playbackState.isSleepTimerActive
+                        } else {
+                            !playbackState.sleepTimerStopAtEndOfTrack && playbackState.sleepTimerTotalMinutes == mins
+                        }
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { onSetSleepTimerMinutes(mins) },
+                            label = { Text(if (mins == 0) "Off" else "$mins min") },
+                            modifier = Modifier.testTag("sleep_timer_chip_$mins")
+                        )
+                    }
+                    item {
+                        FilterChip(
+                            selected = playbackState.sleepTimerStopAtEndOfTrack,
+                            onClick = {
+                                onSetSleepTimerEndOfTrack(!playbackState.sleepTimerStopAtEndOfTrack)
+                            },
+                            label = { Text("End of Track") },
+                            modifier = Modifier.testTag("sleep_timer_chip_end_of_track")
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (isTimerActive) {
+                    OutlinedButton(
+                        onClick = { onSetSleepTimerMinutes(0) },
+                        modifier = Modifier.testTag("sleep_timer_cancel_button")
+                    ) {
+                        Text("Turn Off")
+                    }
+                }
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("sleep_timer_done_button")
+                ) {
+                    Text("Done")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("sleep_timer_close_button")
+            ) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+/**
+ * Centered, prominent Playback Speed Dialog styled consistently with RingtonePermissionDialog.
+ * Contains quick preset chips, a fine-grain slider, and a clear speed readout.
+ */
+@Composable
+fun PlaybackSpeedDialog(
+    playbackState: PlaybackUiState,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
+    val speedFormatted = "%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 500.dp)
+            .testTag("playback_speed_panel"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Speed,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.secondary
+                )
+                Text(
+                    text = "Playback Speed (${speedFormatted}x)",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("playback_speed_dialog")
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Adjust playback speed in real time without altering audio pitch.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Text(
+                    text = "Speed Presets",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    items(speeds) { spd ->
+                        FilterChip(
+                            selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                            onClick = { onSetPlaybackSpeed(spd) },
+                            label = { Text("${spd}x", maxLines = 1) },
+                            modifier = Modifier.testTag("speed_chip_$spd")
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Fine Tuning",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "${speedFormatted}x",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+
+                Slider(
+                    value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
+                    onValueChange = { raw ->
+                        val snapped = (raw * 20f).roundToInt() / 20f
+                        onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
+                    },
+                    valueRange = 0.5f..3.0f,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("now_playing_speed_slider")
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (abs(playbackState.playbackSpeed - 1.0f) >= 0.05f) {
+                    OutlinedButton(
+                        onClick = { onSetPlaybackSpeed(1.0f) },
+                        modifier = Modifier.testTag("speed_reset_button")
+                    ) {
+                        Text("Reset (1.0x)")
+                    }
+                }
+                Button(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("speed_done_button")
+                ) {
+                    Text("Done")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("speed_close_button")
+            ) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+/**
+ * Centered, prominent Subtitle and Lyrics Dialog styled consistently with RingtonePermissionDialog.
+ * Contains display toggle, format details, cue list with tap-to-seek, font scale slider,
+ * timing offset adjustments, and local file picker.
+ */
+@Composable
+fun SubtitleSettingsDialog(
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    onToggleSubtitlesEnabled: (Boolean) -> Unit,
+    onSetSubtitleFontScale: (Float) -> Unit,
+    onSetSubtitleOffsetMs: (Long) -> Unit,
+    onPickSubtitleFileClick: () -> Unit,
+    onSeekToCue: (Long) -> Unit = {},
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 520.dp)
+            .testTag("subtitle_settings_panel"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Subtitles,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Lyrics & Subtitles",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Display Subtitles / Lyrics",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Synchronized display over playback",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.subtitlesEnabledByDefault,
+                        onCheckedChange = onToggleSubtitlesEnabled,
+                        modifier = Modifier.testTag("subtitle_enable_switch")
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = playbackState.loadedSubtitleName?.let {
+                                "Loaded: $it (${playbackState.loadedSubtitleFormat?.name ?: "Unknown"}) • ${playbackState.loadedSubtitleCues.size} synchronized cues"
+                            } ?: "No SRT/WebVTT lyrics or subtitle track loaded",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (playbackState.subtitleError != null) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = playbackState.subtitleError,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+
+                if (playbackState.loadedSubtitleCues.isNotEmpty()) {
+                    Text(
+                        text = "Synchronized Lyrics / Cues (Tap line to seek):",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                            .padding(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        playbackState.loadedSubtitleCues.forEachIndexed { idx, cue ->
+                            val isActiveCue = playbackState.activeSubtitleText == cue.text
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(
+                                        if (isActiveCue) {
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                                        } else {
+                                            Color.Transparent
+                                        }
+                                    )
+                                    .clickable { onSeekToCue(cue.startMs) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                                    .testTag("lyrics_cue_item_$idx"),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = formatDurationMillis(cue.startMs),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.width(52.dp)
+                                )
+                                Text(
+                                    text = cue.text,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = if (isActiveCue) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isActiveCue) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = "Sync Timing Offset: ${userPreferences.subtitleSyncOffsetMs}ms",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("subtitle_sync_offset_row"),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs - 250L) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                        ) { Text("-250ms", maxLines = 1) }
+                        OutlinedButton(
+                            onClick = { onSetSubtitleOffsetMs(0L) },
+                            modifier = Modifier.weight(1f),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                        ) { Text("0ms", maxLines = 1) }
+                        OutlinedButton(
+                            onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs + 250L) },
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("subtitle_offset_plus_250_button"),
+                            contentPadding = PaddingValues(horizontal = 4.dp, vertical = 4.dp)
+                        ) { Text("+250ms", maxLines = 1) }
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Subtitle Font Scale",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "${"%.2f".format(userPreferences.subtitleFontScale)}x",
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                    Slider(
+                        value = userPreferences.subtitleFontScale.coerceIn(0.75f, 1.75f),
+                        onValueChange = onSetSubtitleFontScale,
+                        valueRange = 0.75f..1.75f,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("subtitle_font_scale_slider")
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = onPickSubtitleFileClick,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("load_external_subtitle_button")
+                        .testTag("subtitle_load_file_button")
+                ) {
+                    Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Load .SRT / .VTT File (SAF)")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("subtitle_close_button")
+            ) {
+                Text("Done")
+            }
+        }
+    )
+}
+
+/**
+ * Centered, prominent Video Settings Dialog styled consistently with RingtonePermissionDialog.
+ * Contains screen rotation mode chips, frame rotation, aspect ratio cycling, playback speed,
+ * keep awake switch, gesture controls switch, and lock controls button.
+ */
+@Composable
+fun VideoSettingsDialog(
+    playbackState: PlaybackUiState,
+    userPreferences: UserPreferencesState,
+    onSetPlaybackSpeed: (Float) -> Unit,
+    onSelectVideoOrientation: (VideoOrientationPreference) -> Unit,
+    onRotateVideo90: () -> Unit,
+    onCycleAspectMode: () -> Unit,
+    onToggleKeepScreenOn: (Boolean) -> Unit,
+    onToggleVideoGestureControls: (Boolean) -> Unit,
+    onToggleControlsLock: (Boolean) -> Unit,
+    onToggleSubtitlesEnabled: (Boolean) -> Unit,
+    onPickSubtitleFileClick: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 520.dp)
+            .testTag("video_settings_panel"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Video Settings & Playback",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Screen Rotation Mode",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(VideoOrientationPreference.entries) { pref ->
+                        FilterChip(
+                            selected = userPreferences.videoOrientationPreference == pref,
+                            onClick = { onSelectVideoOrientation(pref) },
+                            label = { Text(pref.label) },
+                            modifier = Modifier.testTag("video_orientation_pref_${pref.name.lowercase()}")
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Frame & Aspect Ratio",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onRotateVideo90,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Frame: ${playbackState.videoRotationDegrees}°")
+                    }
+                    OutlinedButton(
+                        onClick = onCycleAspectMode,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(playbackState.videoAspectMode.label)
+                    }
+                }
+
+                Text(
+                    text = "Playback Speed (${playbackState.playbackSpeed}x)",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
+                        FilterChip(
+                            selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                            onClick = { onSetPlaybackSpeed(spd) },
+                            label = { Text("${spd}x") }
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Keep Screen On During Video", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Prevents screen timeout while video is actively playing",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.keepScreenOnDuringVideo,
+                        onCheckedChange = onToggleKeepScreenOn,
+                        modifier = Modifier.testTag("video_keep_screen_on_switch")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Brightness & Volume Gestures", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Vertical swipe gestures on left/right screen edges",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.videoGestureControlsEnabled,
+                        onCheckedChange = onToggleVideoGestureControls,
+                        modifier = Modifier.testTag("video_gesture_controls_switch")
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = onPickSubtitleFileClick,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Subtitles (${if (userPreferences.subtitlesEnabledByDefault) "On" else "Off"})")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            onDismiss()
+                            onOpenEqualizer()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Audio EQ")
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onToggleControlsLock(!playbackState.isVideoControlsLocked)
+                        onDismiss()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(if (playbackState.isVideoControlsLocked) "Unlock Video Controls" else "Lock Video Touch Controls")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("video_settings_close_button")
+            ) {
+                Text("Done")
+            }
+        }
+    )
+}
+
+/**
+ * Centered, prominent Video Audio Track Dialog styled consistently with RingtonePermissionDialog.
+ * Contains available container audio streams with clear selection indicator and 5-band EQ shortcut.
+ */
+@Composable
+fun VideoAudioTrackDialog(
+    playbackState: PlaybackUiState,
+    onSelectAudioTrack: (AudioTrackOption) -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 480.dp)
+            .testTag("video_audio_track_sheet_card"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Audiotrack,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Audio Track & Sound Profile",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                if (playbackState.availableAudioTracks.isNotEmpty()) {
+                    Text(
+                        text = "Available Audio Streams",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    playbackState.availableAudioTracks.forEach { trackOption ->
+                        Surface(
+                            color = if (trackOption.isSelected) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSelectAudioTrack(trackOption)
+                                    onDismiss()
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = trackOption.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (trackOption.isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    if (trackOption.language.isNotBlank()) {
+                                        Text(
+                                            text = "Language: ${trackOption.language}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                if (trackOption.isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Selected",
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "Single audio stream active (Embedded Stereo)",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onOpenEqualizer()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Equalizer,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Open 5-Band Equalizer & Bass Boost")
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("audio_track_close_button")
+            ) {
+                Text("Done")
+            }
+        }
+    )
+}
+
+/**
+ * Centered, prominent Add to Playlist Dialog styled consistently with RingtonePermissionDialog.
+ * Displays playlist list with track counts, instant playlist creation option, and accessible buttons.
+ */
+@Composable
+fun AddToPlaylistDialog(
+    media: MediaEntity,
+    playlists: List<PlaylistWithCount>,
+    onSelectPlaylist: (PlaylistWithCount) -> Unit,
+    onCreatePlaylist: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 480.dp)
+            .testTag("add_to_playlist_dialog"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Add to Playlist",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Add '${media.title}' to a playlist:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (playlists.isEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "No playlists yet. Create a new playlist instantly:",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Button(
+                                onClick = {
+                                    onCreatePlaylist("My Studio Favorites")
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Create 'My Studio Favorites'")
+                            }
+                        }
+                    }
+                } else {
+                    playlists.forEach { pl ->
+                        OutlinedButton(
+                            onClick = { onSelectPlaylist(pl) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = pl.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${pl.itemCount} tracks",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("add_to_playlist_close_button")
+            ) {
+                Text("Close")
             }
         }
     )

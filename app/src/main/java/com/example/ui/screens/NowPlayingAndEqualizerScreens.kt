@@ -162,6 +162,12 @@ import com.example.media.HardwareEqualizerState
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.Resilient4KCodecEngine
 import com.example.media.rememberMediaArtworkBitmap
+import com.example.ui.components.AddToPlaylistDialog
+import com.example.ui.components.PlaybackSpeedDialog
+import com.example.ui.components.SleepTimerDialog
+import com.example.ui.components.SubtitleSettingsDialog
+import com.example.ui.components.VideoAudioTrackDialog
+import com.example.ui.components.VideoSettingsDialog
 import com.example.ui.components.formatDurationMillis
 import com.example.ui.components.formatFileSize
 import com.example.viewmodel.AudioTrackOption
@@ -269,6 +275,54 @@ fun NowPlayingOverlayScreen(
         hasPlaybackError = playbackState.playbackError != null,
         keepScreenOnPreferenceEnabled = userPreferences.keepScreenOnDuringVideo
     )
+
+    if (showSpeedPanel) {
+        PlaybackSpeedDialog(
+            playbackState = playbackState,
+            onSetPlaybackSpeed = onSetPlaybackSpeed,
+            onDismiss = { showSpeedPanel = false }
+        )
+    }
+
+    if (showSleepTimerPanel) {
+        SleepTimerDialog(
+            playbackState = playbackState,
+            onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+            onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+            onDismiss = { showSleepTimerPanel = false }
+        )
+    }
+
+    if (showSubtitleSettings) {
+        SubtitleSettingsDialog(
+            playbackState = playbackState,
+            userPreferences = userPreferences,
+            onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+            onSetSubtitleFontScale = onSetSubtitleFontScale,
+            onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+            onPickSubtitleFileClick = onPickSubtitleFileClick,
+            onSeekToCue = onSeekTo,
+            onDismiss = { showSubtitleSettings = false }
+        )
+    }
+
+    if (currentMedia?.mediaType == MediaType.VIDEO && showVideoSettingsSheet) {
+        VideoSettingsDialog(
+            playbackState = playbackState,
+            userPreferences = userPreferences,
+            onSetPlaybackSpeed = onSetPlaybackSpeed,
+            onSelectVideoOrientation = onSelectVideoOrientation,
+            onRotateVideo90 = onRotateVideo90,
+            onCycleAspectMode = onCycleAspectMode,
+            onToggleKeepScreenOn = onToggleKeepScreenOn,
+            onToggleVideoGestureControls = onToggleVideoGestureControls,
+            onToggleControlsLock = onToggleControlsLock,
+            onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+            onPickSubtitleFileClick = onPickSubtitleFileClick,
+            onOpenEqualizer = onOpenEqualizer,
+            onDismiss = { showVideoSettingsSheet = false }
+        )
+    }
 
     Surface(
         modifier = Modifier
@@ -534,45 +588,6 @@ fun NowPlayingOverlayScreen(
                         }
                     }
 
-                    // Playback Speed Control Panel (opened via top-right 3-dot menu)
-                    if (showSpeedPanel) {
-                        item {
-                            PlaybackSpeedControlCard(
-                                playbackState = playbackState,
-                                onSetPlaybackSpeed = onSetPlaybackSpeed,
-                                onClose = { showSpeedPanel = false }
-                            )
-                        }
-                    }
-
-                    // Sleep Timer (Automatic Stop) Panel (opened via top-right 3-dot menu)
-                    if (showSleepTimerPanel) {
-                        item {
-                            SleepTimerControlCard(
-                                playbackState = playbackState,
-                                onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-                                onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
-                                onClose = { showSleepTimerPanel = false }
-                            )
-                        }
-                    }
-
-                    // Synchronized Lyrics & Subtitle Controls Panel (opened via top-right 3-dot menu)
-                    if (showSubtitleSettings || playbackState.subtitleError != null) {
-                        item {
-                            SubtitleSettingsCard(
-                                playbackState = playbackState,
-                                userPreferences = userPreferences,
-                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                                onSetSubtitleFontScale = onSetSubtitleFontScale,
-                                onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                                onPickSubtitleFileClick = onPickSubtitleFileClick,
-                                onSeekToCue = onSeekTo,
-                                onClose = { showSubtitleSettings = false }
-                            )
-                        }
-                    }
-
                     // Video Surface or Acoustic Studio Visualizer
                     item {
                         if (currentMedia.mediaType == MediaType.VIDEO) {
@@ -598,26 +613,6 @@ fun NowPlayingOverlayScreen(
                                 currentMedia = currentMedia,
                                 playbackState = playbackState,
                                 subtitlesEnabled = userPreferences.subtitlesEnabledByDefault
-                            )
-                        }
-                    }
-
-                    // Video Settings Panel (Speed, Subtitles, Audio Track, Screen Rotation, Keep Screen On, Gestures)
-                    if (currentMedia.mediaType == MediaType.VIDEO && showVideoSettingsSheet) {
-                        item {
-                            VideoPlayerSettingsCard(
-                                playbackState = playbackState,
-                                userPreferences = userPreferences,
-                                onSetPlaybackSpeed = onSetPlaybackSpeed,
-                                onSelectVideoOrientation = onSelectVideoOrientation,
-                                onRotateVideo90 = onRotateVideo90,
-                                onCycleAspectMode = onCycleAspectMode,
-                                onToggleKeepScreenOn = onToggleKeepScreenOn,
-                                onToggleVideoGestureControls = onToggleVideoGestureControls,
-                                onToggleControlsLock = onToggleControlsLock,
-                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                                onPickSubtitleFileClick = onPickSubtitleFileClick,
-                                onOpenEqualizer = onOpenEqualizer
                             )
                         }
                     }
@@ -2421,8 +2416,8 @@ private fun ImmersiveVideoCinemaLayout(
                         }
                     }
 
-                    // Floating Video Settings / Subtitle Drawer in Cinema Mode
-                    if (showVideoSettings || showSubtitleSettings) {
+                    // Floating Video Settings Drawer in Cinema Mode
+                    if (showVideoSettings) {
                         Box(
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
@@ -2431,31 +2426,20 @@ private fun ImmersiveVideoCinemaLayout(
                                 .fillMaxHeight(0.88f)
                                 .verticalScroll(rememberScrollState())
                         ) {
-                            if (showVideoSettings) {
-                                VideoPlayerSettingsCard(
-                                    playbackState = playbackState,
-                                    userPreferences = userPreferences,
-                                    onSetPlaybackSpeed = onSetPlaybackSpeed,
-                                    onSelectVideoOrientation = onSelectVideoOrientation,
-                                    onRotateVideo90 = onRotateVideo90,
-                                    onCycleAspectMode = onCycleAspectMode,
-                                    onToggleKeepScreenOn = onToggleKeepScreenOn,
-                                    onToggleVideoGestureControls = onToggleVideoGestureControls,
-                                    onToggleControlsLock = onToggleControlsLock,
-                                    onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                                    onPickSubtitleFileClick = onPickSubtitleFileClick,
-                                    onOpenEqualizer = onOpenEqualizer
-                                )
-                            } else if (showSubtitleSettings) {
-                                SubtitleSettingsCard(
-                                    playbackState = playbackState,
-                                    userPreferences = userPreferences,
-                                    onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                                    onSetSubtitleFontScale = onSetSubtitleFontScale,
-                                    onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                                    onPickSubtitleFileClick = onPickSubtitleFileClick
-                                )
-                            }
+                            VideoPlayerSettingsCard(
+                                playbackState = playbackState,
+                                userPreferences = userPreferences,
+                                onSetPlaybackSpeed = onSetPlaybackSpeed,
+                                onSelectVideoOrientation = onSelectVideoOrientation,
+                                onRotateVideo90 = onRotateVideo90,
+                                onCycleAspectMode = onCycleAspectMode,
+                                onToggleKeepScreenOn = onToggleKeepScreenOn,
+                                onToggleVideoGestureControls = onToggleVideoGestureControls,
+                                onToggleControlsLock = onToggleControlsLock,
+                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                                onPickSubtitleFileClick = onPickSubtitleFileClick,
+                                onOpenEqualizer = onOpenEqualizer
+                            )
                         }
                     }
                 }
@@ -3791,6 +3775,36 @@ private fun LandscapeAudioNowPlayingDeck(
     onSaveQueueAsPlaylist: (String) -> Unit,
     onRetryPlayback: () -> Unit
 ) {
+    if (showSpeedPanel) {
+        PlaybackSpeedDialog(
+            playbackState = playbackState,
+            onSetPlaybackSpeed = onSetPlaybackSpeed,
+            onDismiss = onToggleSpeedPanel
+        )
+    }
+
+    if (showSleepTimerPanel) {
+        SleepTimerDialog(
+            playbackState = playbackState,
+            onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+            onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+            onDismiss = onToggleSleepTimerPanel
+        )
+    }
+
+    if (showSubtitleSettings) {
+        SubtitleSettingsDialog(
+            playbackState = playbackState,
+            userPreferences = userPreferences,
+            onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+            onSetSubtitleFontScale = onSetSubtitleFontScale,
+            onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+            onPickSubtitleFileClick = onPickSubtitleFileClick,
+            onSeekToCue = onSeekTo,
+            onDismiss = onToggleSubtitleSettings
+        )
+    }
+
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -4070,41 +4084,7 @@ private fun LandscapeAudioNowPlayingDeck(
                 }
             }
 
-            if (showSpeedPanel) {
-                item {
-                    PlaybackSpeedControlCard(
-                        playbackState = playbackState,
-                        onSetPlaybackSpeed = onSetPlaybackSpeed,
-                        onClose = onToggleSpeedPanel
-                    )
-                }
-            }
 
-            if (showSleepTimerPanel) {
-                item {
-                    SleepTimerControlCard(
-                        playbackState = playbackState,
-                        onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-                        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
-                        onClose = onToggleSleepTimerPanel
-                    )
-                }
-            }
-
-            if (showSubtitleSettings || playbackState.subtitleError != null) {
-                item {
-                    SubtitleSettingsCard(
-                        playbackState = playbackState,
-                        userPreferences = userPreferences,
-                        onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                        onSetSubtitleFontScale = onSetSubtitleFontScale,
-                        onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                        onPickSubtitleFileClick = onPickSubtitleFileClick,
-                        onSeekToCue = onSeekTo,
-                        onClose = onToggleSubtitleSettings
-                    )
-                }
-            }
 
             // Active Queue Management
             item {
@@ -4256,6 +4236,15 @@ fun NowPlayingSidePanel(
     modifier: Modifier = Modifier
 ) {
     val currentMedia = playbackState.currentMedia
+    var showSidePanelSpeedDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showSidePanelSpeedDialog) {
+        PlaybackSpeedDialog(
+            playbackState = playbackState,
+            onSetPlaybackSpeed = onSetPlaybackSpeed,
+            onDismiss = { showSidePanelSpeedDialog = false }
+        )
+    }
 
     Surface(
         modifier = modifier
@@ -4402,12 +4391,32 @@ fun NowPlayingSidePanel(
                                             Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
                                         },
                                         onClick = {
-                                            val idx = speeds.indexOfFirst { abs(it - playbackState.playbackSpeed) < 0.05f }
-                                            val nextSpd = speeds[(idx + 1) % speeds.size]
-                                            onSetPlaybackSpeed(nextSpd)
                                             sideMenuExpanded = false
+                                            showSidePanelSpeedDialog = true
                                         },
                                         modifier = Modifier.testTag("side_panel_speed_chip")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Sleep Timer", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Bedtime, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
+                                        },
+                                        onClick = {
+                                            sideMenuExpanded = false
+                                            onExpandFullPlayer()
+                                        },
+                                        modifier = Modifier.testTag("side_panel_sleep_timer_chip")
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Lyrics & Subtitles", maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Subtitles, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                        },
+                                        onClick = {
+                                            sideMenuExpanded = false
+                                            onExpandFullPlayer()
+                                        },
+                                        modifier = Modifier.testTag("side_panel_lyrics_chip")
                                     )
                                     DropdownMenuItem(
                                         text = { Text("Equalizer & Bass Boost", maxLines = 1) },

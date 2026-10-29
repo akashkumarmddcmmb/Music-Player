@@ -2497,14 +2497,12 @@ private fun StudioCircularAudioArtworkAndWaveform(
     subtitlesEnabled: Boolean = true,
     compactMode: Boolean = false
 ) {
+    val centerCircleSize = if (compactMode) 136.dp else 200.dp
+    val iconSize = if (compactMode) 36.dp else 50.dp
+    val mintGreenAccent = Color(0xFF00E676)
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
     val tertiaryColor = MaterialTheme.colorScheme.tertiary
-    val outerRingSize = if (compactMode) 128.dp else 188.dp
-    val innerDiscSize = if (compactMode) 96.dp else 144.dp
-    val iconSize = if (compactMode) 32.dp else 44.dp
-    val albumFrameSize = if (compactMode) 136.dp else 212.dp
-    val albumCornerRadius = if (compactMode) 18.dp else 24.dp
 
     val artworkBitmap by rememberMediaArtworkBitmap(
         media = currentMedia,
@@ -2533,28 +2531,26 @@ private fun StudioCircularAudioArtworkAndWaveform(
         ) {
             val resolvedCover = artworkBitmap
             if (resolvedCover != null) {
-                // Real Album Artwork with rounded corners, proper 1:1 aspect ratio, and subtle progress halo
+                // Real Album Artwork: Clean circular crop with subtle static mint-green border & glow
                 Box(
                     modifier = Modifier
-                        .size(albumFrameSize)
+                        .size(centerCircleSize)
                         .aspectRatio(1f)
-                        .clip(RoundedCornerShape(albumCornerRadius))
+                        .clip(CircleShape)
                         .background(
-                            Brush.linearGradient(
+                            Brush.radialGradient(
                                 colors = listOf(
-                                    primaryColor.copy(alpha = 0.35f),
-                                    secondaryColor.copy(alpha = 0.25f)
+                                    mintGreenAccent.copy(alpha = 0.22f),
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                    Color.Black
                                 )
                             )
                         )
                         .border(
                             width = 2.dp,
-                            brush = Brush.sweepGradient(
-                                listOf(primaryColor, secondaryColor, tertiaryColor, primaryColor)
-                            ),
-                            shape = RoundedCornerShape(albumCornerRadius)
-                        )
-                        .padding(3.dp),
+                            color = mintGreenAccent.copy(alpha = 0.45f),
+                            shape = CircleShape
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     Image(
@@ -2563,76 +2559,50 @@ private fun StudioCircularAudioArtworkAndWaveform(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(RoundedCornerShape(albumCornerRadius - 2.dp))
+                            .clip(CircleShape)
                             .testTag("now_playing_album_artwork_image")
                     )
                 }
             } else {
-                // Fallback: Circular Neon Acoustic Ring + Studio Disc when no artwork is available
+                // Fallback: Simple audio icon with subtle static mint-green decorative ring & glow (no duplicate rotating arc)
                 Box(
                     modifier = Modifier
-                        .size(outerRingSize)
+                        .size(centerCircleSize)
+                        .clip(CircleShape)
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    mintGreenAccent.copy(alpha = 0.16f),
+                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                    MaterialTheme.colorScheme.surface
+                                )
+                            )
+                        )
+                        .border(
+                            width = 2.dp,
+                            color = mintGreenAccent.copy(alpha = 0.45f),
+                            shape = CircleShape
+                        )
                         .testTag("now_playing_default_artwork_placeholder"),
                     contentAlignment = Alignment.Center
                 ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        val strokeWidth = (if (compactMode) 5.dp else 6.dp).toPx()
-                        val radius = (size.minDimension - strokeWidth * 2) / 2f
-                        val center = Offset(size.width / 2f, size.height / 2f)
-                        val progress = if (playbackState.durationMs > 0L) {
-                            (playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()).coerceIn(0f, 1f)
-                        } else 0f
-
-                        // Outer studio ring
-                        drawCircle(
-                            color = primaryColor.copy(alpha = 0.22f),
-                            radius = radius,
-                            center = center,
-                            style = Stroke(width = strokeWidth)
-                        )
-
-                        // Active playback arc
-                        drawArc(
-                            brush = Brush.sweepGradient(
-                                listOf(primaryColor, secondaryColor, tertiaryColor, primaryColor)
-                            ),
-                            startAngle = -90f,
-                            sweepAngle = 360f * progress.coerceAtLeast(0.04f),
-                            useCenter = false,
-                            style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .size(innerDiscSize)
-                            .clip(CircleShape)
-                            .background(
-                                Brush.radialGradient(
-                                    colors = listOf(
-                                        primaryColor.copy(alpha = 0.38f),
-                                        secondaryColor.copy(alpha = 0.18f),
-                                        MaterialTheme.colorScheme.surface
-                                    )
-                                )
-                            )
-                            .border(1.dp, secondaryColor.copy(alpha = 0.4f), CircleShape),
-                        contentAlignment = Alignment.Center
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                imageVector = if (playbackState.isPlaying) Icons.Default.GraphicEq else Icons.Default.MusicNote,
-                                contentDescription = null,
-                                tint = secondaryColor,
-                                modifier = Modifier.size(iconSize)
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = currentMedia.mimeType.substringAfterLast('/').uppercase(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Icon(
+                            imageVector = if (playbackState.isPlaying) Icons.Default.GraphicEq else Icons.Default.MusicNote,
+                            contentDescription = "Default audio icon",
+                            tint = mintGreenAccent,
+                            modifier = Modifier.size(iconSize)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = currentMedia.mimeType.substringAfterLast('/').uppercase().takeIf { it.isNotBlank() } ?: "AUDIO",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = mintGreenAccent.copy(alpha = 0.85f)
+                        )
                     }
                 }
             }

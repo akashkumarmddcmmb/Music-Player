@@ -230,7 +230,7 @@ object MediaArtworkLoader {
         }
 
         // 3. Try companion cover file in the same local folder
-        val companionUri = resolveCompanionCoverFileUri(media.uriString)
+        val companionUri = resolveCompanionCoverFileUri(media.uriString, media.album)
         if (companionUri != null) {
             val resolved = ResolvedMediaArtwork(
                 mediaUri = media.uriString,
@@ -412,7 +412,7 @@ object MediaArtworkLoader {
                         ((header[7].toInt() and 0x7F) shl 14) or
                         ((header[8].toInt() and 0x7F) shl 7) or
                         (header[9].toInt() and 0x7F)
-                    val maxRead = tagSize.coerceIn(0, 4 * 1024 * 1024)
+                    val maxRead = tagSize.coerceIn(0, 10 * 1024 * 1024)
                     if (maxRead <= 10) return null
 
                     val tagBytes = ByteArray(maxRead)
@@ -643,13 +643,45 @@ object MediaArtworkLoader {
             if (b0 == 0xFF && b1 == 0xD8 && b2 == 0xFF) return idx
             // PNG: 89 50 4E 47
             if (b0 == 0x89 && b1 == 0x50 && b2 == 0x4E && b3 == 0x47) return idx
+            // GIF: "GIF8"
+            if (b0 == 0x47 && b1 == 0x49 && b2 == 0x46 && b3 == 0x38) return idx
+            // WebP: "RIFF"...."WEBP"
+            if (idx + 12 <= end &&
+                b0 == 0x52 && b1 == 0x49 && b2 == 0x46 && b3 == 0x46 &&
+                (buf[idx + 8].toInt() and 0xFF) == 0x57 &&
+                (buf[idx + 9].toInt() and 0xFF) == 0x45 &&
+                (buf[idx + 10].toInt() and 0xFF) == 0x42 &&
+                (buf[idx + 11].toInt() and 0xFF) == 0x50
+            ) {
+                return idx
+            }
             idx++
         }
         return null
     }
 
+    fun isGenericAlbumName(album: String?): Boolean {
+        if (album.isNullOrBlank()) return true
+        val lower = album.trim().lowercase()
+        return lower == "<unknown>" ||
+            lower == "unknown" ||
+            lower == "unknown album" ||
+            lower == "unknown artist" ||
+            lower == "music" ||
+            lower == "download" ||
+            lower == "downloads" ||
+            lower == "audio" ||
+            lower == "pulseplay" ||
+            lower == "internal shared storage" ||
+            lower == "sdcard" ||
+            lower == "storage"
+    }
+
     private fun resolveMediaStoreAlbumArtUri(context: Context, media: MediaEntity): Uri? {
         if (media.mediaType != MediaType.AUDIO) return null
+        // Never map generic/unverified album titles to MediaStore album art
+        if (isGenericAlbumName(media.album)) return null
+
         return runCatching {
             val queryUri = when {
                 media.uriString.startsWith("content://media/") -> Uri.parse(media.uriString)
@@ -668,9 +700,13 @@ object MediaArtworkLoader {
                         val albumId = cursor.getLong(col)
                         if (albumId > 0L) {
                             val artUri = ContentUris.withAppendedId(ALBUM_ART_CONTENT_URI, albumId)
-                            // Verify the stream is actually openable before returning it
-                            context.contentResolver.openInputStream(artUri)?.use {
-                                return artUri
+                            // Verify the stream is actually openable and has a valid image magic header
+                            context.contentResolver.openInputStream(artUri)?.use { stream ->
+                                val probe = ByteArray(16)
+                                val read = stream.read(probe)
+                                if (read >= 4 && hasValidImageMagicHeader(probe.copyOf(read))) {
+                                    return artUri
+                                }
                             }
                         }
                     }
@@ -680,7 +716,7 @@ object MediaArtworkLoader {
         }.getOrNull()
     }
 
-    private fun resolveCompanionCoverFileUri(uriString: String): Uri? {
+    private fun resolveCompanionCoverFileUri(uriString: String, albumName: String? = null): Uri? {
         return runCatching {
             val parsed = Uri.parse(uriString)
             if (parsed.scheme?.lowercase() != "file") return null
@@ -689,20 +725,49 @@ object MediaArtworkLoader {
             if (!parentDir.exists() || !parentDir.isDirectory) return null
 
             val baseName = mediaFile.nameWithoutExtension
-            val candidates = listOf(
+            // 1. Explicit track-specific companion file (e.g., "mysong.jpg" alongside "mysong.mp3")
+            val trackCandidates = listOf(
                 "$baseName.jpg",
+                "$baseName.jpeg",
                 "$baseName.png",
-                "cover.jpg",
-                "cover.png",
-                "album.jpg",
-                "album.png",
-                "folder.jpg",
-                "folder.png"
+                "$baseName.webp"
             )
-            for (name in candidates) {
+            for (name in trackCandidates) {
                 val candidate = File(parentDir, name)
                 if (candidate.exists() && candidate.isFile && candidate.length() > 64L) {
                     return Uri.fromFile(candidate)
+                }
+            }
+
+            // 2. Folder-wide album art ("cover.jpg", "folder.jpg") ONLY if parent directory is a dedicated album folder
+            val dirName = parentDir.name.trim().lowercase()
+            val isSharedBucket = dirName == "download" ||
+                dirName == "downloads" ||
+                dirName == "music" ||
+                dirName == "audio" ||
+                dirName == "whatsapp audio" ||
+                dirName == "telegram audio" ||
+                dirName == "bluetooth" ||
+                dirName == "0" ||
+                dirName == "emulated" ||
+                dirName == "sdcard"
+            if (!isSharedBucket && !isGenericAlbumName(albumName)) {
+                val albumCandidates = listOf(
+                    "cover.jpg",
+                    "cover.jpeg",
+                    "cover.png",
+                    "cover.webp",
+                    "album.jpg",
+                    "album.jpeg",
+                    "album.png",
+                    "folder.jpg",
+                    "folder.png"
+                )
+                for (name in albumCandidates) {
+                    val candidate = File(parentDir, name)
+                    if (candidate.exists() && candidate.isFile && candidate.length() > 64L) {
+                        return Uri.fromFile(candidate)
+                    }
                 }
             }
             null

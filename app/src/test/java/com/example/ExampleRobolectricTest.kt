@@ -4423,4 +4423,189 @@ class ExampleRobolectricTest {
 
         composeTestRule.mainClock.autoAdvance = true
     }
+
+    @Test
+    fun nowPlaying_mp3ArtworkIsolationAndMintPlaceholderTest() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        // 1. Verify generic album names are strictly identified to prevent false MediaStore albumart linking
+        assertTrue(com.example.media.MediaArtworkLoader.isGenericAlbumName("<unknown>"))
+        assertTrue(com.example.media.MediaArtworkLoader.isGenericAlbumName("unknown"))
+        assertTrue(com.example.media.MediaArtworkLoader.isGenericAlbumName("Download"))
+        assertTrue(com.example.media.MediaArtworkLoader.isGenericAlbumName("Music"))
+        assertTrue(com.example.media.MediaArtworkLoader.isGenericAlbumName("Internal shared storage"))
+        assertFalse(com.example.media.MediaArtworkLoader.isGenericAlbumName("Abbey Road"))
+        assertFalse(com.example.media.MediaArtworkLoader.isGenericAlbumName("Random Access Memories"))
+
+        // 2. Prepare 3 distinct test tracks:
+        // - trackA: MP3 with RED album artwork
+        // - trackB: MP3 with BLUE album artwork
+        // - trackC: WAV with NO album artwork
+        val testDir = File(app.cacheDir, "mp3_artwork_test").apply { mkdirs() }
+        val redPng = createTestAlbumCoverPngBytes(android.graphics.Color.RED)
+        val bluePng = createTestAlbumCoverPngBytes(android.graphics.Color.BLUE)
+
+        val fileA = File(testDir, "track_red.mp3")
+        val fileB = File(testDir, "track_blue.mp3")
+        val fileC = File(testDir, "track_no_art.wav")
+        writeTestMp3WithId3ApicCover(fileA, redPng)
+        writeTestMp3WithId3ApicCover(fileB, bluePng)
+        fileC.writeBytes(ByteArray(256) { 0x00 })
+
+        val trackA = MediaEntity(
+            uriString = Uri.fromFile(fileA).toString(),
+            mediaStoreId = null,
+            title = "Crimson Pulse",
+            artist = "Artist A",
+            album = "Red Album",
+            folderName = "Music",
+            durationMs = 60_000L,
+            sizeBytes = fileA.length(),
+            mimeType = "audio/mpeg",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000000L
+        )
+        val trackB = MediaEntity(
+            uriString = Uri.fromFile(fileB).toString(),
+            mediaStoreId = null,
+            title = "Azure Beat",
+            artist = "Artist B",
+            album = "Blue Album",
+            folderName = "Music",
+            durationMs = 70_000L,
+            sizeBytes = fileB.length(),
+            mimeType = "audio/mpeg",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000100L
+        )
+        val trackC = MediaEntity(
+            uriString = Uri.fromFile(fileC).toString(),
+            mediaStoreId = null,
+            title = "Acoustic Silence",
+            artist = "Artist C",
+            album = "Download",
+            folderName = "Download",
+            durationMs = 80_000L,
+            sizeBytes = fileC.length(),
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700000200L
+        )
+
+        val queue = listOf(trackA, trackB, trackC)
+
+        // Pre-resolve metadata to verify embedded ID3 parsing and warm the cache
+        val resolvedA = com.example.media.MediaArtworkLoader.resolveArtworkMetadata(app, trackA)
+        assertTrue(resolvedA.hasArtwork)
+        assertTrue(resolvedA.artworkData!!.contentEquals(redPng))
+
+        val resolvedB = com.example.media.MediaArtworkLoader.resolveArtworkMetadata(app, trackB)
+        assertTrue(resolvedB.hasArtwork)
+        assertTrue(resolvedB.artworkData!!.contentEquals(bluePng))
+        val decodedB = com.example.media.MediaArtworkLoader.loadArtworkBitmapBlocking(
+            context = app,
+            media = trackB,
+            artworkData = bluePng,
+            targetSizePx = 512
+        )
+        assertNotNull(decodedB)
+
+        val resolvedC = com.example.media.MediaArtworkLoader.resolveArtworkMetadata(app, trackC)
+        assertFalse(resolvedC.hasArtwork)
+        assertNull(resolvedC.artworkData)
+        assertNull(resolvedC.artworkUri)
+
+        // 3. Set queue with trackA: Must load redPng
+        vm.setQueue(queue, initialIndex = 0)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackA.uriString, vm.playbackState.value.currentMedia?.uriString)
+        assertNotNull(vm.playbackState.value.currentArtworkData)
+        assertTrue(vm.playbackState.value.currentArtworkData!!.contentEquals(redPng))
+
+        // 4. Skip to trackB: Must load bluePng (NEVER retain redPng!)
+        vm.skipToNext()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackB.uriString, vm.playbackState.value.currentMedia?.uriString)
+        assertNotNull(vm.playbackState.value.currentArtworkData)
+        assertTrue(vm.playbackState.value.currentArtworkData!!.contentEquals(bluePng))
+        assertFalse(vm.playbackState.value.currentArtworkData!!.contentEquals(redPng))
+
+        // 5. Skip to trackC: Track without artwork must have null artworkData and null artworkUri
+        vm.skipToNext()
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(trackC.uriString, vm.playbackState.value.currentMedia?.uriString)
+        assertNull("Track without artwork must not inherit previous track artwork", vm.playbackState.value.currentArtworkData)
+        assertNull(vm.playbackState.value.currentArtworkUri)
+
+        // 6. Verify Compose UI renders the subtle static mint-green placeholder for trackC
+        var uiPlaybackState by mutableStateOf(
+            com.example.viewmodel.PlaybackUiState(
+                currentMedia = trackC,
+                queue = queue,
+                currentQueueIndex = 2,
+                isPlaying = true,
+                durationMs = trackC.durationMs,
+                currentArtworkData = null,
+                currentArtworkUri = null
+            )
+        )
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                NowPlayingOverlayScreen(
+                    playbackState = uiPlaybackState,
+                    userPreferences = UserPreferencesState(),
+                    isFavorite = false,
+                    playerInstance = null,
+                    onCollapse = {},
+                    onPlayPause = {},
+                    onSeekTo = {},
+                    onPrevious = {},
+                    onNext = {},
+                    onToggleShuffle = {},
+                    onCycleRepeat = {},
+                    onSetPlaybackSpeed = {},
+                    onCycleAspectMode = {},
+                    onRotateVideo90 = {},
+                    onToggleFullscreen = {},
+                    onBrightnessGestureDelta = {},
+                    onVolumeGestureDelta = {},
+                    onPickSubtitleFileClick = {},
+                    onToggleSubtitlesEnabled = {},
+                    onSetSubtitleFontScale = {},
+                    onSetSubtitleOffsetMs = {},
+                    onToggleFavorite = {},
+                    onOpenEqualizer = {},
+                    onOpenStudio = {},
+                    onSelectQueueItem = {},
+                    onRemoveQueueItem = {},
+                    onRetryPlayback = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("now_playing_default_artwork_placeholder").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_album_artwork_image").assertDoesNotExist()
+
+        // 7. Transition UI state to trackB -> real artwork image must appear and placeholder vanish
+        uiPlaybackState = com.example.viewmodel.PlaybackUiState(
+            currentMedia = trackB,
+            queue = queue,
+            currentQueueIndex = 1,
+            isPlaying = true,
+            durationMs = trackB.durationMs,
+            currentArtworkData = bluePng,
+            currentArtworkSource = "EmbeddedPicture"
+        )
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("now_playing_album_artwork_image").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_default_artwork_placeholder").assertDoesNotExist()
+
+        fileA.delete()
+        fileB.delete()
+        fileC.delete()
+        testDir.delete()
+    }
 }

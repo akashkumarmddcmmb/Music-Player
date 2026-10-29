@@ -425,13 +425,21 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
             val idx = activePlayer?.currentMediaItemIndex ?: -1
             val queue = _playbackState.value.queue
-            val matchedFromLibrary = mediaItem?.mediaId?.let { id ->
-                allMedia.value.find { it.uriString == id }
-            }
-            val nextEntity = queue.getOrNull(idx) ?: matchedFromLibrary ?: _playbackState.value.currentMedia
+            val mediaId = mediaItem?.mediaId
+            val matchedFromQueue = if (!mediaId.isNullOrBlank()) {
+                queue.find { it.uriString == mediaId }
+            } else null
+            val matchedFromLibrary = if (!mediaId.isNullOrBlank() && matchedFromQueue == null) {
+                allMedia.value.find { it.uriString == mediaId }
+            } else null
+            val nextEntity = matchedFromQueue ?: matchedFromLibrary ?: queue.getOrNull(idx) ?: _playbackState.value.currentMedia
+            val actualQueueIdx = if (nextEntity != null) {
+                val qPos = queue.indexOfFirst { it.uriString == nextEntity.uriString }
+                if (qPos >= 0) qPos else idx
+            } else idx
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = nextEntity,
-                currentQueueIndex = idx,
+                currentQueueIndex = actualQueueIdx,
                 hasRenderedFirstFrame = false,
                 playbackError = null
             )
@@ -458,12 +466,13 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
      */
     fun onPlayerMediaMetadataUpdated(mediaMetadata: MediaMetadata) {
         val current = _playbackState.value.currentMedia ?: return
-        // Ensure if MediaMetadata has a title, it either matches the active track or is blank
+        val activeMediaId = activePlayer?.currentMediaItem?.mediaId
+        if (activeMediaId != null && activeMediaId != current.uriString) {
+            return
+        }
         val metaTitle = mediaMetadata.title?.toString()?.trim()
         if (!metaTitle.isNullOrBlank() &&
-            !metaTitle.equals(current.title.trim(), ignoreCase = true) &&
-            activePlayer?.currentMediaItem?.mediaId != null &&
-            activePlayer?.currentMediaItem?.mediaId != current.uriString
+            !metaTitle.equals(current.title.trim(), ignoreCase = true)
         ) {
             return
         }
@@ -472,22 +481,22 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         if (bytes != null || uri != null) {
             MediaArtworkLoader.cacheLiveMediaMetadataArtwork(current.uriString, mediaMetadata)
             val state = _playbackState.value
-            val nextBytes = bytes ?: state.currentArtworkData
-            val nextUri = uri ?: state.currentArtworkUri
-            val nextSource = when {
-                bytes != null -> "MediaMetadata.artworkData"
-                uri != null -> "MediaMetadata.artworkUri"
-                else -> state.currentArtworkSource
-            }
-            if (!(nextBytes contentEquals state.currentArtworkData) ||
-                nextUri != state.currentArtworkUri ||
-                nextSource != state.currentArtworkSource
-            ) {
-                _playbackState.value = state.copy(
-                    currentArtworkData = nextBytes,
-                    currentArtworkUri = nextUri,
-                    currentArtworkSource = nextSource
-                )
+            if (state.currentMedia?.uriString == current.uriString) {
+                val nextSource = when {
+                    bytes != null -> "MediaMetadata.artworkData"
+                    uri != null -> "MediaMetadata.artworkUri"
+                    else -> state.currentArtworkSource
+                }
+                if (!(bytes contentEquals state.currentArtworkData) ||
+                    uri != state.currentArtworkUri ||
+                    nextSource != state.currentArtworkSource
+                ) {
+                    _playbackState.value = state.copy(
+                        currentArtworkData = bytes,
+                        currentArtworkUri = uri,
+                        currentArtworkSource = nextSource
+                    )
+                }
             }
         }
     }
@@ -545,15 +554,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
             if (_playbackState.value.currentMedia?.uriString == media.uriString) {
                 val state = _playbackState.value
-                val bestBytes = state.currentArtworkData?.takeIf { it.isNotEmpty() }
-                    ?: resolved.artworkData
-                val bestUri = state.currentArtworkUri?.takeIf { it.isNotBlank() }
-                    ?: resolved.artworkUri?.toString()
-                val bestSource = if (state.currentArtworkData != null || !state.currentArtworkUri.isNullOrBlank()) {
-                    state.currentArtworkSource
-                } else {
-                    resolved.sourceLabel
-                }
+                val bestBytes = resolved.artworkData
+                val bestUri = resolved.artworkUri?.toString()
+                val bestSource = if (resolved.hasArtwork) resolved.sourceLabel else "none"
                 if (!(bestBytes contentEquals state.currentArtworkData) ||
                     bestUri != state.currentArtworkUri ||
                     bestSource != state.currentArtworkSource
@@ -1413,9 +1416,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             } else if (queue.size > 1) {
                 player.seekTo(0, 0L)
             }
-            val nextIdx = player.currentMediaItemIndex.takeIf { it in queue.indices }
-                ?: ((_playbackState.value.currentQueueIndex + 1) % queue.size.coerceAtLeast(1))
-            val nextEntity = queue.getOrNull(nextIdx)
+            val activeId = player.currentMediaItem?.mediaId
+            val matchedFromQueue = if (!activeId.isNullOrBlank()) queue.find { it.uriString == activeId } else null
+            val nextIdx = if (matchedFromQueue != null) {
+                queue.indexOfFirst { it.uriString == matchedFromQueue.uriString }
+            } else {
+                player.currentMediaItemIndex.takeIf { it in queue.indices }
+                    ?: ((_playbackState.value.currentQueueIndex + 1) % queue.size.coerceAtLeast(1))
+            }
+            val nextEntity = matchedFromQueue ?: queue.getOrNull(nextIdx)
             if (nextEntity != null) {
                 _playbackState.value = _playbackState.value.copy(
                     currentMedia = nextEntity,
@@ -1451,9 +1460,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 _playbackState.value = _playbackState.value.copy(currentPositionMs = 0L)
             } else if (player.hasPreviousMediaItem()) {
                 player.seekToPreviousMediaItem()
-                val prevIdx = player.currentMediaItemIndex.takeIf { it in queue.indices }
-                    ?: (_playbackState.value.currentQueueIndex - 1).coerceAtLeast(0)
-                val prevEntity = queue.getOrNull(prevIdx)
+                val activeId = player.currentMediaItem?.mediaId
+                val matchedFromQueue = if (!activeId.isNullOrBlank()) queue.find { it.uriString == activeId } else null
+                val prevIdx = if (matchedFromQueue != null) {
+                    queue.indexOfFirst { it.uriString == matchedFromQueue.uriString }
+                } else {
+                    player.currentMediaItemIndex.takeIf { it in queue.indices }
+                        ?: (_playbackState.value.currentQueueIndex - 1).coerceAtLeast(0)
+                }
+                val prevEntity = matchedFromQueue ?: queue.getOrNull(prevIdx)
                 if (prevEntity != null) {
                     _playbackState.value = _playbackState.value.copy(
                         currentMedia = prevEntity,

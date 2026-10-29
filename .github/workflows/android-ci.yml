@@ -157,7 +157,12 @@ jobs:
               exit 1
             fi
 
-            TARGET_ALIAS="${KEY_ALIAS:-upload}"
+            if [ -n "$KEY_ALIAS" ]; then
+              TARGET_ALIAS="$KEY_ALIAS"
+            else
+              DETECTED_ALIAS=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env STORE_PASSWORD 2>/dev/null | grep -E "PrivateKeyEntry|trustedCertEntry" | head -n 1 | cut -d',' -f1 | xargs)
+              TARGET_ALIAS="${DETECTED_ALIAS:-upload}"
+            fi
             echo "Verifying alias '$TARGET_ALIAS' in decoded keystore..."
             if ! keytool -list -keystore "$KEYSTORE_PATH" -storepass:env STORE_PASSWORD -alias "$TARGET_ALIAS" >/dev/null 2>&1; then
               echo "::error::Keystore verification failed: alias '$TARGET_ALIAS' was not found in the keystore. Halting build without replacing key."
@@ -362,7 +367,12 @@ jobs:
             exit 1
           fi
 
-          TARGET_ALIAS="${KEY_ALIAS:-upload}"
+          if [ -n "$KEY_ALIAS" ]; then
+            TARGET_ALIAS="$KEY_ALIAS"
+          else
+            DETECTED_ALIAS=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env STORE_PASSWORD 2>/dev/null | grep -E "PrivateKeyEntry|trustedCertEntry" | head -n 1 | cut -d',' -f1 | xargs)
+            TARGET_ALIAS="${DETECTED_ALIAS:-upload}"
+          fi
           echo "Verifying alias '$TARGET_ALIAS' in decoded keystore for Play bundle..."
           if ! keytool -list -keystore "$KEYSTORE_PATH" -storepass:env STORE_PASSWORD -alias "$TARGET_ALIAS" >/dev/null 2>&1; then
             echo "::error::Keystore verification failed: alias '$TARGET_ALIAS' was not found in the keystore. Halting build without replacing key."

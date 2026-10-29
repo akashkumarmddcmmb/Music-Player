@@ -38,9 +38,8 @@ android {
       storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
       val resolvedKeyAlias = project.findProperty("KEY_ALIAS")?.toString()
         ?: System.getenv("KEY_ALIAS")
-        ?: "upload"
-      keyAlias = resolvedKeyAlias
-      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
+      keyAlias = resolvedKeyAlias ?: ""
+      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: ""
     }
     create("debugConfig") {
       storeFile = file("${rootDir}/debug.keystore")

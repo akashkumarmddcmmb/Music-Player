@@ -139,20 +139,42 @@ jobs:
         id: release_signing
         if: github.event_name != 'pull_request'
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
           APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
+            echo "Decoding release keystore from repository secrets..."
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
             export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
+
+            if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
+              echo "::error::Decoded keystore file does not exist or is empty."
+              exit 1
+            fi
+
+            TARGET_ALIAS="${KEY_ALIAS:-upload}"
+            echo "Verifying alias '$TARGET_ALIAS' in decoded keystore..."
+            if ! keytool -list -keystore "$KEYSTORE_PATH" -storepass:env STORE_PASSWORD -alias "$TARGET_ALIAS" >/dev/null 2>&1; then
+              echo "::error::Keystore verification failed: alias '$TARGET_ALIAS' was not found in the keystore. Halting build without replacing key."
+              exit 1
+            fi
+            echo "Keystore verified successfully. Alias '$TARGET_ALIAS' confirmed."
+
+            export KEY_ALIAS="$TARGET_ALIAS"
             ./gradlew :app:assembleRelease --no-daemon
+
+            if [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
+              echo "::error::assembleRelease completed but app/build/outputs/apk/release/app-release.apk was not generated."
+              exit 1
+            fi
             echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Release keystore secrets not configured; packaging verified Debug-signed APK only (clearly labeled as debug)."
+            echo "Release keystore secrets (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_PASSWORD) not configured; packaging verified Debug-signed APK only (clearly labeled as debug)."
             echo "signed_release_built=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -319,20 +341,43 @@ jobs:
       - name: Build Signed Google Play Release Bundle (:app:bundleRelease)
         id: build_aab
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 || secrets.RELEASE_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD || secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           APP_VERSION_NAME: ${{ needs.build-verify-and-release.outputs.version_name }}
           APP_VERSION_CODE: ${{ needs.build-verify-and-release.outputs.version_code }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "ERROR: Google Play App Bundles require RELEASE_KEYSTORE_BASE64, STORE_PASSWORD, and KEY_PASSWORD secrets."
+            echo "ERROR: Google Play App Bundles require UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, and KEY_PASSWORD secrets."
             exit 1
           fi
+          echo "Decoding release keystore for Play Store bundle..."
           echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
           export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
+
+          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
+            echo "::error::Decoded keystore file does not exist or is empty."
+            exit 1
+          fi
+
+          TARGET_ALIAS="${KEY_ALIAS:-upload}"
+          echo "Verifying alias '$TARGET_ALIAS' in decoded keystore for Play bundle..."
+          if ! keytool -list -keystore "$KEYSTORE_PATH" -storepass:env STORE_PASSWORD -alias "$TARGET_ALIAS" >/dev/null 2>&1; then
+            echo "::error::Keystore verification failed: alias '$TARGET_ALIAS' was not found in the keystore. Halting build without replacing key."
+            exit 1
+          fi
+          echo "Keystore verified successfully. Alias '$TARGET_ALIAS' confirmed."
+
+          export KEY_ALIAS="$TARGET_ALIAS"
           ./gradlew :app:bundleRelease --no-daemon
+
+          if [ ! -f "app/build/outputs/bundle/release/app-release.aab" ]; then
+            echo "::error::bundleRelease completed but app/build/outputs/bundle/release/app-release.aab was not generated."
+            exit 1
+          fi
+
           mkdir -p play-bundle-artifacts
           VER="${{ needs.build-verify-and-release.outputs.version_name }}"
           CODE="${{ needs.build-verify-and-release.outputs.version_code }}"

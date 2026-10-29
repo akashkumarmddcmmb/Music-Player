@@ -135,7 +135,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: ./gradlew :app:assembleDebug --no-daemon
 
-      - name: Assemble Signed Release APK & AAB (If Release Secrets Configured)
+      - name: Assemble Signed Release APK (If Release Secrets Configured)
         id: release_signing
         if: github.event_name != 'pull_request'
         env:
@@ -149,7 +149,7 @@ jobs:
           if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ]; then
             echo "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
             export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
-            ./gradlew :app:assembleRelease :app:bundleRelease --no-daemon
+            ./gradlew :app:assembleRelease --no-daemon
             echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
           else
             echo "Release keystore secrets not configured; packaging verified Debug-signed APK only (clearly labeled as debug)."
@@ -164,10 +164,80 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk "release-assets/PulsePlay-v${VER}-debug.apk"
           if [ "${{ steps.release_signing.outputs.signed_release_built }}" = "true" ]; then
             cp app/build/outputs/apk/release/app-release.apk "release-assets/PulsePlay-v${VER}-release.apk"
-            cp app/build/outputs/bundle/release/app-release.aab "release-assets/PulsePlay-v${VER}-release.aab"
           fi
           cd release-assets
           sha256sum * > SHA256SUMS.txt
+
+      - name: Verify APK Signature & Display Certificate Information
+        id: verify_apk_cert
+        run: |
+          # Locate apksigner tool from Android SDK build-tools
+          if command -v apksigner >/dev/null 2>&1; then
+            APKSIGNER="apksigner"
+          elif [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
+            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          elif [ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT/build-tools" ]; then
+            APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          else
+            APKSIGNER=$(find /opt/android/sdk/build-tools /usr/local/lib/android/sdk/build-tools -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+          fi
+
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            echo "::error::apksigner tool not found in environment."
+            exit 1
+          fi
+
+          VER="${{ steps.version_meta.outputs.version_name }}"
+          RELEASE_APK="release-assets/PulsePlay-v${VER}-release.apk"
+          DEBUG_APK="release-assets/PulsePlay-v${VER}-debug.apk"
+
+          if [ "${{ steps.release_signing.outputs.signed_release_built }}" = "true" ] && [ -f "$RELEASE_APK" ]; then
+            TARGET_APK="$RELEASE_APK"
+            IS_RELEASE_SIGNED=true
+            echo "============================================================"
+            echo "  Verifying Production Signed Release APK"
+            echo "============================================================"
+          else
+            TARGET_APK="$DEBUG_APK"
+            IS_RELEASE_SIGNED=false
+            echo "============================================================"
+            echo "  Notice: Release keystore secrets not configured or pull request."
+            echo "  Verifying Debug-signed APK for verification diagnostics."
+            echo "============================================================"
+          fi
+
+          if [ ! -f "$TARGET_APK" ]; then
+            echo "::error::Target APK $TARGET_APK not found for certificate verification."
+            exit 1
+          fi
+
+          APK_FILENAME=$(basename "$TARGET_APK")
+          APK_SHA256=$(sha256sum "$TARGET_APK" | awk '{print $1}')
+          APK_FILESIZE=$(stat -c%s "$TARGET_APK" 2>/dev/null || wc -c < "$TARGET_APK")
+
+          echo "APK Filename:         $APK_FILENAME"
+          echo "APK File Size:        $APK_FILESIZE bytes"
+          echo "APK SHA-256 Checksum: $APK_SHA256"
+          echo "------------------------------------------------------------"
+          echo "Executing: apksigner verify --print-certs -v \"$TARGET_APK\""
+          echo "------------------------------------------------------------"
+
+          "$APKSIGNER" verify --print-certs -v "$TARGET_APK"
+          VERIFY_EXIT=$?
+
+          echo "------------------------------------------------------------"
+          if [ $VERIFY_EXIT -eq 0 ]; then
+            echo " Signature Status: VERIFIED VALID"
+            if [ "$IS_RELEASE_SIGNED" = "true" ]; then
+              echo " Production Release APK signature verified successfully."
+            else
+              echo " Debug APK signature verified successfully."
+            fi
+          else
+            echo "::error::APK Signature Verification FAILED with exit code $VERIFY_EXIT"
+            exit $VERIFY_EXIT
+          fi
+          echo "============================================================"
 
       - name: Upload Build Artifacts (Workflow Run)
         if: success()
@@ -176,7 +246,7 @@ jobs:
           name: pulseplay-apk-artifacts-v${{ steps.version_meta.outputs.version_name }}
           path: release-assets/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
           overwrite: true
 
       - name: Upload Diagnostic Test & Lint Reports on Failure
@@ -188,7 +258,7 @@ jobs:
             app/build/reports/**
             app/build/test-results/**
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
 
       - name: Publish GitHub Release
         if: >
@@ -277,7 +347,7 @@ jobs:
           name: pulseplay-play-store-aab-v${{ needs.build-verify-and-release.outputs.version_name }}
           path: play-bundle-artifacts/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
           overwrite: true
 
       - name: Verify Play Console Credentials Before Upload

@@ -45,6 +45,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.example.ui.components.FastScrollbar
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -4303,11 +4305,15 @@ fun NowPlayingSidePanel(
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 14.dp)
-                    .testTag("side_panel_scroll_list"),
+            val sidePanelListState = rememberLazyListState()
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(
+                    state = sidePanelListState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 14.dp)
+                        .testTag("side_panel_scroll_list"),
                 contentPadding = PaddingValues(top = 10.dp, bottom = 20.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -4758,7 +4764,16 @@ fun NowPlayingSidePanel(
                     }
                 }
             }
+
+            FastScrollbar(
+                listState = sidePanelListState,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(top = 10.dp, bottom = 20.dp)
+            )
         }
     }
+}
 }
 

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,6 +22,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import com.example.ui.components.FastScrollbar
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Redo
@@ -304,7 +307,9 @@ fun StudioEditorOverlayScreen(
     ) {
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isCompactLandscape = maxHeight < 480.dp
+            val studioListState = rememberLazyListState()
             LazyColumn(
+                state = studioListState,
                 modifier = Modifier
                     .fillMaxSize()
                     .testTag("studio_editor_list"),
@@ -970,6 +975,17 @@ fun StudioEditorOverlayScreen(
                     }
                 }
             }
+
+            FastScrollbar(
+                listState = studioListState,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight(),
+                contentPadding = PaddingValues(
+                    top = if (isCompactLandscape) 4.dp else 12.dp,
+                    bottom = if (isCompactLandscape) 32.dp else 48.dp
+                )
+            )
         }
     }
 }

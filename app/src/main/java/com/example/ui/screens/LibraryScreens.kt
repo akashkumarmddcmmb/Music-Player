@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -19,7 +20,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import com.example.ui.components.FastScrollbar
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -308,10 +311,14 @@ fun HomeDashboardScreen(
     onSetRingtoneRequest: (MediaEntity) -> Unit = {},
     onShowFileInfoRequest: (MediaEntity) -> Unit = {}
 ) {
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("home_dashboard_list"),
+    val homeListState = rememberLazyListState()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = homeListState,
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("home_dashboard_list"),
         contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -621,6 +628,15 @@ fun HomeDashboardScreen(
             }
         }
     }
+
+    FastScrollbar(
+        listState = homeListState,
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight(),
+        contentPadding = PaddingValues(top = 8.dp, bottom = 120.dp)
+    )
+}
 }
 
 @Composable
@@ -743,10 +759,14 @@ fun MediaCatalogScreen(
         }
     }
 
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("media_catalog_list"),
+    val catalogListState = rememberLazyListState()
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = catalogListState,
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("media_catalog_list"),
         contentPadding = PaddingValues(bottom = 120.dp, start = 16.dp, end = 16.dp, top = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
@@ -975,6 +995,18 @@ fun MediaCatalogScreen(
             }
         }
     }
+
+    FastScrollbar(
+        listState = catalogListState,
+        modifier = Modifier
+            .align(Alignment.CenterEnd)
+            .fillMaxHeight(),
+        contentPadding = PaddingValues(top = 8.dp, bottom = 120.dp),
+        sectionLabelProvider = { index ->
+            displayedMedia.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+        }
+    )
+}
 }
 
 enum class FavoriteTypeFilter {
@@ -1139,10 +1171,18 @@ fun LibraryAndFoldersScreen(
             }
         }
 
-        LazyColumn(
+        val libraryListState = rememberLazyListState()
+
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp),
+                .weight(1f)
+        ) {
+            LazyColumn(
+                state = libraryListState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
             contentPadding = PaddingValues(bottom = 120.dp, top = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
@@ -1989,7 +2029,34 @@ fun LibraryAndFoldersScreen(
                 }
             }
         }
+
+        FastScrollbar(
+            listState = libraryListState,
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight(),
+            contentPadding = PaddingValues(top = 8.dp, bottom = 120.dp),
+            sectionLabelProvider = { index ->
+                when (selectedSubTab) {
+                    LibrarySubTab.ALL_SONGS -> allMedia.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+                    LibrarySubTab.ALBUMS -> if (selectedAlbum != null) {
+                        allMedia.filter { it.album == selectedAlbum }.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+                    } else null
+                    LibrarySubTab.ARTISTS -> if (selectedArtist != null) {
+                        allMedia.filter { it.artist == selectedArtist }.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+                    } else null
+                    LibrarySubTab.FOLDERS -> if (selectedFolder != null) {
+                        allMedia.filter { it.folderName == selectedFolder }.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+                    } else null
+                    LibrarySubTab.PLAYLISTS -> playlistItems.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+                    LibrarySubTab.FAVORITES -> favoriteMedia.getOrNull(index)?.title?.trim()?.take(1)?.uppercase()
+                    LibrarySubTab.HISTORY -> historyItems.getOrNull(index)?.titleSnapshot?.trim()?.take(1)?.uppercase()
+                    else -> null
+                }
+            }
+        )
     }
+}
 }
 
 @Composable

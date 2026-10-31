@@ -43,6 +43,11 @@ on:
           - alpha
           - beta
           - production
+      file_manager_apk_url:
+        description: "Optional File Manager APK direct URL for informational signing certificate comparison"
+        required: false
+        default: ""
+        type: string
 
 # Least-privilege default permissions for all jobs (including pull_request)
 permissions:
@@ -135,15 +140,15 @@ jobs:
           echo "============================================================"
           echo "  Pull Request Verification Complete (Tests, Lint & Debug APK Passed)"
           echo "  Note: GitHub Actions does not expose release signing secrets"
-          echo "  (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)"
+          echo "  (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)"
           echo "  to pull_request runs. Release APK/AAB signing is skipped on PRs."
           echo "============================================================"
 
-      - name: Decode & Verify Original Upload Keystore from KEYSTORE_BASE64
+      - name: Decode & Verify Original Upload Keystore from UPLOAD_KEY_BASE64
         id: load_keystore
         if: github.event_name != 'pull_request'
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          UPLOAD_KEY_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -155,7 +160,7 @@ jobs:
           CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
 
           MISSING_SECRETS=""
-          [ -z "$KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
+          [ -z "$UPLOAD_KEY_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} UPLOAD_KEY_BASE64"
           [ -z "$CLEAN_STORE_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
           [ -z "$CLEAN_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
           [ -z "$CLEAN_KEY_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
@@ -166,10 +171,10 @@ jobs:
           fi
 
           # 2. Strip whitespace (\r, \n, \t, space) without altering Base64 payload
-          CLEAN_BASE64=$(printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n\t ')
+          CLEAN_BASE64=$(printf '%s' "$UPLOAD_KEY_BASE64" | tr -d '\r\n\t ')
 
           if [ -z "$CLEAN_BASE64" ]; then
-            echo "::error::KEYSTORE_BASE64 secret is empty after stripping whitespace."
+            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
             exit 1
           fi
 
@@ -178,7 +183,7 @@ jobs:
 
           # 4. Validate Base64 alphabet strictly (A-Z, a-z, 0-9, +, /, =)
           if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            echo "::error::Base64 validation failed: KEYSTORE_BASE64 contains invalid characters not allowed in Base64 encoding."
+            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in Base64 encoding."
             exit 1
           fi
 
@@ -201,7 +206,7 @@ jobs:
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
-          echo "Decoding my-upload-key.jks from KEYSTORE_BASE64 (${B64_LEN} Base64 chars)..."
+          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64 (${B64_LEN} Base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
             DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
             echo "::error::GNU base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
@@ -365,22 +370,76 @@ jobs:
       - name: Verify Debug APK, Release APK & Release AAB Signing Certificates
         id: verify_apk_cert
         if: github.event_name != 'pull_request'
+        env:
+          FILE_MANAGER_APK_URL: ${{ inputs.file_manager_apk_url }}
         run: |
-          # Locate apksigner tool from Android SDK build-tools
-          if command -v apksigner >/dev/null 2>&1; then
-            APKSIGNER="apksigner"
-          elif [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
-            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
-          elif [ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT/build-tools" ]; then
-            APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -V | tail -n 1)
-          else
-            APKSIGNER=$(find /opt/android/sdk/build-tools /usr/local/lib/android/sdk/build-tools -name apksigner -type f 2>/dev/null | sort -V | tail -n 1)
+          set +x
+          # 1. Dynamically resolve apksigner & aapt2 from Android SDK Build Tools on Ubuntu Runner
+          resolve_build_tool() {
+            local TOOL_NAME="$1"
+            local FOUND_PATH=""
+            if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
+              FOUND_PATH=$(find "$ANDROID_HOME/build-tools" -name "$TOOL_NAME" -type f 2>/dev/null | sort -V | tail -n 1)
+            fi
+            if [ -z "$FOUND_PATH" ] && [ -n "$ANDROID_SDK_ROOT" ] && [ -d "$ANDROID_SDK_ROOT/build-tools" ]; then
+              FOUND_PATH=$(find "$ANDROID_SDK_ROOT/build-tools" -name "$TOOL_NAME" -type f 2>/dev/null | sort -V | tail -n 1)
+            fi
+            if [ -z "$FOUND_PATH" ]; then
+              FOUND_PATH=$(find /usr/local/lib/android/sdk/build-tools /opt/android/sdk/build-tools -name "$TOOL_NAME" -type f 2>/dev/null | sort -V | tail -n 1)
+            fi
+            if [ -z "$FOUND_PATH" ] && command -v "$TOOL_NAME" >/dev/null 2>&1; then
+              FOUND_PATH=$(command -v "$TOOL_NAME")
+            fi
+            printf '%s' "$FOUND_PATH"
+          }
+
+          APKSIGNER=$(resolve_build_tool "apksigner")
+          AAPT2=$(resolve_build_tool "aapt2")
+
+          # Ensure Android SDK Build Tools are installed if not yet present on runner
+          if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
+            SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+            SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1)
+            if [ -n "$SDKMANAGER" ] && [ -x "$SDKMANAGER" ]; then
+              echo "Installing Android SDK build-tools via sdkmanager..."
+              yes | "$SDKMANAGER" "build-tools;35.0.0" >/dev/null 2>&1 || true
+              APKSIGNER=$(resolve_build_tool "apksigner")
+              AAPT2=$(resolve_build_tool "aapt2")
+            fi
           fi
 
           if [ -z "$APKSIGNER" ] || [ ! -x "$APKSIGNER" ]; then
-            echo "::error::apksigner tool not found in environment."
+            echo "::error::Android SDK apksigner not found in SDK Build Tools."
             exit 1
           fi
+
+          echo "Resolved Android SDK apksigner: $APKSIGNER"
+          [ -n "$AAPT2" ] && echo "Resolved Android SDK aapt2:     $AAPT2"
+
+          # Helper to convert 64-char hex digest to uppercase colon-separated SHA-256
+          format_colon_sha256() {
+            local RAW_HEX
+            RAW_HEX=$(printf '%s' "$1" | tr -d ':[:space:]' | tr '[:lower:]' '[:upper:]')
+            if [ "${#RAW_HEX}" -eq 64 ]; then
+              printf '%s' "$RAW_HEX" | sed 's/../&:/g; s/:$//'
+            else
+              printf '%s' "$1"
+            fi
+          }
+
+          # Helper to extract Package ID from an APK via Android SDK aapt2
+          extract_package_id() {
+            local APK_PATH="$1"
+            local DEFAULT_PKG="$2"
+            local PKG=""
+            if [ -n "$AAPT2" ] && [ -x "$AAPT2" ] && [ -f "$APK_PATH" ]; then
+              PKG=$("$AAPT2" dump packagename "$APK_PATH" 2>/dev/null | tr -d '\r\n\t ')
+            fi
+            if [ -z "$PKG" ]; then
+              PKG="$DEFAULT_PKG"
+            fi
+            printf '%s' "$PKG"
+          }
 
           VER="${{ steps.version_meta.outputs.version_name }}"
           CODE="${{ steps.version_meta.outputs.version_code }}"
@@ -388,76 +447,203 @@ jobs:
           RELEASE_APK="release-assets/PulsePlay-v${VER}-release.apk"
           RELEASE_AAB="release-assets/PulsePlay-v${VER}-vc${CODE}-release.aab"
           EXPECTED_SHA256="${EXPECTED_CERT_SHA256}"
-          EXPECTED_SHA256_HEX=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          EXPECTED_SHA256_HEX=$(printf '%s' "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
-          # 1. Verify Debug APK is a valid debug-signed APK
-          if [ ! -f "$DEBUG_APK" ]; then
+          OVERALL_FAILURE=0
+
+          # ------------------------------------------------------------------
+          # 2. Verify Debug APK (Standard Android Debug Certificate allowed)
+          # ------------------------------------------------------------------
+          DEBUG_APK_NAME=$(basename "$DEBUG_APK")
+          DEBUG_PKG_ID="com.aistudio.pulseplay.mpxvqr"
+          DEBUG_SIGNER_COLON="N/A"
+          DEBUG_STATUS="FAIL"
+
+          if [ -f "$DEBUG_APK" ]; then
+            DEBUG_PKG_ID=$(extract_package_id "$DEBUG_APK" "com.aistudio.pulseplay.mpxvqr")
+            DEBUG_FILESIZE=$(stat -c%s "$DEBUG_APK")
+            echo "============================================================"
+            echo "  Verifying Debug APK Signature: $DEBUG_APK_NAME ($DEBUG_FILESIZE bytes)"
+            echo "  Package ID: $DEBUG_PKG_ID"
+            echo "------------------------------------------------------------"
+            if DEBUG_CERT_OUT=$("$APKSIGNER" verify --print-certs -v "$DEBUG_APK" 2>&1); then
+              echo "$DEBUG_CERT_OUT"
+              DEBUG_RAW_HEX=$(printf '%s\n' "$DEBUG_CERT_OUT" | awk '/certificate SHA-256 digest:/ {print $NF; exit}')
+              DEBUG_SIGNER_COLON=$(format_colon_sha256 "$DEBUG_RAW_HEX")
+              DEBUG_STATUS="PASS"
+            else
+              echo "$DEBUG_CERT_OUT"
+              echo "::error::Debug APK signature verification failed for $DEBUG_APK_NAME."
+              OVERALL_FAILURE=1
+            fi
+            echo "============================================================"
+          else
             echo "::error::Expected Debug APK $DEBUG_APK not found for signature verification."
-            exit 1
+            OVERALL_FAILURE=1
           fi
-          DEBUG_FILESIZE=$(stat -c%s "$DEBUG_APK")
-          echo "============================================================"
-          echo "  Verifying Debug APK Signature: $(basename "$DEBUG_APK") ($DEBUG_FILESIZE bytes)"
-          echo "------------------------------------------------------------"
-          "$APKSIGNER" verify --print-certs -v "$DEBUG_APK"
-          echo "============================================================"
 
-          # 2. Verify Release APK is signed with the verified upload certificate
-          if [ ! -f "$RELEASE_APK" ]; then
+          # ------------------------------------------------------------------
+          # 3. Verify Release APK against Official Music Player Upload Certificate
+          # ------------------------------------------------------------------
+          RELEASE_APK_NAME=$(basename "$RELEASE_APK")
+          RELEASE_PKG_ID="com.aistudio.pulseplay.mpxvqr"
+          RELEASE_SIGNER_COLON="N/A"
+          RELEASE_APK_STATUS="FAIL"
+
+          if [ -f "$RELEASE_APK" ]; then
+            RELEASE_PKG_ID=$(extract_package_id "$RELEASE_APK" "com.aistudio.pulseplay.mpxvqr")
+            RELEASE_FILESIZE=$(stat -c%s "$RELEASE_APK")
+            echo "============================================================"
+            echo "  Verifying Release APK Signature: $RELEASE_APK_NAME ($RELEASE_FILESIZE bytes)"
+            echo "  Package ID: $RELEASE_PKG_ID"
+            echo "------------------------------------------------------------"
+            if RELEASE_CERT_OUT=$("$APKSIGNER" verify --print-certs -v "$RELEASE_APK" 2>&1); then
+              echo "$RELEASE_CERT_OUT"
+              RELEASE_CERT_SHA256=$(printf '%s\n' "$RELEASE_CERT_OUT" | awk '/certificate SHA-256 digest:/ {print $NF; exit}' | tr '[:upper:]' '[:lower:]')
+              RELEASE_SIGNER_COLON=$(format_colon_sha256 "$RELEASE_CERT_SHA256")
+              echo "Release APK Signer SHA-256:   $RELEASE_SIGNER_COLON"
+              echo "Expected Upload Key SHA-256:  $EXPECTED_SHA256"
+              if [ -n "$RELEASE_CERT_SHA256" ] && [ "$RELEASE_CERT_SHA256" = "$EXPECTED_SHA256_HEX" ]; then
+                RELEASE_APK_STATUS="PASS"
+              else
+                echo "::error::Release APK certificate ($RELEASE_SIGNER_COLON) does not match expected upload certificate ($EXPECTED_SHA256)."
+                RELEASE_APK_STATUS="FAIL"
+                OVERALL_FAILURE=1
+              fi
+            else
+              echo "$RELEASE_CERT_OUT"
+              echo "::error::apksigner verification failed for Release APK $RELEASE_APK_NAME."
+              RELEASE_APK_STATUS="FAIL"
+              OVERALL_FAILURE=1
+            fi
+            echo "============================================================"
+          else
             echo "::error::Expected Release APK $RELEASE_APK not found for signature verification."
-            exit 1
-          fi
-          RELEASE_FILESIZE=$(stat -c%s "$RELEASE_APK")
-          echo "============================================================"
-          echo "  Verifying Release APK Signature: $(basename "$RELEASE_APK") ($RELEASE_FILESIZE bytes)"
-          echo "------------------------------------------------------------"
-          "$APKSIGNER" verify --print-certs -v "$RELEASE_APK"
-          echo "============================================================"
-
-          RELEASE_CERT_SHA256=$("$APKSIGNER" verify --print-certs "$RELEASE_APK" | awk '/certificate SHA-256 digest:/ {print $NF; exit}' | tr '[:upper:]' '[:lower:]')
-
-          echo "Release APK Certificate SHA-256: $RELEASE_CERT_SHA256"
-          echo "Expected Upload Key SHA-256:     $EXPECTED_SHA256_HEX"
-
-          if [ -z "$RELEASE_CERT_SHA256" ] || [ "$RELEASE_CERT_SHA256" != "$EXPECTED_SHA256_HEX" ]; then
-            echo "::error::Release APK certificate digest ($RELEASE_CERT_SHA256) does not match the verified upload keystore certificate ($EXPECTED_SHA256_HEX)."
-            exit 1
+            OVERALL_FAILURE=1
           fi
 
-          # 3. Verify Release AAB is signed with the same verified upload certificate
-          if [ ! -f "$RELEASE_AAB" ]; then
+          # ------------------------------------------------------------------
+          # 4. Verify Release AAB against Official Music Player Upload Certificate
+          # ------------------------------------------------------------------
+          RELEASE_AAB_NAME=$(basename "$RELEASE_AAB")
+          AAB_SHA256="N/A"
+          RELEASE_AAB_STATUS="FAIL"
+
+          if [ -f "$RELEASE_AAB" ]; then
+            AAB_FILESIZE=$(stat -c%s "$RELEASE_AAB")
+            if jarsigner -verify -verbose -certs "$RELEASE_AAB" >/dev/null 2>&1; then
+              AAB_CERT_INFO=$(keytool -printcert -jarfile "$RELEASE_AAB" 2>/dev/null)
+              AAB_SHA256=$(printf '%s\n' "$AAB_CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+              AAB_SHA256_HEX=$(printf '%s' "$AAB_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+              echo "============================================================"
+              echo "  Verifying Release AAB Signature: $RELEASE_AAB_NAME ($AAB_FILESIZE bytes)"
+              echo "  AAB Certificate SHA-256: $AAB_SHA256"
+              echo "  Expected Upload SHA-256: $EXPECTED_SHA256"
+              echo "============================================================"
+              if [ -n "$AAB_SHA256_HEX" ] && [ "$AAB_SHA256_HEX" = "$EXPECTED_SHA256_HEX" ]; then
+                RELEASE_AAB_STATUS="PASS"
+              else
+                echo "::error::Release AAB certificate ($AAB_SHA256) does not match expected upload certificate ($EXPECTED_SHA256)."
+                RELEASE_AAB_STATUS="FAIL"
+                OVERALL_FAILURE=1
+              fi
+            else
+              echo "::error::jarsigner verification failed for $RELEASE_AAB_NAME."
+              RELEASE_AAB_STATUS="FAIL"
+              OVERALL_FAILURE=1
+            fi
+          else
             echo "::error::Expected Release AAB $RELEASE_AAB not found for signature verification."
+            OVERALL_FAILURE=1
+          fi
+
+          # ------------------------------------------------------------------
+          # 5. Informational File Manager APK Certificate Check (Non-Blocking)
+          # ------------------------------------------------------------------
+          FM_APK_PATH=""
+          if [ -n "$FILE_MANAGER_APK_URL" ]; then
+            echo "Downloading File Manager APK from provided URL for informational certificate comparison..."
+            if curl -fsSL -L "$FILE_MANAGER_APK_URL" -o "/tmp/FileManager-compare.apk" 2>/dev/null && [ -s "/tmp/FileManager-compare.apk" ]; then
+              FM_APK_PATH="/tmp/FileManager-compare.apk"
+            else
+              echo "::warning::Could not download File Manager APK from URL ($FILE_MANAGER_APK_URL). Continuing without failing Music Player workflow."
+            fi
+          fi
+
+          if [ -z "$FM_APK_PATH" ]; then
+            FM_APK_PATH=$(find "${GITHUB_WORKSPACE}" -maxdepth 3 -type f \( -iname "*file*manager*.apk" -o -iname "*filemanager*.apk" \) 2>/dev/null | head -n 1)
+          fi
+
+          FM_FOUND="false"
+          FM_FILENAME="Not provided in this run"
+          FM_PKG_ID="Separate File Manager App Package"
+          FM_SIGNER_SHA256="N/A (Provide file_manager_apk_url or place FileManager.apk in workspace to inspect)"
+          FM_COMPARISON_RESULT="INFO ONLY (Not Provided)"
+
+          if [ -n "$FM_APK_PATH" ] && [ -f "$FM_APK_PATH" ]; then
+            FM_FOUND="true"
+            FM_FILENAME=$(basename "$FM_APK_PATH")
+            FM_PKG_ID=$(extract_package_id "$FM_APK_PATH" "unknown.filemanager.package")
+            if FM_CERT_OUT=$("$APKSIGNER" verify --print-certs "$FM_APK_PATH" 2>&1); then
+              FM_RAW_HEX=$(printf '%s\n' "$FM_CERT_OUT" | awk '/certificate SHA-256 digest:/ {print $NF; exit}')
+              FM_SIGNER_SHA256=$(format_colon_sha256 "$FM_RAW_HEX")
+              if [ "$FM_SIGNER_SHA256" = "$EXPECTED_SHA256" ]; then
+                FM_COMPARISON_RESULT="SAME CERTIFICATE AS MUSIC PLAYER UPLOAD KEY"
+              else
+                FM_COMPARISON_RESULT="DIFFERENT CERTIFICATE FROM MUSIC PLAYER UPLOAD KEY (Expected for independent keystore)"
+              fi
+            else
+              FM_SIGNER_SHA256="Invalid or Unsigned APK"
+              FM_COMPARISON_RESULT="UNVERIFIED APK SIGNATURE (Informational)"
+            fi
+            echo "============================================================"
+            echo "  File Manager APK Certificate Comparison (Informational Only)"
+            echo "  APK Filename:            $FM_FILENAME"
+            echo "  Package ID:              $FM_PKG_ID"
+            echo "  File Manager SHA-256:    $FM_SIGNER_SHA256"
+            echo "  Music Player SHA-256:    $EXPECTED_SHA256"
+            echo "  Comparison Result:       $FM_COMPARISON_RESULT"
+            echo "============================================================"
+            rm -f "/tmp/FileManager-compare.apk"
+          fi
+
+          # ------------------------------------------------------------------
+          # 6. Write Structured Verification Report to $GITHUB_STEP_SUMMARY
+          # ------------------------------------------------------------------
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            {
+              echo "## 🔐 Android APK & AAB Signing Certificate Verification Report"
+              echo ""
+              echo "- **Android SDK Build Tools \`apksigner\`**: \`${APKSIGNER}\`"
+              echo "- **Music Player Official Upload Alias**: \`upload\`"
+              echo "- **Expected Upload Certificate SHA-256**: \`${EXPECTED_SHA256}\`"
+              echo "- **AAB Signing Verification Status**: **${RELEASE_AAB_STATUS}** (\`${RELEASE_AAB_NAME}\`)"
+              echo ""
+              echo "### 🎵 Music Player Build Variants (\`com.aistudio.pulseplay.mpxvqr\`)"
+              echo ""
+              echo "| APK / Bundle Filename | Package ID | Build Type | Signer SHA-256 | Expected SHA-256 | Verification |"
+              echo "| :--- | :--- | :--- | :--- | :--- | :---: |"
+              echo "| \`${DEBUG_APK_NAME}\` | \`${DEBUG_PKG_ID}\` | Debug APK (AGP Default Debug Key) | \`${DEBUG_SIGNER_COLON}\` | Standard Android Debug Cert (Allowed to differ from Release) | **${DEBUG_STATUS}** |"
+              echo "| \`${RELEASE_APK_NAME}\` | \`${RELEASE_PKG_ID}\` | Release APK (\`alias: upload\`) | \`${RELEASE_SIGNER_COLON}\` | \`${EXPECTED_SHA256}\` | **${RELEASE_APK_STATUS}** |"
+              echo "| \`${RELEASE_AAB_NAME}\` | \`${RELEASE_PKG_ID}\` | Release AAB (\`alias: upload\`) | \`${AAB_SHA256}\` | \`${EXPECTED_SHA256}\` | **${RELEASE_AAB_STATUS}** |"
+              echo ""
+              echo "### 📁 File Manager APK Certificate Comparison (Informational — Non-Blocking)"
+              echo ""
+              echo "| APK Filename | Package ID | File Manager Signer SHA-256 | Music Player Upload SHA-256 | Certificate Comparison |"
+              echo "| :--- | :--- | :--- | :--- | :--- |"
+              echo "| \`${FM_FILENAME}\` | \`${FM_PKG_ID}\` | \`${FM_SIGNER_SHA256}\` | \`${EXPECTED_SHA256}\` | **${FM_COMPARISON_RESULT}** |"
+              echo ""
+              echo "> **Note:** Debug APK uses Android Gradle Plugin's standard debug certificate, whereas Release APK and Release AAB strictly require the verified Music Player upload certificate (\`${EXPECTED_SHA256}\`). File Manager APK comparison is purely informational and never blocks the Music Player build."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$OVERALL_FAILURE" -ne 0 ]; then
+            echo "::error::Signing certificate verification failed! Check the GitHub Actions Step Summary for full details."
             exit 1
           fi
 
-          if ! jarsigner -verify -verbose -certs "$RELEASE_AAB" >/dev/null 2>&1; then
-            echo "::error::jarsigner verification failed for $RELEASE_AAB."
-            exit 1
-          fi
+          echo "Signing verification passed: Debug APK is valid debug-signed; Release APK and Release AAB match the official upload certificate ($EXPECTED_SHA256)."
 
-          AAB_CERT_INFO=$(keytool -printcert -jarfile "$RELEASE_AAB" 2>/dev/null)
-          AAB_SHA256=$(echo "$AAB_CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
-          AAB_SHA256_HEX=$(echo "$AAB_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
-          AAB_FILESIZE=$(stat -c%s "$RELEASE_AAB")
-
-          echo "============================================================"
-          echo "  Verifying Release AAB Signature: $(basename "$RELEASE_AAB")"
-          echo "  File Size:               $AAB_FILESIZE bytes"
-          echo "  AAB Certificate SHA-256: $AAB_SHA256"
-          echo "  Expected Upload SHA-256: $EXPECTED_SHA256"
-          echo "============================================================"
-
-          if [ -z "$AAB_SHA256_HEX" ] || [ "$AAB_SHA256_HEX" != "$EXPECTED_SHA256_HEX" ]; then
-            echo "::error::Release AAB certificate SHA-256 ($AAB_SHA256) does not match the verified upload keystore certificate ($EXPECTED_SHA256)."
-            exit 1
-          fi
-
-          if [ "$RELEASE_CERT_SHA256" != "$AAB_SHA256_HEX" ]; then
-            echo "::error::Release APK ($RELEASE_CERT_SHA256) and Release AAB ($AAB_SHA256_HEX) were not signed with the same upload certificate."
-            exit 1
-          fi
-
-          echo "Signing verification passed: Debug APK is valid debug-signed; Release APK and Release AAB share verified upload certificate ($EXPECTED_SHA256)."
 
       - name: Upload Build Artifacts (Workflow Run)
         if: success() && github.event_name != 'pull_request'
@@ -537,10 +723,10 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Decode & Verify Original Upload Keystore from KEYSTORE_BASE64
+      - name: Decode & Verify Original Upload Keystore from UPLOAD_KEY_BASE64
         id: load_play_keystore
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          UPLOAD_KEY_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -552,7 +738,7 @@ jobs:
           CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
 
           MISSING_SECRETS=""
-          [ -z "$KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
+          [ -z "$UPLOAD_KEY_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} UPLOAD_KEY_BASE64"
           [ -z "$CLEAN_STORE_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
           [ -z "$CLEAN_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
           [ -z "$CLEAN_KEY_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
@@ -563,10 +749,10 @@ jobs:
           fi
 
           # 2. Strip whitespace (\r, \n, \t, space) without altering Base64 payload
-          CLEAN_BASE64=$(printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n\t ')
+          CLEAN_BASE64=$(printf '%s' "$UPLOAD_KEY_BASE64" | tr -d '\r\n\t ')
 
           if [ -z "$CLEAN_BASE64" ]; then
-            echo "::error::KEYSTORE_BASE64 secret is empty after stripping whitespace."
+            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
             exit 1
           fi
 
@@ -575,7 +761,7 @@ jobs:
 
           # 4. Validate Base64 alphabet strictly (A-Z, a-z, 0-9, +, /, =)
           if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            echo "::error::Base64 validation failed: KEYSTORE_BASE64 contains invalid characters not allowed in Base64 encoding."
+            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in Base64 encoding."
             exit 1
           fi
 
@@ -598,7 +784,7 @@ jobs:
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
 
-          echo "Decoding my-upload-key.jks for Google Play bundle (${B64_LEN} Base64 chars)..."
+          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64 for Google Play bundle (${B64_LEN} Base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
             DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
             echo "::error::GNU base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
@@ -765,7 +951,22 @@ jobs:
           echo "Expected Upload SHA-256: $EXPECTED_SHA256"
           echo "============================================================"
 
+          AAB_STATUS="PASS"
           if [ -z "$AAB_SHA256_HEX" ] || [ "$AAB_SHA256_HEX" != "$EXPECTED_SHA256_HEX" ]; then
+            AAB_STATUS="FAIL"
+          fi
+
+          if [ -n "$GITHUB_STEP_SUMMARY" ]; then
+            {
+              echo "## 📦 Google Play Store AAB Signing Certificate Verification"
+              echo ""
+              echo "| Bundle Filename | Package ID | Signer SHA-256 | Expected SHA-256 | Verification |"
+              echo "| :--- | :--- | :--- | :--- | :---: |"
+              echo "| \`$(basename "$AAB_FILE")\` | \`com.aistudio.pulseplay.mpxvqr\` | \`${AAB_SHA256}\` | \`${EXPECTED_SHA256}\` | **${AAB_STATUS}** |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$AAB_STATUS" != "PASS" ]; then
             echo "::error::AAB certificate SHA-256 ($AAB_SHA256) does not match verified upload keystore SHA-256 ($EXPECTED_SHA256)."
             exit 1
           fi

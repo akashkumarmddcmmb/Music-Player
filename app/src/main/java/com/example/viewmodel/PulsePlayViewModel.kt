@@ -29,17 +29,20 @@ import com.example.data.local.PlaybackHistoryEntity
 import com.example.data.local.PlaylistWithCount
 import com.example.data.local.ProcessingJobEntity
 import com.example.data.local.PulseDatabase
+import com.example.data.preferences.HighResVideoPlaybackMode
 import com.example.data.preferences.SortOption
 import com.example.data.preferences.UserPreferencesRepository
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
 import com.example.data.repository.MediaLibraryRepository
+import com.example.media.AdaptiveVideoEngineStrategy
 import com.example.media.ConversionCapabilityRegistry
 import com.example.media.ConversionProfile
 import com.example.media.EqualizerController
 import com.example.media.HardwareEqualizerState
 import com.example.media.MediaArtworkLoader
 import com.example.media.MediaProcessorEngine
+import com.example.media.PlaybackModeAvailabilityReport
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
 import com.example.media.Resilient4KCodecEngine
@@ -48,6 +51,8 @@ import com.example.media.SubtitleCueItem
 import com.example.media.SubtitleFormat
 import com.example.media.SubtitleLoadResult
 import com.example.media.SubtitleParser
+import com.example.media.VideoCompatibilityAction
+import com.example.media.VideoStreamCapabilityEvaluation
 import com.example.service.PulsePlaybackService
 import com.example.ui.components.InAppNotification
 import com.example.ui.components.InAppNotificationManager
@@ -159,7 +164,15 @@ data class PlaybackUiState(
     val playbackError: String? = null,
     val currentArtworkData: ByteArray? = null,
     val currentArtworkUri: String? = null,
-    val currentArtworkSource: String = "none"
+    val currentArtworkSource: String = "none",
+    val videoCapabilityEvaluation: VideoStreamCapabilityEvaluation? = null,
+    val showVideoCompatibilityDialog: Boolean = false,
+    val showVideoInfoDetailsDialog: Boolean = false,
+    val activeVideoEngineStrategy: AdaptiveVideoEngineStrategy = AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+    val isTemporaryHighResEngineActive: Boolean = false,
+    val isDownscaledPlayback: Boolean = false,
+    val avSyncHealthy: Boolean = true,
+    val playbackModeAvailabilities: List<PlaybackModeAvailabilityReport> = emptyList()
 ) {
     val isSleepTimerActive: Boolean
         get() = sleepTimerRemainingMs > 0L || sleepTimerStopAtEndOfTrack
@@ -370,8 +383,13 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 onPlayerMediaMetadataUpdated(player.mediaMetadata)
             }
 
-            if (playbackState == Player.STATE_ENDED && _playbackState.value.sleepTimerStopAtEndOfTrack) {
-                triggerSleepTimerAutoStop("Sleep Timer: Stopped automatically at end of track.")
+            if (playbackState == Player.STATE_ENDED) {
+                if (_playbackState.value.currentMedia?.mediaType == MediaType.VIDEO) {
+                    clearPlayerVideoSizeConstraintAndReleaseTempSession("Video playback completed (STATE_ENDED)")
+                }
+                if (_playbackState.value.sleepTimerStopAtEndOfTrack) {
+                    triggerSleepTimerAutoStop("Sleep Timer: Stopped automatically at end of track.")
+                }
             }
         }
 
@@ -423,6 +441,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 return
             }
 
+            // Release any temporary high-res decoder state from the outgoing item before transitioning
+            clearPlayerVideoSizeConstraintAndReleaseTempSession("Media item transition")
+
             val idx = activePlayer?.currentMediaItemIndex ?: -1
             val queue = _playbackState.value.queue
             val mediaId = mediaItem?.mediaId
@@ -437,11 +458,40 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 val qPos = queue.indexOfFirst { it.uriString == nextEntity.uriString }
                 if (qPos >= 0) qPos else idx
             } else idx
+
+            val app = getApplication<Application>()
+            val nextVideoEval = if (nextEntity?.mediaType == MediaType.VIDEO) {
+                val eval = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+                    context = app,
+                    media = nextEntity,
+                    selectedMode = userPreferences.value.highResVideoPlaybackMode
+                )
+                Resilient4KCodecEngine.resetTelemetryForNewTrack(
+                    mimeType = nextEntity.mimeType,
+                    width = nextEntity.width,
+                    height = nextEntity.height,
+                    frameRate = 30f,
+                    bitrateBps = eval.bitrateBps,
+                    isHdrOr10Bit = eval.is10BitOrHdr,
+                    trackUri = nextEntity.uriString
+                )
+                eval
+            } else {
+                null
+            }
+
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = nextEntity,
                 currentQueueIndex = actualQueueIdx,
                 hasRenderedFirstFrame = false,
-                playbackError = null
+                playbackError = null,
+                videoCapabilityEvaluation = nextVideoEval,
+                showVideoCompatibilityDialog = nextVideoEval?.requiresCompatibilityPrompt == true,
+                showVideoInfoDetailsDialog = false,
+                activeVideoEngineStrategy = nextVideoEval?.recommendedStrategy
+                    ?: AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+                isTemporaryHighResEngineActive = nextVideoEval?.resolutionTier?.isHighRes4kOrAbove == true,
+                isDownscaledPlayback = false
             )
             // Synchronize artwork for the transitioned track using the item's own metadata (never stale previous track metadata)
             syncAndResolveArtworkForTrack(
@@ -643,6 +693,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         // Recovery not applicable (non-decoder error) or bounded retries exhausted
         Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit = false
         val diagnosticMsg = buildDetailedPlaybackDiagnosticError(error, attemptsSoFar)
+        val shouldOfferCompatibilityPanel = isDecoderFailure && currentMedia?.mediaType == MediaType.VIDEO
         _playbackState.value = _playbackState.value.copy(
             isPlaying = false,
             isBuffering = false,
@@ -652,7 +703,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             isDecoderVerified = false,
             decoderRecoveryAttempts = attemptsSoFar,
             decoderStatusLabel = if (isDecoderFailure) "Decoder Init Failed" else "Playback Error",
-            playbackError = diagnosticMsg
+            playbackError = diagnosticMsg,
+            showVideoCompatibilityDialog = shouldOfferCompatibilityPanel || _playbackState.value.showVideoCompatibilityDialog
         )
     }
 
@@ -718,13 +770,19 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 )
             }
         }
+        val initialAvailabilities = Resilient4KCodecEngine.evaluateAllPlaybackModesAvailability(getApplication())
+        _playbackState.value = _playbackState.value.copy(
+            playbackModeAvailabilities = initialAvailabilities
+        )
         viewModelScope.launch {
             val initialPrefs = preferencesRepository.preferencesFlow.first()
             initialPrefs.selectedUpdateChannel?.let { savedChannel ->
                 updateManager.selectChannel(savedChannel)
             }
-            Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
-                initialPrefs.allowExperimental4kSoftwareFallback
+            Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+                mode = initialPrefs.highResVideoPlaybackMode,
+                legacyAllowSoftwareFallback = initialPrefs.allowExperimental4kSoftwareFallback
+            )
             equalizerController.setStereoBalance(initialPrefs.audioBalance)
             equalizerController.setPreampGainDb(initialPrefs.preampGainDb)
             equalizerController.bindToAudioSession(
@@ -738,8 +796,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
             PulsePlaybackService.serviceAudioSessionId.collect { serviceSessionId ->
                 val prefs = preferencesRepository.preferencesFlow.first()
-                Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
-                    prefs.allowExperimental4kSoftwareFallback
+                Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+                    mode = prefs.highResVideoPlaybackMode,
+                    legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback
+                )
                 equalizerController.setStereoBalance(prefs.audioBalance)
                 equalizerController.setPreampGainDb(prefs.preampGainDb)
                 val currentSession = equalizerController.state.value
@@ -766,6 +826,14 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             Resilient4KCodecEngine.latestTelemetry.collect { telemetry ->
+                val currentMediaUri = _playbackState.value.currentMedia?.uriString
+                if (telemetry.trackUri.isNotBlank() &&
+                    !currentMediaUri.isNullOrBlank() &&
+                    telemetry.trackUri != currentMediaUri
+                ) {
+                    // Ignore stale telemetry from an older video session
+                    return@collect
+                }
                 _playbackState.value = _playbackState.value.copy(
                     verifiedDecoderName = telemetry.selectedDecoderName,
                     isDecoderVerified = telemetry.isDecoderVerified,
@@ -774,7 +842,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     droppedVideoFrames = telemetry.droppedVideoFrames,
                     decoderStatusLabel = telemetry.diagnosticSummary,
                     decodedVideoWidth = telemetry.sourceWidth,
-                    decodedVideoHeight = telemetry.sourceHeight
+                    decodedVideoHeight = telemetry.sourceHeight,
+                    activeVideoEngineStrategy = telemetry.activeEngineStrategy,
+                    isTemporaryHighResEngineActive = telemetry.isTemporaryHighResSessionActive,
+                    isDownscaledPlayback = telemetry.isDownscaledOrLowerResActive,
+                    avSyncHealthy = telemetry.avSyncHealthy
                 )
             }
         }
@@ -1078,7 +1150,56 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         _isNowPlayingExpanded.value = expanded
         if (expanded && activePlayer?.isPlaying == true && isAppInForeground) {
             startProgressPolling()
+        } else if (!expanded) {
+            val current = _playbackState.value
+            if (current.currentMedia?.mediaType == MediaType.VIDEO &&
+                (!current.isPlaying || current.playbackError != null)
+            ) {
+                clearPlayerVideoSizeConstraintAndReleaseTempSession("Closed Now Playing video screen")
+            }
         }
+    }
+
+    /**
+     * Releases any temporary high-resolution / compatibility decoder state and clears any
+     * temporary lower-resolution track selection constraints so subsequent playback returns
+     * to the standard hardware path.
+     */
+    fun clearPlayerVideoSizeConstraintAndReleaseTempSession(reason: String) {
+        Resilient4KCodecEngine.releaseTemporaryHighResSession(reason)
+        activePlayer?.let { player ->
+            runCatching {
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .clearVideoSizeConstraints()
+                    .build()
+            }
+        }
+        _playbackState.value = _playbackState.value.copy(
+            activeVideoEngineStrategy = AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+            isTemporaryHighResEngineActive = false,
+            isDownscaledPlayback = false,
+            showVideoCompatibilityDialog = false
+        )
+    }
+
+    /**
+     * Stops active video playback (e.g., on user Back/Stop from an errored or high-res video)
+     * and immediately releases temporary high-resolution decoder state.
+     */
+    fun stopVideoPlaybackAndCleanup(reason: String = "User stopped video playback") {
+        stopProgressPolling()
+        activePlayer?.let { player ->
+            runCatching {
+                player.playWhenReady = false
+                player.stop()
+            }
+        }
+        clearPlayerVideoSizeConstraintAndReleaseTempSession(reason)
+        _playbackState.value = _playbackState.value.copy(
+            isPlaying = false,
+            isBuffering = false
+        )
     }
 
     fun openStudioForMedia(media: MediaEntity?) {
@@ -1327,14 +1448,32 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
             // Reset per-URI recovery counter when user explicitly initiates playback of a track
             decoderRecoveryAttemptsByUri[media.uriString] = 0
-            Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
-                prefs.allowExperimental4kSoftwareFallback
-            if (media.mediaType == MediaType.VIDEO) {
+            Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+                mode = prefs.highResVideoPlaybackMode,
+                legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback
+            )
+
+            // Always release any previous track's temporary high-res or downscaled constraint first
+            clearPlayerVideoSizeConstraintAndReleaseTempSession("Loading new media item: ${media.title}")
+
+            val videoCapabilityEval: VideoStreamCapabilityEvaluation? = if (media.mediaType == MediaType.VIDEO) {
+                val eval = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+                    context = app,
+                    media = media,
+                    selectedMode = prefs.highResVideoPlaybackMode
+                )
                 Resilient4KCodecEngine.resetTelemetryForNewTrack(
                     mimeType = media.mimeType,
                     width = media.width,
-                    height = media.height
+                    height = media.height,
+                    frameRate = 30f,
+                    bitrateBps = eval.bitrateBps,
+                    isHdrOr10Bit = eval.is10BitOrHdr,
+                    trackUri = media.uriString
                 )
+                eval
+            } else {
+                null
             }
 
             // Release obsolete codec instances from the previous track safely before loading the new track
@@ -1364,6 +1503,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             )
             queryServiceAudioSessionIdIfController(player)
 
+            val latestTelemetry = Resilient4KCodecEngine.latestTelemetry.value
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = media,
                 queue = resolvedQueue,
@@ -1379,7 +1519,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 playbackError = null,
                 currentArtworkData = activeResolvedArtwork.artworkData,
                 currentArtworkUri = activeResolvedArtwork.artworkUri?.toString(),
-                currentArtworkSource = activeResolvedArtwork.sourceLabel
+                currentArtworkSource = activeResolvedArtwork.sourceLabel,
+                videoCapabilityEvaluation = videoCapabilityEval,
+                showVideoCompatibilityDialog = videoCapabilityEval?.requiresCompatibilityPrompt == true,
+                showVideoInfoDetailsDialog = false,
+                activeVideoEngineStrategy = videoCapabilityEval?.recommendedStrategy
+                    ?: latestTelemetry.activeEngineStrategy,
+                isTemporaryHighResEngineActive = videoCapabilityEval?.resolutionTier?.isHighRes4kOrAbove == true ||
+                    latestTelemetry.isTemporaryHighResSessionActive,
+                isDownscaledPlayback = false
             )
             resetOrLoadCompanionSubtitleForMedia(media)
             syncAndResolveArtworkForTrack(media, player.mediaMetadata)
@@ -1644,6 +1792,193 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun retryCurrentPlayback() {
         val current = _playbackState.value.currentMedia ?: return
         playMedia(current, _playbackState.value.queue)
+    }
+
+    fun openVideoCompatibilityDialog() {
+        val current = _playbackState.value.currentMedia ?: return
+        if (current.mediaType != MediaType.VIDEO) return
+        val eval = _playbackState.value.videoCapabilityEvaluation
+            ?: Resilient4KCodecEngine.evaluateVideoStreamCapability(
+                context = getApplication(),
+                media = current,
+                selectedMode = userPreferences.value.highResVideoPlaybackMode
+            )
+        _playbackState.value = _playbackState.value.copy(
+            videoCapabilityEvaluation = eval,
+            showVideoCompatibilityDialog = true
+        )
+    }
+
+    fun dismissVideoCompatibilityDialog() {
+        _playbackState.value = _playbackState.value.copy(
+            showVideoCompatibilityDialog = false
+        )
+    }
+
+    fun dismissVideoInfoDetailsDialog() {
+        _playbackState.value = _playbackState.value.copy(
+            showVideoInfoDetailsDialog = false
+        )
+    }
+
+    /**
+     * Applies one of the 6 In-Player Compatibility Options Panel actions ONLY for the active video:
+     * - [VideoCompatibilityAction.AUTO_PLAYBACK]
+     * - [VideoCompatibilityAction.TRY_COMPATIBLE_DECODER]
+     * - [VideoCompatibilityAction.SOFTWARE_FALLBACK]
+     * - [VideoCompatibilityAction.LOWER_RESOLUTION_PLAYBACK]
+     * - [VideoCompatibilityAction.VIDEO_INFORMATION]
+     * - [VideoCompatibilityAction.CANCEL]
+     */
+    fun applyVideoCompatibilityAction(action: VideoCompatibilityAction) {
+        val currentMedia = _playbackState.value.currentMedia ?: return
+        val uri = currentMedia.uriString
+        val eval = _playbackState.value.videoCapabilityEvaluation
+            ?: Resilient4KCodecEngine.evaluateVideoStreamCapability(
+                context = getApplication(),
+                media = currentMedia,
+                selectedMode = userPreferences.value.highResVideoPlaybackMode
+            )
+
+        when (action) {
+            VideoCompatibilityAction.VIDEO_INFORMATION -> {
+                _playbackState.value = _playbackState.value.copy(
+                    videoCapabilityEvaluation = eval,
+                    showVideoCompatibilityDialog = false,
+                    showVideoInfoDetailsDialog = true
+                )
+                return
+            }
+
+            VideoCompatibilityAction.CANCEL -> {
+                _playbackState.value = _playbackState.value.copy(
+                    showVideoCompatibilityDialog = false
+                )
+                if (_playbackState.value.playbackError != null ||
+                    eval.recommendedStrategy == AdaptiveVideoEngineStrategy.UNSUPPORTED_REQUIRE_USER_CHOICE
+                ) {
+                    stopVideoPlaybackAndCleanup("User cancelled high-res compatibility panel")
+                }
+                return
+            }
+
+            VideoCompatibilityAction.SOFTWARE_FALLBACK -> {
+                if (!eval.isSoftwareFallbackSafe) {
+                    postStatusBannerMessage(
+                        eval.softwareUnavailableReason
+                            ?: "Software fallback is unsafe for this resolution/device.",
+                        InAppNotificationType.PERSISTENT_ERROR
+                    )
+                    return
+                }
+                Resilient4KCodecEngine.applyTemporaryCompatibilityActionForTrack(
+                    trackUri = uri,
+                    action = VideoCompatibilityAction.SOFTWARE_FALLBACK,
+                    mimeType = currentMedia.mimeType,
+                    width = currentMedia.width,
+                    height = currentMedia.height
+                )
+                _playbackState.value = _playbackState.value.copy(
+                    showVideoCompatibilityDialog = false,
+                    activeVideoEngineStrategy = AdaptiveVideoEngineStrategy.GUARDED_SOFTWARE_FALLBACK,
+                    isTemporaryHighResEngineActive = true,
+                    isDownscaledPlayback = false,
+                    playbackError = null
+                )
+                restartCurrentVideoWithUpdatedDecoderConfig(clearVideoSizeConstraints = true)
+            }
+
+            VideoCompatibilityAction.TRY_COMPATIBLE_DECODER -> {
+                Resilient4KCodecEngine.applyTemporaryCompatibilityActionForTrack(
+                    trackUri = uri,
+                    action = VideoCompatibilityAction.TRY_COMPATIBLE_DECODER,
+                    mimeType = currentMedia.mimeType,
+                    width = currentMedia.width,
+                    height = currentMedia.height
+                )
+                _playbackState.value = _playbackState.value.copy(
+                    showVideoCompatibilityDialog = false,
+                    activeVideoEngineStrategy = AdaptiveVideoEngineStrategy.ALTERNATE_COMPATIBLE_HARDWARE,
+                    isTemporaryHighResEngineActive = true,
+                    isDownscaledPlayback = false,
+                    playbackError = null
+                )
+                restartCurrentVideoWithUpdatedDecoderConfig(clearVideoSizeConstraints = true)
+            }
+
+            VideoCompatibilityAction.LOWER_RESOLUTION_PLAYBACK -> {
+                Resilient4KCodecEngine.applyTemporaryCompatibilityActionForTrack(
+                    trackUri = uri,
+                    action = VideoCompatibilityAction.LOWER_RESOLUTION_PLAYBACK,
+                    mimeType = currentMedia.mimeType,
+                    width = currentMedia.width,
+                    height = currentMedia.height
+                )
+                activePlayer?.let { player ->
+                    runCatching {
+                        player.trackSelectionParameters = player.trackSelectionParameters
+                            .buildUpon()
+                            .setMaxVideoSize(1920, 1080)
+                            .build()
+                    }
+                }
+                _playbackState.value = _playbackState.value.copy(
+                    showVideoCompatibilityDialog = false,
+                    activeVideoEngineStrategy = AdaptiveVideoEngineStrategy.LOWER_RESOLUTION_DOWNSCALED,
+                    isTemporaryHighResEngineActive = true,
+                    isDownscaledPlayback = true,
+                    playbackError = null
+                )
+                postStatusBannerMessage(
+                    "Using supported lower-resolution compatibility path (Downscaled ≤1080p) for this video only.",
+                    InAppNotificationType.TEMPORARY_INFO
+                )
+                restartCurrentVideoWithUpdatedDecoderConfig(clearVideoSizeConstraints = false)
+            }
+
+            VideoCompatibilityAction.AUTO_PLAYBACK -> {
+                Resilient4KCodecEngine.applyTemporaryCompatibilityActionForTrack(
+                    trackUri = uri,
+                    action = VideoCompatibilityAction.AUTO_PLAYBACK,
+                    mimeType = currentMedia.mimeType,
+                    width = currentMedia.width,
+                    height = currentMedia.height
+                )
+                _playbackState.value = _playbackState.value.copy(
+                    showVideoCompatibilityDialog = false,
+                    activeVideoEngineStrategy = eval.recommendedStrategy,
+                    isTemporaryHighResEngineActive = eval.resolutionTier.isHighRes4kOrAbove,
+                    isDownscaledPlayback = false,
+                    playbackError = null
+                )
+                restartCurrentVideoWithUpdatedDecoderConfig(clearVideoSizeConstraints = true)
+            }
+        }
+    }
+
+    private fun restartCurrentVideoWithUpdatedDecoderConfig(clearVideoSizeConstraints: Boolean) {
+        val player = activePlayer ?: return
+        val currentMedia = _playbackState.value.currentMedia ?: return
+        decoderRecoveryAttemptsByUri[currentMedia.uriString] = 0
+        if (clearVideoSizeConstraints) {
+            runCatching {
+                player.trackSelectionParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .clearVideoSizeConstraints()
+                    .build()
+            }
+        }
+        val savedIdx = (player.currentMediaItemIndex.takeIf { it >= 0 }
+            ?: _playbackState.value.currentQueueIndex).coerceAtLeast(0)
+        val savedPos = (player.currentPosition.takeIf { it > 0L }
+            ?: _playbackState.value.currentPositionMs).coerceAtLeast(0L)
+        runCatching {
+            player.stop()
+            player.seekTo(savedIdx, savedPos)
+            player.prepare()
+            player.playWhenReady = true
+            player.play()
+        }
     }
 
     // --- Queue & Playlist Management ---
@@ -1948,6 +2283,13 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     if (now - lastHistoryWriteTimeMs >= 10_000L) {
                         persistCurrentPlaybackPosition(force = false)
                         lastHistoryWriteTimeMs = now
+                        if (_playbackState.value.currentMedia?.mediaType == MediaType.VIDEO) {
+                            Resilient4KCodecEngine.recordLongPlaybackHealthCheck(
+                                context = getApplication(),
+                                droppedFramesDelta = 0,
+                                avSyncDriftMs = 0L
+                            )
+                        }
                     }
                 } else {
                     break
@@ -2218,10 +2560,57 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setAllowExperimental4kSoftwareFallback(enabled: Boolean) {
-        Resilient4KCodecEngine.allowExperimental4kSoftwareFallback = enabled
+        val targetMode = if (enabled) {
+            HighResVideoPlaybackMode.SOFTWARE_FALLBACK
+        } else {
+            HighResVideoPlaybackMode.AUTO
+        }
+        Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+            mode = targetMode,
+            legacyAllowSoftwareFallback = enabled
+        )
         viewModelScope.launch {
             preferencesRepository.setAllowExperimental4kSoftwareFallback(enabled)
         }
+    }
+
+    fun setHighResVideoPlaybackMode(mode: HighResVideoPlaybackMode) {
+        val app = getApplication<Application>()
+        val availabilities = Resilient4KCodecEngine.evaluateAllPlaybackModesAvailability(app)
+        val targetAvailability = availabilities.find { it.mode == mode }
+        if (targetAvailability != null && !targetAvailability.isAvailable) {
+            postStatusBannerMessage(
+                targetAvailability.unavailableReason
+                    ?: "${mode.label} is not supported on this device.",
+                InAppNotificationType.TEMPORARY_WARNING
+            )
+            return
+        }
+        Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+            mode = mode,
+            legacyAllowSoftwareFallback = (mode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK)
+        )
+        viewModelScope.launch {
+            preferencesRepository.setHighResVideoPlaybackMode(mode)
+        }
+        val currentMedia = _playbackState.value.currentMedia
+        val updatedEval = if (currentMedia?.mediaType == MediaType.VIDEO) {
+            Resilient4KCodecEngine.evaluateVideoStreamCapability(
+                context = app,
+                media = currentMedia,
+                selectedMode = mode
+            )
+        } else {
+            _playbackState.value.videoCapabilityEvaluation
+        }
+        _playbackState.value = _playbackState.value.copy(
+            playbackModeAvailabilities = availabilities,
+            videoCapabilityEvaluation = updatedEval
+        )
+        postStatusBannerMessage(
+            "High-Resolution Video Playback mode set to: ${mode.label}",
+            InAppNotificationType.TEMPORARY_INFO
+        )
     }
 
     fun setOptionalAdsConfig(enabled: Boolean, consentGranted: Boolean) {

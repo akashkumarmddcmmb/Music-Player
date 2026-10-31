@@ -61,11 +61,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.platform.LocalContext
 import com.example.BuildConfig
 import com.example.ads.OptionalAdManager
+import com.example.data.preferences.HighResVideoPlaybackMode
 import com.example.data.preferences.SortOption
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
+import com.example.media.PlaybackModeAvailabilityReport
+import com.example.media.Resilient4KCodecEngine
 import com.example.ui.theme.AppThemeMode
 import com.example.update.AppUpdateManager
 import com.example.update.GitHubReleaseInfo
@@ -94,6 +101,8 @@ fun ProfileAndSettingsScreen(
     onSetVideoGestureControls: (Boolean) -> Unit = {},
     onSetVideoOrientationPref: (VideoOrientationPreference) -> Unit = {},
     onSetAllowExperimental4kSoftwareFallback: (Boolean) -> Unit = {},
+    playbackModeAvailabilities: List<PlaybackModeAvailabilityReport> = emptyList(),
+    onSetHighResVideoPlaybackMode: (HighResVideoPlaybackMode) -> Unit = {},
     onSetAudioBalance: (Float) -> Unit = {},
     onSetPreampGainDb: (Float) -> Unit = {},
     onSetSleepTimerMinutes: (Int) -> Unit = {},
@@ -419,6 +428,123 @@ fun ProfileAndSettingsScreen(
                             modifier = Modifier
                                 .testTag("settings_video_orientation_${pref.name.lowercase()}")
                         )
+                    }
+                }
+            }
+        }
+
+        // High-Resolution Video Playback (4K / 8K Adaptive Engine)
+        item {
+            val context = LocalContext.current
+            val resolvedAvailabilities = remember(playbackModeAvailabilities, context) {
+                playbackModeAvailabilities.ifEmpty {
+                    Resilient4KCodecEngine.evaluateAllPlaybackModesAvailability(context)
+                }
+            }
+            SettingsSectionCard(
+                title = "High-Resolution Video Playback",
+                icon = Icons.Default.Movie
+            ) {
+                Text(
+                    text = "Adaptive 4K/8K playback engine for older & modern Android devices. Normal 720p/1080p videos always use the standard hardware path; high-resolution compatibility adjustments apply temporarily only while a 4K/8K video is playing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("high_res_video_playback_modes_column"),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    HighResVideoPlaybackMode.entries.forEach { mode ->
+                        val availability = resolvedAvailabilities.find { it.mode == mode }
+                        val isAvailable = availability?.isAvailable ?: true
+                        val unavailableReason = availability?.unavailableReason
+                        val isSelected = userPreferences.highResVideoPlaybackMode == mode
+
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = when {
+                                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                                !isAvailable -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("settings_high_res_mode_${mode.name.lowercase()}")
+                                .then(
+                                    if (isAvailable) {
+                                        Modifier.clickable { onSetHighResVideoPlaybackMode(mode) }
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = if (isAvailable) {
+                                        { onSetHighResVideoPlaybackMode(mode) }
+                                    } else null,
+                                    enabled = isAvailable,
+                                    modifier = Modifier.testTag("settings_high_res_radio_${mode.name.lowercase()}")
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = mode.label,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (isAvailable) {
+                                                MaterialTheme.colorScheme.onSurface
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
+                                            }
+                                        )
+                                        if (!isAvailable) {
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.errorContainer,
+                                                shape = RoundedCornerShape(6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "Unavailable",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = mode.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    if (!isAvailable && !unavailableReason.isNullOrBlank()) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Reason: $unavailableReason",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.testTag("settings_high_res_reason_${mode.name.lowercase()}")
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

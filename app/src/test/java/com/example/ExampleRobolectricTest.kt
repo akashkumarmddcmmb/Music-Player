@@ -43,6 +43,7 @@ import com.example.media.MultiBandBiquadFilterBank
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.ProcessingOutcome
 import com.example.media.PulseEqualizerAudioProcessor
+import com.example.media.Resilient4KCodecEngine
 import com.example.media.SampleMediaGenerator
 import com.example.media.SubtitleFormat
 import com.example.media.SubtitleLoadResult
@@ -4608,4 +4609,357 @@ class ExampleRobolectricTest {
         fileC.delete()
         testDir.delete()
     }
+
+    @Test
+    fun `adaptive 4K and 8K video playback engine verifies all 10 scenarios and temporary session cleanup`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = com.example.viewmodel.PulsePlayViewModel(app)
+
+        // Reset engine to default state
+        Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+            mode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO,
+            legacyAllowSoftwareFallback = false
+        )
+        Resilient4KCodecEngine.releaseTemporaryHighResSession("Test init")
+
+        // --- Scenario 1: 720p / 1080p normal video playback ---
+        val video720p = MediaEntity(
+            uriString = "file:///storage/emulated/0/Movies/normal_720p.mp4",
+            mediaStoreId = null,
+            title = "Normal 720p Clip",
+            artist = "Studio",
+            album = "Movies",
+            folderName = "Movies",
+            durationMs = 60_000L,
+            sizeBytes = 15_000_000L,
+            mimeType = "video/avc",
+            mediaType = MediaType.VIDEO,
+            width = 1280,
+            height = 720,
+            dateAddedEpochSec = 1700000001L
+        )
+        val video1080p = video720p.copy(
+            uriString = "file:///storage/emulated/0/Movies/normal_1080p.mp4",
+            title = "Normal 1080p Clip",
+            width = 1920,
+            height = 1080,
+            sizeBytes = 30_000_000L
+        )
+
+        val eval720p = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video720p,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        assertEquals(com.example.media.VideoResolutionTier.SD_HD_FHD, eval720p.resolutionTier)
+        assertEquals(
+            com.example.media.AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+            eval720p.recommendedStrategy
+        )
+        assertFalse("Normal 720p video must never trigger compatibility prompt", eval720p.requiresCompatibilityPrompt)
+
+        val eval1080p = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video1080p,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        assertEquals(com.example.media.VideoResolutionTier.SD_HD_FHD, eval1080p.resolutionTier)
+        assertEquals(
+            com.example.media.AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+            eval1080p.recommendedStrategy
+        )
+        assertFalse("Normal 1080p video must never trigger compatibility prompt", eval1080p.requiresCompatibilityPrompt)
+
+        // --- Scenario 2: 4K H.264 and 4K HEVC video capability evaluation ---
+        val video4kAvc = video720p.copy(
+            uriString = "file:///storage/emulated/0/Movies/uhd_4k_avc.mp4",
+            title = "UHD 4K H264 Clip",
+            mimeType = "video/avc",
+            width = 3840,
+            height = 2160,
+            durationMs = 60_000L,
+            sizeBytes = 120_000_000L // ~16 Mbps
+        )
+        val video4kHevc = video4kAvc.copy(
+            uriString = "file:///storage/emulated/0/Movies/uhd_4k_hevc.mp4",
+            title = "UHD 4K HEVC Clip",
+            mimeType = "video/hevc"
+        )
+
+        val eval4kAvc = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video4kAvc,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        val eval4kHevc = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video4kHevc,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        assertEquals(com.example.media.VideoResolutionTier.UHD_4K, eval4kAvc.resolutionTier)
+        assertEquals(com.example.media.VideoResolutionTier.UHD_4K, eval4kHevc.resolutionTier)
+        assertTrue(eval4kAvc.honestSummaryMessage.contains("3840x2160"))
+        assertTrue(eval4kHevc.honestSummaryMessage.contains("3840x2160"))
+
+        // --- Scenario 3: 4K videos with different bitrates & 10-bit/HDR profiles ---
+        val video4kModBitrate = video4kHevc.copy(
+            uriString = "file:///storage/emulated/0/Movies/uhd_4k_20mbps.mp4",
+            title = "UHD 4K 20Mbps SDR",
+            sizeBytes = 150_000_000L, // 20 Mbps over 60s
+            durationMs = 60_000L
+        )
+        val video4kExtremeBitrateHdr = video4kHevc.copy(
+            uriString = "file:///storage/emulated/0/Movies/uhd_4k_hdr10_200mbps.mp4",
+            title = "UHD 4K HDR10 10-bit 200Mbps Master",
+            sizeBytes = 1_500_000_000L, // 200 Mbps over 60s
+            durationMs = 60_000L
+        )
+        val evalMod = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video4kModBitrate,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        val evalExtremeHdr = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video4kExtremeBitrateHdr,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        assertFalse("Standard 4K SDR title should not be flagged as 10-bit/HDR", evalMod.is10BitOrHdr)
+        assertTrue("HDR10 10-bit 4K stream must be detected as 10-bit/HDR", evalExtremeHdr.is10BitOrHdr)
+        assertTrue("Extreme bitrate 4K stream must have higher estimated bitrate", evalExtremeHdr.bitrateBps > evalMod.bitrateBps * 4)
+
+        // --- Scenario 4: 8K video capability check (never allows software fallback on 8K) ---
+        val video8k = video4kHevc.copy(
+            uriString = "file:///storage/emulated/0/Movies/uhd_8k_hevc.mp4",
+            title = "UHD 8K 7680x4320 Sample",
+            width = 7680,
+            height = 4320,
+            sizeBytes = 600_000_000L
+        )
+        val eval8k = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = video8k,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.SOFTWARE_FALLBACK
+        )
+        assertEquals(com.example.media.VideoResolutionTier.UHD_8K, eval8k.resolutionTier)
+        assertFalse(
+            "8K software decoding must NEVER be marked safe on mobile CPUs",
+            eval8k.isSoftwareFallbackSafe
+        )
+        assertNotNull(eval8k.softwareUnavailableReason)
+        assertTrue(eval8k.softwareUnavailableReason!!.contains("8K"))
+
+        // --- Scenario 5: Unsupported codec or profile clear error / fallback ---
+        val unsupportedCodecVideo = video4kAvc.copy(
+            uriString = "file:///storage/emulated/0/Movies/unsupported_vc1_4k.mkv",
+            title = "Unsupported Codec 4K",
+            mimeType = "video/x-ms-wmv"
+        )
+        val evalUnsupported = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = unsupportedCodecVideo,
+            selectedMode = com.example.data.preferences.HighResVideoPlaybackMode.AUTO
+        )
+        assertFalse("Unsupported MIME must report hardware unsupported", evalUnsupported.isHardwareSupported)
+        assertTrue("Unsupported 4K codec must require compatibility prompt", evalUnsupported.requiresCompatibilityPrompt)
+        assertEquals(
+            com.example.media.AdaptiveVideoEngineStrategy.UNSUPPORTED_REQUIRE_USER_CHOICE,
+            evalUnsupported.recommendedStrategy
+        )
+
+        // --- Scenario 6: Hardware decoder init failure & bounded fallback (no infinite retry loop) ---
+        Resilient4KCodecEngine.resetTelemetryForNewTrack(
+            mimeType = "video/hevc",
+            width = 3840,
+            height = 2160,
+            trackUri = video4kHevc.uriString
+        )
+        vm.setQueue(listOf(video4kHevc), initialIndex = 0)
+        val decoderInitException = androidx.media3.common.PlaybackException(
+            "Hardware HEVC 4K init failed",
+            RuntimeException("MediaCodec configure failed"),
+            androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
+        )
+        // First failure triggers bounded recovery attempt #1
+        vm.handlePlayerError(decoderInitException)
+        assertEquals(1, vm.playbackState.value.decoderRecoveryAttempts)
+        assertTrue(Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit)
+
+        // Second failure exhausts MAX_DECODER_RECOVERY_RETRIES (1) and surfaces diagnostic error + compatibility dialog
+        vm.handlePlayerError(decoderInitException)
+        assertFalse("Player must not remain in buffering loop after retry limit", vm.playbackState.value.isBuffering)
+        assertNotNull("Diagnostic error must be reported after bounded retry", vm.playbackState.value.playbackError)
+        assertTrue(
+            "Compatibility options dialog must be offered after 4K decoder failure",
+            vm.playbackState.value.showVideoCompatibilityDialog
+        )
+
+        // --- Scenario 7: Software fallback safety check & low-memory / low-CPU rejection ---
+        val swSafetyReport = Resilient4KCodecEngine.evaluate4KSoftwareFallbackSafety(
+            context = app,
+            width = 3840,
+            height = 2160
+        )
+        // Verify 8K is strictly rejected by evaluate4KSoftwareFallbackSafety
+        val sw8kSafetyReport = Resilient4KCodecEngine.evaluate4KSoftwareFallbackSafety(
+            context = app,
+            width = 7680,
+            height = 4320
+        )
+        assertFalse("8K must always be rejected for software fallback", sw8kSafetyReport.isSafeToAttempt)
+        assertTrue(sw8kSafetyReport.reason.contains("8K"))
+        assertTrue(swSafetyReport.reason.isNotBlank())
+
+        // --- Scenario 8: 4K video finishes -> immediately play 1080p video -> automatic cleanup & return to normal engine ---
+        Resilient4KCodecEngine.applyTemporaryCompatibilityActionForTrack(
+            trackUri = video4kHevc.uriString,
+            action = com.example.media.VideoCompatibilityAction.LOWER_RESOLUTION_PLAYBACK,
+            mimeType = video4kHevc.mimeType,
+            width = 3840,
+            height = 2160
+        )
+        assertTrue(
+            "Temporary high-res session must be active during 4K compatibility playback",
+            Resilient4KCodecEngine.latestTelemetry.value.isTemporaryHighResSessionActive
+        )
+        assertTrue(
+            "Downscaled flag must be active when LOWER_RESOLUTION_PLAYBACK is chosen",
+            Resilient4KCodecEngine.latestTelemetry.value.isDownscaledOrLowerResActive
+        )
+        assertEquals(
+            "4K UHD (Downscaled)",
+            Resilient4KCodecEngine.formatVerifiedResolutionBadge(3840, 2160, isDownscaled = true)
+        )
+
+        // Simulate 4K video completion / transition to 1080p video
+        vm.clearPlayerVideoSizeConstraintAndReleaseTempSession("4K video completed")
+        Resilient4KCodecEngine.resetTelemetryForNewTrack(
+            mimeType = video1080p.mimeType,
+            width = video1080p.width,
+            height = video1080p.height,
+            trackUri = video1080p.uriString
+        )
+        val telemetryAfter1080p = Resilient4KCodecEngine.latestTelemetry.value
+        assertFalse(
+            "Temporary high-res session must be FALSE when subsequent 1080p video starts",
+            telemetryAfter1080p.isTemporaryHighResSessionActive
+        )
+        assertFalse(
+            "Downscaled flag must be reset for subsequent 1080p video",
+            telemetryAfter1080p.isDownscaledOrLowerResActive
+        )
+        assertEquals(
+            com.example.media.AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+            telemetryAfter1080p.activeEngineStrategy
+        )
+
+        // --- Scenario 9: Back / Stop resource cleanup ---
+        Resilient4KCodecEngine.applyTemporaryCompatibilityActionForTrack(
+            trackUri = video4kAvc.uriString,
+            action = com.example.media.VideoCompatibilityAction.TRY_COMPATIBLE_DECODER,
+            mimeType = video4kAvc.mimeType,
+            width = 3840,
+            height = 2160
+        )
+        assertTrue(Resilient4KCodecEngine.latestTelemetry.value.isTemporaryHighResSessionActive)
+        vm.stopVideoPlaybackAndCleanup("User pressed Back/Stop")
+        assertFalse(
+            "Temporary high-res session must be released immediately on Back/Stop",
+            Resilient4KCodecEngine.latestTelemetry.value.isTemporaryHighResSessionActive
+        )
+        assertFalse(vm.playbackState.value.isTemporaryHighResEngineActive)
+        assertEquals(
+            com.example.media.AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
+            vm.playbackState.value.activeVideoEngineStrategy
+        )
+
+        // --- Scenario 10: Long playback telemetry monitoring (dropped frames, memory pressure, A/V sync drift) ---
+        Resilient4KCodecEngine.resetTelemetryForNewTrack(
+            mimeType = "video/hevc",
+            width = 3840,
+            height = 2160,
+            trackUri = video4kHevc.uriString
+        )
+        Resilient4KCodecEngine.recordLongPlaybackHealthCheck(
+            context = app,
+            droppedFramesDelta = 12,
+            avSyncDriftMs = 40L
+        )
+        assertEquals(12, Resilient4KCodecEngine.latestTelemetry.value.droppedVideoFrames)
+        assertTrue("40ms drift is within 120ms threshold", Resilient4KCodecEngine.latestTelemetry.value.avSyncHealthy)
+
+        Resilient4KCodecEngine.recordLongPlaybackHealthCheck(
+            context = app,
+            droppedFramesDelta = 30,
+            avSyncDriftMs = 210L
+        )
+        assertEquals(42, Resilient4KCodecEngine.latestTelemetry.value.droppedVideoFrames)
+        assertFalse("210ms drift must flag avSyncHealthy = false", Resilient4KCodecEngine.latestTelemetry.value.avSyncHealthy)
+        assertNotNull(Resilient4KCodecEngine.latestTelemetry.value.failureReason)
+    }
+
+    @Test
+    fun `high resolution video settings and in-player compatibility options dialog render all required controls`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val availabilities = Resilient4KCodecEngine.evaluateAllPlaybackModesAvailability(app)
+        var selectedMode by mutableStateOf(com.example.data.preferences.HighResVideoPlaybackMode.AUTO)
+        var lastChosenAction by mutableStateOf<com.example.media.VideoCompatibilityAction?>(null)
+
+        val sample4kVideo = MediaEntity(
+            uriString = "file:///storage/emulated/0/Movies/cinema_4k.mp4",
+            mediaStoreId = null,
+            title = "Cinema 4K Sample",
+            artist = "Pulse Director",
+            album = "Movies",
+            folderName = "Movies",
+            durationMs = 120_000L,
+            sizeBytes = 250_000_000L,
+            mimeType = "video/hevc",
+            mediaType = MediaType.VIDEO,
+            width = 3840,
+            height = 2160,
+            dateAddedEpochSec = 1700001000L
+        )
+        val evaluation = Resilient4KCodecEngine.evaluateVideoStreamCapability(
+            context = app,
+            media = sample4kVideo,
+            selectedMode = selectedMode
+        )
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                com.example.ui.components.VideoCompatibilityOptionsDialog(
+                    media = sample4kVideo,
+                    playbackState = com.example.viewmodel.PlaybackUiState(
+                        currentMedia = sample4kVideo,
+                        videoCapabilityEvaluation = evaluation,
+                        showVideoCompatibilityDialog = true
+                    ),
+                    evaluation = evaluation,
+                    onSelectAction = { lastChosenAction = it },
+                    onDismiss = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify all 6 required options exist in the In-Player Compatibility Options Dialog
+        composeTestRule.onNodeWithTag("video_compatibility_options_dialog").assertExists()
+        composeTestRule.onNodeWithTag("compatibility_action_auto_playback").assertExists()
+        composeTestRule.onNodeWithTag("compatibility_action_try_compatible_decoder").assertExists()
+        composeTestRule.onNodeWithTag("compatibility_action_software_fallback").assertExists()
+        composeTestRule.onNodeWithTag("compatibility_action_lower_resolution_playback").assertExists()
+        composeTestRule.onNodeWithTag("compatibility_action_video_information").assertExists()
+        composeTestRule.onNodeWithTag("compatibility_action_cancel").assertExists()
+
+        composeTestRule.onNodeWithTag("compatibility_action_try_compatible_decoder").performClick()
+        assertEquals(
+            com.example.media.VideoCompatibilityAction.TRY_COMPATIBLE_DECODER,
+            lastChosenAction
+        )
+
+        // Verify all 5 modes are evaluated in availability report
+        assertEquals(5, availabilities.size)
+    }
 }
+

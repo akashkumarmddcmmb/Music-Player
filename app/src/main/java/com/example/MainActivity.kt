@@ -801,6 +801,21 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                             InAppNotificationType.TEMPORARY_WARNING
                         )
                     }
+                },
+                onSelectHighResVideoPlaybackMode = { mode ->
+                    viewModel.setHighResVideoPlaybackMode(mode)
+                },
+                onOpenVideoCompatibilityDialog = {
+                    viewModel.openVideoCompatibilityDialog()
+                },
+                onDismissVideoCompatibilityDialog = {
+                    viewModel.dismissVideoCompatibilityDialog()
+                },
+                onSelectVideoCompatibilityAction = { action ->
+                    viewModel.applyVideoCompatibilityAction(action)
+                },
+                onDismissVideoInfoDetailsDialog = {
+                    viewModel.dismissVideoInfoDetailsDialog()
                 }
             )
             InAppNotificationBanner(
@@ -1244,6 +1259,10 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onSetVideoOrientationPref = { viewModel.setVideoOrientationPreference(it) },
                                     onSetAllowExperimental4kSoftwareFallback = {
                                         viewModel.setAllowExperimental4kSoftwareFallback(it)
+                                    },
+                                    playbackModeAvailabilities = playbackState.playbackModeAvailabilities,
+                                    onSetHighResVideoPlaybackMode = {
+                                        viewModel.setHighResVideoPlaybackMode(it)
                                     },
                                     onSetAudioBalance = { viewModel.setAudioBalance(it) },
                                     onSetPreampGainDb = { viewModel.setPreampGainDb(it) },

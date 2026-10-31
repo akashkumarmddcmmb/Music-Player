@@ -32,6 +32,32 @@ enum class VideoOrientationPreference(val label: String) {
     PORTRAIT("Portrait")
 }
 
+enum class HighResVideoPlaybackMode(
+    val label: String,
+    val description: String
+) {
+    AUTO(
+        label = "Auto (Recommended)",
+        description = "Automatically selects the optimal hardware or compatibility decoder based on real device and video stream capabilities."
+    ),
+    COMPATIBILITY(
+        label = "Compatibility Mode",
+        description = "Prioritizes conservative decoder parameters and proven fallback decoders for older or resource-constrained Android devices."
+    ),
+    HIGH_RESOLUTION(
+        label = "High-Resolution Playback",
+        description = "Attempts available 4K/8K UHD hardware and alternate high-profile decoders when supported by the chipset."
+    ),
+    HARDWARE_PREFERENCE(
+        label = "Hardware Decoder Preference",
+        description = "Strictly prioritizes hardware-accelerated MediaCodec decoders for maximum battery and thermal efficiency."
+    ),
+    SOFTWARE_FALLBACK(
+        label = "Software Decoder Fallback",
+        description = "Allows CPU software decoding fallback only when hardware decoding fails and device RAM, CPU cores, and thermal status are safe."
+    )
+}
+
 data class UserPreferencesState(
     val themeMode: AppThemeMode = AppThemeMode.DARK,
     val dynamicColor: Boolean = true,
@@ -42,6 +68,7 @@ data class UserPreferencesState(
     val backgroundPlaybackEnabled: Boolean = true,
     val videoGestureControlsEnabled: Boolean = true,
     val videoOrientationPreference: VideoOrientationPreference = VideoOrientationPreference.AUTO,
+    val highResVideoPlaybackMode: HighResVideoPlaybackMode = HighResVideoPlaybackMode.AUTO,
     val audioBalance: Float = 0.0f, // -1.0f (Left) .. 0.0f (Center) .. +1.0f (Right)
     val subtitlesEnabledByDefault: Boolean = true,
     val subtitleFontScale: Float = 1.0f,
@@ -75,6 +102,7 @@ class UserPreferencesRepository(private val context: Context) {
         val BACKGROUND_PLAYBACK = booleanPreferencesKey("background_playback_enabled")
         val VIDEO_GESTURE_CONTROLS = booleanPreferencesKey("video_gesture_controls_enabled")
         val VIDEO_ORIENTATION_PREF = stringPreferencesKey("video_orientation_preference")
+        val HIGH_RES_VIDEO_MODE = stringPreferencesKey("high_res_video_playback_mode")
         val AUDIO_BALANCE = floatPreferencesKey("audio_balance")
         val SUBTITLES_ENABLED = booleanPreferencesKey("subtitles_enabled_default")
         val SUBTITLE_FONT_SCALE = floatPreferencesKey("subtitle_font_scale")
@@ -106,6 +134,11 @@ class UserPreferencesRepository(private val context: Context) {
             runCatching { VideoOrientationPreference.valueOf(it) }.getOrNull()
         } ?: VideoOrientationPreference.AUTO
 
+        val allowSwFallback = prefs[Keys.ALLOW_4K_SW_FALLBACK] ?: false
+        val highResMode = prefs[Keys.HIGH_RES_VIDEO_MODE]?.let {
+            runCatching { HighResVideoPlaybackMode.valueOf(it) }.getOrNull()
+        } ?: if (allowSwFallback) HighResVideoPlaybackMode.SOFTWARE_FALLBACK else HighResVideoPlaybackMode.AUTO
+
         val savedUpdateChannel = prefs[Keys.SELECTED_UPDATE_CHANNEL]?.let {
             runCatching { UpdateDistributionChannel.valueOf(it) }.getOrNull()
         }
@@ -125,6 +158,7 @@ class UserPreferencesRepository(private val context: Context) {
             backgroundPlaybackEnabled = prefs[Keys.BACKGROUND_PLAYBACK] ?: true,
             videoGestureControlsEnabled = prefs[Keys.VIDEO_GESTURE_CONTROLS] ?: true,
             videoOrientationPreference = orientationPref,
+            highResVideoPlaybackMode = highResMode,
             audioBalance = (prefs[Keys.AUDIO_BALANCE] ?: 0.0f).coerceIn(-1.0f, 1.0f),
             subtitlesEnabledByDefault = prefs[Keys.SUBTITLES_ENABLED] ?: true,
             subtitleFontScale = (prefs[Keys.SUBTITLE_FONT_SCALE] ?: 1.0f).coerceIn(0.6f, 2.0f),
@@ -135,7 +169,7 @@ class UserPreferencesRepository(private val context: Context) {
             bassBoostStrength = (prefs[Keys.BASS_STRENGTH] ?: 0).coerceIn(0, 1000),
             preampGainDb = (prefs[Keys.PREAMP_GAIN_DB] ?: 0.0f).coerceIn(-12.0f, 12.0f),
             customBandLevelsMb = parsedBands,
-            allowExperimental4kSoftwareFallback = prefs[Keys.ALLOW_4K_SW_FALLBACK] ?: false,
+            allowExperimental4kSoftwareFallback = allowSwFallback || highResMode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK,
             optionalAdsModuleEnabled = prefs[Keys.OPTIONAL_ADS_ENABLED] ?: false,
             optionalAdsConsentGranted = prefs[Keys.OPTIONAL_ADS_CONSENT] ?: false,
             githubRepositorySlug = prefs[Keys.GITHUB_REPO_SLUG] ?: "",
@@ -218,9 +252,21 @@ class UserPreferencesRepository(private val context: Context) {
         }
     }
 
+    suspend fun setHighResVideoPlaybackMode(mode: HighResVideoPlaybackMode) {
+        context.pulseDataStore.edit { prefs ->
+            prefs[Keys.HIGH_RES_VIDEO_MODE] = mode.name
+            prefs[Keys.ALLOW_4K_SW_FALLBACK] = (mode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK)
+        }
+    }
+
     suspend fun setAllowExperimental4kSoftwareFallback(enabled: Boolean) {
         context.pulseDataStore.edit { prefs ->
             prefs[Keys.ALLOW_4K_SW_FALLBACK] = enabled
+            if (enabled) {
+                prefs[Keys.HIGH_RES_VIDEO_MODE] = HighResVideoPlaybackMode.SOFTWARE_FALLBACK.name
+            } else if (prefs[Keys.HIGH_RES_VIDEO_MODE] == HighResVideoPlaybackMode.SOFTWARE_FALLBACK.name) {
+                prefs[Keys.HIGH_RES_VIDEO_MODE] = HighResVideoPlaybackMode.AUTO.name
+            }
         }
     }
 

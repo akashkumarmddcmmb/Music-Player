@@ -81,6 +81,9 @@ class PulsePlaybackService : MediaSessionService() {
             serviceExoPlayer?.mediaMetadata?.let { meta ->
                 _serviceMediaMetadata.value = meta
             }
+            if (playbackState == Player.STATE_ENDED || playbackState == Player.STATE_IDLE) {
+                Resilient4KCodecEngine.releaseTemporaryHighResSession("Service playback ended or idle")
+            }
         }
 
         override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
@@ -111,8 +114,10 @@ class PulsePlaybackService : MediaSessionService() {
             runCatching {
                 UserPreferencesRepository(applicationContext).preferencesFlow.collect { prefs ->
                     backgroundPlaybackAllowed = prefs.backgroundPlaybackEnabled
-                    Resilient4KCodecEngine.allowExperimental4kSoftwareFallback =
-                        prefs.allowExperimental4kSoftwareFallback
+                    Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+                        mode = prefs.highResVideoPlaybackMode,
+                        legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback
+                    )
                     val resolvedBands = if (prefs.customBandLevelsMb.size == HardwareEqualizerState.DEFAULT_BAND_FREQUENCIES_HZ.size) {
                         prefs.customBandLevelsMb
                     } else {

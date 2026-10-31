@@ -99,8 +99,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
+import com.example.data.preferences.HighResVideoPlaybackMode
 import com.example.media.DetailedMediaFileInfo
 import com.example.media.MediaFileActionsHelper
+import com.example.media.Resilient4KCodecEngine
+import com.example.media.VideoCompatibilityAction
+import com.example.media.VideoStreamCapabilityEvaluation
 import com.example.media.rememberMediaArtworkBitmap
 import com.example.viewmodel.PlaybackUiState
 
@@ -1298,6 +1302,8 @@ fun VideoSettingsDialog(
     onToggleSubtitlesEnabled: (Boolean) -> Unit,
     onPickSubtitleFileClick: () -> Unit,
     onOpenEqualizer: () -> Unit,
+    onSelectHighResMode: (HighResVideoPlaybackMode) -> Unit = {},
+    onOpenCompatibilityOptions: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -1458,6 +1464,42 @@ fun VideoSettingsDialog(
                     }
                 }
 
+                Text(
+                    text = "High-Resolution Video Playback Mode",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(HighResVideoPlaybackMode.entries) { mode ->
+                        val avail = playbackState.playbackModeAvailabilities.find { it.mode == mode }
+                        val isEnabled = avail?.isAvailable ?: true
+                        FilterChip(
+                            selected = userPreferences.highResVideoPlaybackMode == mode,
+                            onClick = {
+                                if (isEnabled) onSelectHighResMode(mode)
+                            },
+                            enabled = isEnabled,
+                            label = { Text(mode.label, maxLines = 1) },
+                            modifier = Modifier.testTag("video_dialog_high_res_${mode.name.lowercase()}")
+                        )
+                    }
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        onOpenCompatibilityOptions()
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("open_video_compatibility_options_button")
+                ) {
+                    Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("4K/8K Decoder & Compatibility Options")
+                }
+
                 OutlinedButton(
                     onClick = {
                         onToggleControlsLock(!playbackState.isVideoControlsLocked)
@@ -1477,6 +1519,304 @@ fun VideoSettingsDialog(
                 modifier = Modifier.testTag("video_settings_close_button")
             ) {
                 Text("Done")
+            }
+        }
+    )
+}
+
+/**
+ * In-Player Compatibility Options Panel / Dialog for 4K, 8K, or unsupported-codec videos.
+ * Provides clear, honest hardware/software capability status and the 6 required user actions:
+ * - Auto playback
+ * - Compatible decoder आज़माएँ
+ * - Software fallback (if available & safe on this device)
+ * - Supported lower-resolution playback (if available; honestly labeled Downscaled)
+ * - Video information
+ * - Cancel
+ */
+@Composable
+fun VideoCompatibilityOptionsDialog(
+    media: MediaEntity,
+    playbackState: PlaybackUiState,
+    evaluation: VideoStreamCapabilityEvaluation?,
+    onSelectAction: (VideoCompatibilityAction) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val width = evaluation?.width ?: media.width.takeIf { it > 0 } ?: playbackState.decodedVideoWidth
+    val height = evaluation?.height ?: media.height.takeIf { it > 0 } ?: playbackState.decodedVideoHeight
+    val badge = Resilient4KCodecEngine.formatVerifiedResolutionBadge(
+        width = width,
+        height = height,
+        isDownscaled = playbackState.isDownscaledPlayback
+    ) ?: "${width}x${height}"
+    val isSoftwareSafe = evaluation?.isSoftwareFallbackSafe ?: false
+    val isLowerResAvailable = evaluation?.isLowerResolutionOptionAvailable ?: true
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 520.dp)
+            .testTag("video_compatibility_options_dialog"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Movie,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Column {
+                    Text(
+                        text = "High-Resolution Compatibility Options",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${media.title} • $badge",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = evaluation?.honestSummaryMessage
+                                ?: playbackState.decoderStatusLabel,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (!evaluation?.warningMessage.isNullOrBlank()) {
+                            Text(
+                                text = evaluation?.warningMessage.orEmpty(),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.testTag("video_compatibility_warning_text")
+                            )
+                        }
+                        if (!playbackState.playbackError.isNullOrBlank()) {
+                            Text(
+                                text = playbackState.playbackError,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Text(
+                            text = "Note: Compatibility changes apply ONLY to this video and automatically reset to the standard hardware path when finished.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                // 1. Auto playback
+                CompatibilityOptionButton(
+                    action = VideoCompatibilityAction.AUTO_PLAYBACK,
+                    enabled = true,
+                    unavailableReason = null,
+                    onClick = { onSelectAction(VideoCompatibilityAction.AUTO_PLAYBACK) }
+                )
+
+                // 2. Compatible decoder आज़माएँ
+                CompatibilityOptionButton(
+                    action = VideoCompatibilityAction.TRY_COMPATIBLE_DECODER,
+                    enabled = true,
+                    unavailableReason = null,
+                    onClick = { onSelectAction(VideoCompatibilityAction.TRY_COMPATIBLE_DECODER) }
+                )
+
+                // 3. Software fallback (if available & safe on device)
+                CompatibilityOptionButton(
+                    action = VideoCompatibilityAction.SOFTWARE_FALLBACK,
+                    enabled = isSoftwareSafe,
+                    unavailableReason = evaluation?.softwareUnavailableReason,
+                    onClick = { onSelectAction(VideoCompatibilityAction.SOFTWARE_FALLBACK) }
+                )
+
+                // 4. Supported lower-resolution playback (if available)
+                CompatibilityOptionButton(
+                    action = VideoCompatibilityAction.LOWER_RESOLUTION_PLAYBACK,
+                    enabled = isLowerResAvailable,
+                    unavailableReason = if (!isLowerResAvailable) "Not applicable for standard resolution" else null,
+                    onClick = { onSelectAction(VideoCompatibilityAction.LOWER_RESOLUTION_PLAYBACK) }
+                )
+
+                // 5. Video information
+                CompatibilityOptionButton(
+                    action = VideoCompatibilityAction.VIDEO_INFORMATION,
+                    enabled = true,
+                    unavailableReason = null,
+                    onClick = { onSelectAction(VideoCompatibilityAction.VIDEO_INFORMATION) }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSelectAction(VideoCompatibilityAction.CANCEL) },
+                modifier = Modifier.testTag("compatibility_action_cancel")
+            ) {
+                Text(VideoCompatibilityAction.CANCEL.label)
+            }
+        }
+    )
+}
+
+@Composable
+private fun CompatibilityOptionButton(
+    action: VideoCompatibilityAction,
+    enabled: Boolean,
+    unavailableReason: String?,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (enabled) {
+            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("compatibility_action_${action.name.lowercase()}")
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = action.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = if (enabled) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                    }
+                )
+                if (!enabled) {
+                    Text(
+                        text = "Unavailable",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+            Text(
+                text = action.subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (!enabled && !unavailableReason.isNullOrBlank()) {
+                Text(
+                    text = unavailableReason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Detailed Video Stream & Hardware Capability Information Dialog opened when the user selects
+ * "Video information" from the compatibility panel.
+ */
+@Composable
+fun VideoTechnicalInfoDialog(
+    media: MediaEntity,
+    playbackState: PlaybackUiState,
+    evaluation: VideoStreamCapabilityEvaluation?,
+    onDismiss: () -> Unit
+) {
+    val width = evaluation?.width ?: media.width.takeIf { it > 0 } ?: playbackState.decodedVideoWidth
+    val height = evaluation?.height ?: media.height.takeIf { it > 0 } ?: playbackState.decodedVideoHeight
+    val bitrateMbps = evaluation?.bitrateBps?.takeIf { it > 0L }?.let {
+        "%.1f Mbps".format(it / 1_000_000.0)
+    } ?: "Auto / Container Bitrate"
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        modifier = Modifier
+            .widthIn(max = 500.dp)
+            .testTag("video_technical_info_dialog"),
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Info,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = "Video Stream & Decoder Diagnostics",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text("Title: ${media.title}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                Text("Source Resolution: ${width}x${height} (${evaluation?.resolutionTier?.label ?: "Standard"})", style = MaterialTheme.typography.bodySmall)
+                Text("Codec MIME: ${media.mimeType}", style = MaterialTheme.typography.bodySmall)
+                Text("Estimated Bitrate: $bitrateMbps", style = MaterialTheme.typography.bodySmall)
+                Text("Color Profile: ${if (evaluation?.is10BitOrHdr == true) "10-bit / HDR" else "8-bit SDR"}", style = MaterialTheme.typography.bodySmall)
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Text("Active Engine Path: ${playbackState.activeVideoEngineStrategy.label}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                Text("Verified Decoder: ${playbackState.verifiedDecoderName ?: evaluation?.primaryDecoderName ?: "Pending / Uninitialized"}", style = MaterialTheme.typography.bodySmall)
+                Text("Hardware Supported at Native Res: ${if (evaluation?.isHardwareSupported == true) "Yes" else "No"}", style = MaterialTheme.typography.bodySmall)
+                if (!evaluation?.hardwareUnsupportedReason.isNullOrBlank()) {
+                    Text("Hardware Limit: ${evaluation?.hardwareUnsupportedReason}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                }
+                Text("Software Fallback Safe: ${if (evaluation?.isSoftwareFallbackSafe == true) "Yes" else "No"}", style = MaterialTheme.typography.bodySmall)
+                if (!evaluation?.softwareUnavailableReason.isNullOrBlank()) {
+                    Text("Software Limit: ${evaluation?.softwareUnavailableReason}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("Downscaled Compatibility Active: ${if (playbackState.isDownscaledPlayback) "Yes (≤1080p)" else "No (Native)"}", style = MaterialTheme.typography.bodySmall)
+                Text("Dropped Video Frames: ${playbackState.droppedVideoFrames}", style = MaterialTheme.typography.bodySmall)
+                Text("Temporary High-Res Session Active: ${if (playbackState.isTemporaryHighResEngineActive) "Yes (auto-releases on stop/end)" else "No (Standard path)"}", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("video_technical_info_close_button")
+            ) {
+                Text("Close")
             }
         }
     )

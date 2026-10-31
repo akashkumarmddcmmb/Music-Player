@@ -158,18 +158,22 @@ import androidx.media3.ui.PlayerView
 import com.example.R
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
+import com.example.data.preferences.HighResVideoPlaybackMode
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.HardwareEqualizerState
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.Resilient4KCodecEngine
+import com.example.media.VideoCompatibilityAction
 import com.example.media.rememberMediaArtworkBitmap
 import com.example.ui.components.AddToPlaylistDialog
 import com.example.ui.components.PlaybackSpeedDialog
 import com.example.ui.components.SleepTimerDialog
 import com.example.ui.components.SubtitleSettingsDialog
 import com.example.ui.components.VideoAudioTrackDialog
+import com.example.ui.components.VideoCompatibilityOptionsDialog
 import com.example.ui.components.VideoSettingsDialog
+import com.example.ui.components.VideoTechnicalInfoDialog
 import com.example.ui.components.formatDurationMillis
 import com.example.ui.components.formatFileSize
 import com.example.viewmodel.AudioTrackOption
@@ -226,6 +230,11 @@ fun NowPlayingOverlayScreen(
     onAddToPlaylistCurrentMedia: () -> Unit = {},
     onShowFileInfoCurrentMedia: () -> Unit = {},
     onEnterPipClick: () -> Unit = {},
+    onSelectHighResVideoPlaybackMode: (HighResVideoPlaybackMode) -> Unit = {},
+    onOpenVideoCompatibilityDialog: () -> Unit = {},
+    onDismissVideoCompatibilityDialog: () -> Unit = {},
+    onSelectVideoCompatibilityAction: (VideoCompatibilityAction) -> Unit = {},
+    onDismissVideoInfoDetailsDialog: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     val context = LocalContext.current
@@ -322,7 +331,28 @@ fun NowPlayingOverlayScreen(
             onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
             onPickSubtitleFileClick = onPickSubtitleFileClick,
             onOpenEqualizer = onOpenEqualizer,
+            onSelectHighResMode = onSelectHighResVideoPlaybackMode,
+            onOpenCompatibilityOptions = onOpenVideoCompatibilityDialog,
             onDismiss = { showVideoSettingsSheet = false }
+        )
+    }
+
+    if (currentMedia?.mediaType == MediaType.VIDEO && playbackState.showVideoCompatibilityDialog) {
+        VideoCompatibilityOptionsDialog(
+            media = currentMedia,
+            playbackState = playbackState,
+            evaluation = playbackState.videoCapabilityEvaluation,
+            onSelectAction = onSelectVideoCompatibilityAction,
+            onDismiss = onDismissVideoCompatibilityDialog
+        )
+    }
+
+    if (currentMedia?.mediaType == MediaType.VIDEO && playbackState.showVideoInfoDetailsDialog) {
+        VideoTechnicalInfoDialog(
+            media = currentMedia,
+            playbackState = playbackState,
+            evaluation = playbackState.videoCapabilityEvaluation,
+            onDismiss = onDismissVideoInfoDetailsDialog
         )
     }
 
@@ -453,6 +483,7 @@ fun NowPlayingOverlayScreen(
                     onSelectAudioTrack = onSelectAudioTrack,
                     onVideoSurfaceAttached = onVideoSurfaceAttached,
                     onEnterPipClick = onEnterPipClick,
+                    onOpenVideoCompatibilityDialog = onOpenVideoCompatibilityDialog,
                     onRetryPlayback = onRetryPlayback
                 )
             } else if (isLandscapeViewport) {
@@ -1295,6 +1326,7 @@ private fun ImmersiveVideoCinemaLayout(
     onSelectAudioTrack: (AudioTrackOption) -> Unit = {},
     onVideoSurfaceAttached: (Boolean) -> Unit = {},
     onEnterPipClick: () -> Unit = {},
+    onOpenVideoCompatibilityDialog: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     var containerWidthPx by remember { mutableIntStateOf(1280) }
@@ -1394,8 +1426,12 @@ private fun ImmersiveVideoCinemaLayout(
 
     val effectiveWidth = currentMedia.width.takeIf { it > 0 } ?: playbackState.decodedVideoWidth
     val effectiveHeight = currentMedia.height.takeIf { it > 0 } ?: playbackState.decodedVideoHeight
-    val resolutionTag = remember(effectiveWidth, effectiveHeight) {
-        Resilient4KCodecEngine.formatVerifiedResolutionBadge(effectiveWidth, effectiveHeight)
+    val resolutionTag = remember(effectiveWidth, effectiveHeight, playbackState.isDownscaledPlayback) {
+        Resilient4KCodecEngine.formatVerifiedResolutionBadge(
+            width = effectiveWidth,
+            height = effectiveHeight,
+            isDownscaled = playbackState.isDownscaledPlayback
+        )
     }
     val subtitleMetaText = remember(currentMedia.sizeBytes, resolutionTag) {
         val formattedSize = if (currentMedia.sizeBytes > 0L) {
@@ -1991,7 +2027,7 @@ private fun ImmersiveVideoCinemaLayout(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(bottom = 6.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
@@ -2002,6 +2038,15 @@ private fun ImmersiveVideoCinemaLayout(
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
                                 )
+                                OutlinedButton(
+                                    onClick = {
+                                        notifyUserInteraction()
+                                        onOpenVideoCompatibilityDialog()
+                                    },
+                                    modifier = Modifier.testTag("error_open_compatibility_options_button")
+                                ) {
+                                    Text("Options", color = CinemaNeonGreen)
+                                }
                                 Button(
                                     onClick = {
                                         notifyUserInteraction()

@@ -150,20 +150,22 @@ jobs:
 
           B64_LEN=${#CLEAN_BASE64}
 
-          # 6. Decode strictly with base64 --decode
+          # 6. Decode existing keystore with base64 (with openssl fallback)
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
           echo "Decoding existing signing keystore from UPLOAD_KEY_BASE64 secret (${B64_LEN} base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
-            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-            echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
-            rm -f "$DECODE_LOG"
-            exit 1
+            if ! printf '%s' "$CLEAN_BASE64" | openssl base64 -d -A > "$KEYSTORE_FILE" 2>> "$DECODE_LOG"; then
+              DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
+              echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+              rm -f "$DECODE_LOG"
+              exit 1
+            fi
           fi
           rm -f "$DECODE_LOG"
 
-          # 6. Verify decoded file exists and is non-empty
+          # 7. Verify decoded file exists and is non-empty
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Base64 decoding produced an empty or missing keystore file ($KEYSTORE_FILE)."
             exit 1
@@ -495,20 +497,22 @@ jobs:
 
           B64_LEN=${#CLEAN_BASE64}
 
-          # 6. Decode strictly with base64 --decode
+          # 6. Decode existing keystore with base64 (with openssl fallback)
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
 
           echo "Decoding existing signing keystore for Google Play bundle (${B64_LEN} base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
-            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-            echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
-            rm -f "$DECODE_LOG"
-            exit 1
+            if ! printf '%s' "$CLEAN_BASE64" | openssl base64 -d -A > "$KEYSTORE_FILE" 2>> "$DECODE_LOG"; then
+              DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
+              echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+              rm -f "$DECODE_LOG"
+              exit 1
+            fi
           fi
           rm -f "$DECODE_LOG"
 
-          # 6. Verify decoded file exists and is non-empty
+          # 7. Verify decoded file exists and is non-empty
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Base64 decoding produced an empty or missing keystore file ($KEYSTORE_FILE)."
             exit 1

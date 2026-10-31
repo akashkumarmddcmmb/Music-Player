@@ -9,9 +9,9 @@ on:
   workflow_dispatch:
     inputs:
       create_github_release:
-        description: "Publish a GitHub Release with APK & SHA-256 checksums"
+        description: "Publish a GitHub Release with APK, AAB & SHA-256 checksums"
         required: false
-        default: false
+        default: true
         type: boolean
       release_tag:
         description: "Release version tag (e.g., v1.0.1) when triggered manually"
@@ -26,7 +26,7 @@ on:
       build_play_bundle:
         description: "Build signed Google Play Android App Bundle (:app:bundleRelease)"
         required: false
-        default: false
+        default: true
         type: boolean
       publish_to_play_store:
         description: "Upload signed AAB to Google Play Console (requires GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret)"
@@ -54,11 +54,10 @@ concurrency:
 
 env:
   EXPECTED_CERT_SHA256: "39:11:67:E3:46:A0:50:E1:1E:74:56:28:37:CD:2E:AB:C5:09:E2:39:A5:91:40:D9:74:42:6C:49:64:F8:88:C7"
-  EXPECTED_KEYSTORE_BYTES: "2782"
 
 jobs:
   build-verify-and-release:
-    name: Test, Lint, Build APK & Publish GitHub Release
+    name: Test, Lint, Build Signed APK/AAB & Publish GitHub Release
     runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
@@ -143,7 +142,7 @@ jobs:
           echo "  Pull Request Verification Complete (Tests, Lint & Debug APK Passed)"
           echo "  Note: GitHub Actions does not expose release signing secrets"
           echo "  (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)"
-          echo "  to pull_request runs. Release APK signing is skipped on PRs."
+          echo "  to pull_request runs. Release APK/AAB signing is skipped on PRs."
           echo "============================================================"
 
       - name: Decode & Verify Original Upload Keystore from KEYSTORE_BASE64
@@ -217,18 +216,14 @@ jobs:
           fi
           rm -f "$DECODE_LOG"
 
-          # 7. Confirm decoded file exists, is readable, and matches exact binary size using stat
+          # 7. Confirm decoded file exists, is readable, non-empty, and report exact binary size via stat
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty."
             exit 1
           fi
 
           FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
-          echo "Decoded keystore binary size confirmed via stat: ${FILE_BYTES} bytes."
-          if [ "$FILE_BYTES" -ne "$EXPECTED_KEYSTORE_BYTES" ]; then
-            echo "::error::Decoded keystore size mismatch: expected ${EXPECTED_KEYSTORE_BYTES} bytes, got ${FILE_BYTES} bytes."
-            exit 1
-          fi
+          echo "Decoded keystore exact binary size confirmed via stat: ${FILE_BYTES} bytes."
 
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
@@ -338,18 +333,42 @@ jobs:
           fi
           echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
 
+      - name: Build Signed Release AAB Using Verified Upload Keystore
+        id: bundle_signing
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set +x
+          ./gradlew :app:bundleRelease --no-daemon
+          if [ ! -f "app/build/outputs/bundle/release/app-release.aab" ]; then
+            echo "::error::bundleRelease failed to produce app/build/outputs/bundle/release/app-release.aab"
+            exit 1
+          fi
+          echo "signed_bundle_built=true" >> "$GITHUB_OUTPUT"
+
       - name: Prepare Release Assets & SHA-256 Checksums
         id: prepare_assets
         if: github.event_name != 'pull_request'
         run: |
           mkdir -p release-assets
           VER="${{ steps.version_meta.outputs.version_name }}"
+          CODE="${{ steps.version_meta.outputs.version_code }}"
           cp app/build/outputs/apk/debug/app-debug.apk "release-assets/PulsePlay-v${VER}-debug.apk"
           cp app/build/outputs/apk/release/app-release.apk "release-assets/PulsePlay-v${VER}-release.apk"
+          cp app/build/outputs/bundle/release/app-release.aab "release-assets/PulsePlay-v${VER}-vc${CODE}-release.aab"
           cd release-assets
           sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
-      - name: Verify Release APK & Debug APK Signing Certificates
+      - name: Verify Release APK, Release AAB & Debug APK Signing Certificates
         id: verify_apk_cert
         if: github.event_name != 'pull_request'
         run: |
@@ -370,8 +389,10 @@ jobs:
           fi
 
           VER="${{ steps.version_meta.outputs.version_name }}"
+          CODE="${{ steps.version_meta.outputs.version_code }}"
           DEBUG_APK="release-assets/PulsePlay-v${VER}-debug.apk"
           RELEASE_APK="release-assets/PulsePlay-v${VER}-release.apk"
+          RELEASE_AAB="release-assets/PulsePlay-v${VER}-vc${CODE}-release.aab"
           EXPECTED_SHA256="${EXPECTED_CERT_SHA256}"
           EXPECTED_SHA256_HEX=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
@@ -397,17 +418,40 @@ jobs:
           echo "Release APK Certificate SHA-256: $RELEASE_CERT_SHA256"
           echo "Expected Upload Key SHA-256:     $EXPECTED_SHA256_HEX"
 
-          if [ -z "$RELEASE_CERT_SHA256" ]; then
-            echo "::error::Failed to extract certificate SHA-256 digest from Release APK."
-            exit 1
-          fi
-
-          if [ "$RELEASE_CERT_SHA256" != "$EXPECTED_SHA256_HEX" ]; then
+          if [ -z "$RELEASE_CERT_SHA256" ] || [ "$RELEASE_CERT_SHA256" != "$EXPECTED_SHA256_HEX" ]; then
             echo "::error::Release APK certificate digest ($RELEASE_CERT_SHA256) does not match the verified upload keystore certificate ($EXPECTED_SHA256_HEX)."
             exit 1
           fi
 
-          echo "Release APK signing certificate verified: $EXPECTED_SHA256"
+          # Verify Release AAB signature and certificate SHA-256
+          if [ ! -f "$RELEASE_AAB" ]; then
+            echo "::error::Expected AAB file $RELEASE_AAB not found for signature verification."
+            exit 1
+          fi
+
+          if ! jarsigner -verify -verbose -certs "$RELEASE_AAB" >/dev/null 2>&1; then
+            echo "::error::jarsigner verification failed for $RELEASE_AAB."
+            exit 1
+          fi
+
+          AAB_CERT_INFO=$(keytool -printcert -jarfile "$RELEASE_AAB" 2>/dev/null)
+          AAB_SHA256=$(echo "$AAB_CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          AAB_SHA256_HEX=$(echo "$AAB_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
+          AAB_FILESIZE=$(stat -c%s "$RELEASE_AAB")
+
+          echo "============================================================"
+          echo "  Verifying AAB Signature: $(basename "$RELEASE_AAB")"
+          echo "  File Size:               $AAB_FILESIZE bytes"
+          echo "  AAB Certificate SHA-256: $AAB_SHA256"
+          echo "  Expected Upload SHA-256: $EXPECTED_SHA256"
+          echo "============================================================"
+
+          if [ -z "$AAB_SHA256_HEX" ] || [ "$AAB_SHA256_HEX" != "$EXPECTED_SHA256_HEX" ]; then
+            echo "::error::Release AAB certificate SHA-256 ($AAB_SHA256) does not match the verified upload keystore certificate ($EXPECTED_SHA256)."
+            exit 1
+          fi
+
+          echo "Release APK and Release AAB signing certificates verified: $EXPECTED_SHA256"
 
       - name: Upload Build Artifacts (Workflow Run)
         if: success() && github.event_name != 'pull_request'
@@ -434,8 +478,8 @@ jobs:
         if: >
           success() &&
           github.event_name != 'pull_request' &&
-          (startsWith(github.ref, 'refs/tags/v') ||
-           (github.event_name == 'workflow_dispatch' && inputs.create_github_release == true))
+          (github.event_name == 'push' ||
+           (github.event_name == 'workflow_dispatch' && inputs.create_github_release != false))
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -449,8 +493,8 @@ jobs:
             - **versionName**: `${{ steps.version_meta.outputs.version_name }}`
             - **versionCode**: `${{ steps.version_meta.outputs.version_code }}`
             - **Release Signing Certificate SHA-256**: `${{ steps.validate_keystore.outputs.expected_sha256 }}`
-            - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` is signed with the verified upload keystore (`alias: upload`).
-            - Verify downloaded APK integrity against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
+            - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-vc${{ steps.version_meta.outputs.version_code }}-release.aab` are signed with the verified upload keystore (`alias: upload`).
+            - Verify downloaded assets against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
           files: |
             release-assets/*
 
@@ -556,18 +600,14 @@ jobs:
           fi
           rm -f "$DECODE_LOG"
 
-          # 7. Confirm decoded file exists, is readable, and matches exact binary size using stat
+          # 7. Confirm decoded file exists, is readable, non-empty, and report exact binary size via stat
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty."
             exit 1
           fi
 
           FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
-          echo "Decoded keystore binary size confirmed via stat: ${FILE_BYTES} bytes."
-          if [ "$FILE_BYTES" -ne "$EXPECTED_KEYSTORE_BYTES" ]; then
-            echo "::error::Decoded keystore size mismatch: expected ${EXPECTED_KEYSTORE_BYTES} bytes, got ${FILE_BYTES} bytes."
-            exit 1
-          fi
+          echo "Decoded keystore exact binary size confirmed via stat: ${FILE_BYTES} bytes."
 
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"

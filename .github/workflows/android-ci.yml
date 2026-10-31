@@ -106,21 +106,60 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "::error::Missing required repository signing secrets (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD). Refusing to generate or substitute another certificate."
+          # 1. Verify all 4 required signing secrets are present
+          MISSING_SECRETS=""
+          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} UPLOAD_KEY_BASE64"
+          [ -z "$STORE_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
+          [ -z "$KEY_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
+          [ -z "$KEY_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
+
+          if [ -n "$MISSING_SECRETS" ]; then
+            echo "::error::Missing required repository signing secret(s):${MISSING_SECRETS}. Refusing to generate or substitute another certificate."
             exit 1
           fi
 
+          # 2. Robust whitespace cleanup using printf and tr (stripping \r, \n, \t, and space)
+          CLEAN_BASE64=$(printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n\t ')
+
+          if [ -z "$CLEAN_BASE64" ]; then
+            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
+            exit 1
+          fi
+
+          # 3. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
+          if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in standard Base64 encoding (e.g. quotation marks, PEM headers, or punctuation). Ensure only raw base64 data was added."
+            exit 1
+          fi
+
+          # 4. Validate Base64 length divisibility by 4
+          B64_LEN=${#CLEAN_BASE64}
+          if [ $(( B64_LEN % 4 )) -ne 0 ]; then
+            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length ($B64_LEN) is not a multiple of 4. Standard Base64 requires length divisible by 4. Check if trailing '=' padding characters were truncated."
+            exit 1
+          fi
+
+          # 5. Decode strictly with base64 --decode
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
-          echo "Decoding existing signing keystore from UPLOAD_KEY_BASE64 secret..."
-          echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_FILE"
-          DECODE_EXIT=$?
+          DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
-          if [ $DECODE_EXIT -ne 0 ] || [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
-            echo "::error::Base64 decoding failed or produced an empty keystore file. Check UPLOAD_KEY_BASE64."
+          echo "Decoding existing signing keystore from UPLOAD_KEY_BASE64 secret (${B64_LEN} base64 chars)..."
+          if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
+            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
+            echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+            rm -f "$DECODE_LOG"
+            exit 1
+          fi
+          rm -f "$DECODE_LOG"
+
+          # 6. Verify decoded file exists and is non-empty
+          if [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Base64 decoding produced an empty or missing keystore file ($KEYSTORE_FILE)."
             exit 1
           fi
 
+          FILE_BYTES=$(wc -c < "$KEYSTORE_FILE" | tr -d ' ')
+          echo "Successfully decoded keystore ($FILE_BYTES bytes)."
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
 
@@ -136,11 +175,29 @@ jobs:
             exit 1
           fi
 
+          # 1. Test keystore integrity and store password with keytool
+          echo "Verifying keystore integrity and store password..."
+          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" 2>&1); then
+            if echo "$KS_OUT" | grep -qi "password was incorrect"; then
+              echo "::error::Password validation failed: KEYSTORE_PASSWORD was incorrect for the decoded keystore."
+            elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|not a keystore"; then
+              echo "::error::Keystore integrity validation failed: The decoded file is not a valid keystore. The Base64 data may be corrupted."
+            else
+              echo "::error::Keystore integrity or store password validation failed: $KS_OUT"
+            fi
+            exit 1
+          fi
+
+          # 2. Test alias existence in keystore
           echo "Validating alias '$KEY_ALIAS' in existing keystore..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>/dev/null); then
-            echo "::error::Keystore validation failed: Alias '$KEY_ALIAS' was not found or store password is incorrect."
-            echo "Available entry aliases in keystore:"
-            keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" 2>/dev/null | grep "Entry" || true
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>&1); then
+            if echo "$CERT_INFO" | grep -qi "does not exist"; then
+              echo "::error::Alias validation failed: KEY_ALIAS ('$KEY_ALIAS') was not found in the keystore."
+              echo "Available entry aliases in keystore:"
+              echo "$KS_OUT" | grep "Entry" || true
+            else
+              echo "::error::Keystore entry validation failed for alias '$KEY_ALIAS': $CERT_INFO"
+            fi
             exit 1
           fi
 
@@ -383,32 +440,94 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
-            echo "::error::Google Play App Bundles require UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD secrets."
+          # 1. Verify all 4 required signing secrets are present
+          MISSING_SECRETS=""
+          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} UPLOAD_KEY_BASE64"
+          [ -z "$STORE_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
+          [ -z "$KEY_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
+          [ -z "$KEY_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
+
+          if [ -n "$MISSING_SECRETS" ]; then
+            echo "::error::Google Play App Bundles require repository signing secrets:${MISSING_SECRETS}."
             exit 1
           fi
 
+          # 2. Robust whitespace cleanup using printf and tr (stripping \r, \n, \t, and space)
+          CLEAN_BASE64=$(printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n\t ')
+
+          if [ -z "$CLEAN_BASE64" ]; then
+            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
+            exit 1
+          fi
+
+          # 3. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
+          if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
+            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in standard Base64 encoding. Ensure only raw base64 data was added."
+            exit 1
+          fi
+
+          # 4. Validate Base64 length divisibility by 4
+          B64_LEN=${#CLEAN_BASE64}
+          if [ $(( B64_LEN % 4 )) -ne 0 ]; then
+            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length ($B64_LEN) is not a multiple of 4. Standard Base64 requires length divisible by 4. Check if trailing '=' padding characters were truncated."
+            exit 1
+          fi
+
+          # 5. Decode strictly with base64 --decode
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
-          echo "Decoding existing signing keystore for Google Play bundle..."
-          echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_FILE"
-          DECODE_EXIT=$?
+          DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
 
-          if [ $DECODE_EXIT -ne 0 ] || [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
-            echo "::error::Base64 decoding failed or produced an empty keystore file. Check UPLOAD_KEY_BASE64."
+          echo "Decoding existing signing keystore for Google Play bundle (${B64_LEN} base64 chars)..."
+          if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
+            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
+            echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+            rm -f "$DECODE_LOG"
+            exit 1
+          fi
+          rm -f "$DECODE_LOG"
+
+          # 6. Verify decoded file exists and is non-empty
+          if [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Base64 decoding produced an empty or missing keystore file ($KEYSTORE_FILE)."
             exit 1
           fi
 
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>/dev/null); then
-            echo "::error::Keystore verification failed: Alias '$KEY_ALIAS' was not found in the keystore or store password is incorrect."
-            echo "Available aliases in keystore:"
-            keytool -list -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" 2>/dev/null | grep "Entry" || true
+          # 7. Test keystore integrity and store password with keytool
+          echo "Verifying keystore integrity and store password for Play bundle..."
+          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" 2>&1); then
+            if echo "$KS_OUT" | grep -qi "password was incorrect"; then
+              echo "::error::Password validation failed: KEYSTORE_PASSWORD was incorrect for the decoded keystore."
+            elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|not a keystore"; then
+              echo "::error::Keystore integrity validation failed: The decoded file is not a valid keystore."
+            else
+              echo "::error::Keystore integrity or store password validation failed: $KS_OUT"
+            fi
+            exit 1
+          fi
+
+          # 8. Test alias existence in keystore
+          echo "Validating alias '$KEY_ALIAS' in existing keystore..."
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>&1); then
+            if echo "$CERT_INFO" | grep -qi "does not exist"; then
+              echo "::error::Alias validation failed: KEY_ALIAS ('$KEY_ALIAS') was not found in the keystore."
+              echo "Available entry aliases in keystore:"
+              echo "$KS_OUT" | grep "Entry" || true
+            else
+              echo "::error::Keystore entry validation failed for alias '$KEY_ALIAS': $CERT_INFO"
+            fi
             exit 1
           fi
 
           EXPECTED_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          if [ -z "$EXPECTED_SHA256" ]; then
+            echo "::error::Could not extract SHA-256 certificate fingerprint from keystore for alias '$KEY_ALIAS'."
+            exit 1
+          fi
+
+          FILE_BYTES=$(wc -c < "$KEYSTORE_FILE" | tr -d ' ')
+          echo "Keystore verified successfully ($FILE_BYTES bytes) for Google Play AAB. Alias '$KEY_ALIAS' SHA-256: $EXPECTED_SHA256"
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "expected_sha256=${EXPECTED_SHA256}" >> "$GITHUB_OUTPUT"
-          echo "Keystore verified successfully for Google Play AAB. Alias '$KEY_ALIAS' SHA-256: $EXPECTED_SHA256"
 
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew

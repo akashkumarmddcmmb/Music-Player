@@ -101,14 +101,14 @@ jobs:
         id: load_keystore
         if: github.event_name != 'pull_request'
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.UPLOAD_KEY_BASE64 }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           # 1. Verify all 4 required signing secrets are present
           MISSING_SECRETS=""
-          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} UPLOAD_KEY_BASE64"
+          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
           [ -z "$STORE_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
           [ -z "$KEY_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
           [ -z "$KEY_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
@@ -122,7 +122,7 @@ jobs:
           CLEAN_BASE64=$(printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n\t ')
 
           if [ -z "$CLEAN_BASE64" ]; then
-            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
+            echo "::error::KEYSTORE_BASE64 secret is empty after stripping whitespace."
             exit 1
           fi
 
@@ -131,7 +131,7 @@ jobs:
 
           # 4. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
           if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in standard Base64 encoding (e.g. quotation marks, PEM headers, or punctuation). Ensure only raw base64 data was added."
+            echo "::error::Base64 validation failed: KEYSTORE_BASE64 contains invalid characters not allowed in standard Base64 encoding (e.g. quotation marks, PEM headers, or punctuation). Ensure only raw base64 data was added."
             exit 1
           fi
 
@@ -144,7 +144,7 @@ jobs:
             echo "Notice: Restoring 1 missing '=' padding character (length had remainder 3)..."
             CLEAN_BASE64="${CLEAN_BASE64}="
           elif [ "$B64_REM" -eq 1 ]; then
-            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length (${#CLEAN_BASE64}) has a remainder of 1 when divided by 4. Single-character truncation cannot represent valid data. Check the secret value."
+            echo "::error::Base64 length validation failed: KEYSTORE_BASE64 length (${#CLEAN_BASE64}) has a remainder of 1 when divided by 4. Single-character truncation cannot represent valid data. Check the secret value."
             exit 1
           fi
 
@@ -154,7 +154,7 @@ jobs:
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
-          echo "Decoding existing signing keystore from UPLOAD_KEY_BASE64 secret (${B64_LEN} base64 chars)..."
+          echo "Decoding existing signing keystore from KEYSTORE_BASE64 secret (${B64_LEN} base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
             if ! printf '%s' "$CLEAN_BASE64" | openssl base64 -d -A > "$KEYSTORE_FILE" 2>> "$DECODE_LOG"; then
               DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
@@ -250,7 +250,7 @@ jobs:
           echo "============================================================"
           echo "  Pull Request Verification Complete (Tests & Lint Passed)"
           echo "  Note: GitHub Actions does not expose repository signing secrets"
-          echo "  (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)"
+          echo "  (KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)"
           echo "  to pull_request runs. APK packaging is skipped because all"
           echo "  PulsePlay build variants strictly require the single existing"
           echo "  repository signing key and never generate temporary certificates."
@@ -448,14 +448,14 @@ jobs:
       - name: Load & Validate Existing Keystore from GitHub Secrets
         id: load_play_keystore
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.UPLOAD_KEY_BASE64 }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           # 1. Verify all 4 required signing secrets are present
           MISSING_SECRETS=""
-          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} UPLOAD_KEY_BASE64"
+          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
           [ -z "$STORE_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
           [ -z "$KEY_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
           [ -z "$KEY_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
@@ -469,7 +469,7 @@ jobs:
           CLEAN_BASE64=$(printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n\t ')
 
           if [ -z "$CLEAN_BASE64" ]; then
-            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
+            echo "::error::KEYSTORE_BASE64 secret is empty after stripping whitespace."
             exit 1
           fi
 
@@ -478,7 +478,7 @@ jobs:
 
           # 4. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
           if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in standard Base64 encoding. Ensure only raw base64 data was added."
+            echo "::error::Base64 validation failed: KEYSTORE_BASE64 contains invalid characters not allowed in standard Base64 encoding. Ensure only raw base64 data was added."
             exit 1
           fi
 
@@ -491,7 +491,7 @@ jobs:
             echo "Notice: Restoring 1 missing '=' padding character for Google Play bundle..."
             CLEAN_BASE64="${CLEAN_BASE64}="
           elif [ "$B64_REM" -eq 1 ]; then
-            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length (${#CLEAN_BASE64}) has a remainder of 1 when divided by 4. Single-character truncation cannot represent valid data. Check the secret value."
+            echo "::error::Base64 length validation failed: KEYSTORE_BASE64 length (${#CLEAN_BASE64}) has a remainder of 1 when divided by 4. Single-character truncation cannot represent valid data. Check the secret value."
             exit 1
           fi
 
@@ -518,7 +518,7 @@ jobs:
             exit 1
           fi
 
-          # 7. Test keystore integrity and store password with keytool
+          # 8. Test keystore integrity and store password with keytool
           echo "Verifying keystore integrity and store password for Play bundle..."
           if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" 2>&1); then
             if echo "$KS_OUT" | grep -qi "password was incorrect"; then
@@ -531,7 +531,7 @@ jobs:
             exit 1
           fi
 
-          # 8. Test alias existence in keystore
+          # 9. Test alias existence in keystore
           echo "Validating alias '$KEY_ALIAS' in existing keystore..."
           if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>&1); then
             if echo "$CERT_INFO" | grep -qi "does not exist"; then

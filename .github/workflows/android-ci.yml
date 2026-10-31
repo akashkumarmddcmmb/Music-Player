@@ -97,19 +97,65 @@ jobs:
           echo "version_name=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version_code=${MONOTONIC_CODE}" >> "$GITHUB_OUTPUT"
 
-      - name: Ensure Debug Keystore Exists for Reproducible Debug Signing
+      - name: Load Existing Keystore from GitHub Secrets
+        id: load_keystore
+        if: github.event_name != 'pull_request'
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ ! -f "debug.keystore" ]; then
-            keytool -genkeypair -v \
-              -keystore debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000 \
-              -dname "CN=Android Debug,O=Android,C=US"
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Missing required repository signing secrets (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD). Refusing to generate or substitute another certificate."
+            exit 1
           fi
+
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          echo "Decoding existing signing keystore from UPLOAD_KEY_BASE64 secret..."
+          echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_FILE"
+          DECODE_EXIT=$?
+
+          if [ $DECODE_EXIT -ne 0 ] || [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Base64 decoding failed or produced an empty keystore file. Check UPLOAD_KEY_BASE64."
+            exit 1
+          fi
+
+          echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+          echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Existing Keystore & Alias
+        id: validate_keystore
+        if: github.event_name != 'pull_request'
+        env:
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+        run: |
+          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
+            echo "::error::Keystore file not found at KEYSTORE_PATH ($KEYSTORE_PATH)."
+            exit 1
+          fi
+
+          echo "Validating alias '$KEY_ALIAS' in existing keystore..."
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>/dev/null); then
+            echo "::error::Keystore validation failed: Alias '$KEY_ALIAS' was not found or store password is incorrect."
+            echo "Available entry aliases in keystore:"
+            keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" 2>/dev/null | grep "Entry" || true
+            exit 1
+          fi
+
+          EXPECTED_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          if [ -z "$EXPECTED_SHA256" ]; then
+            echo "::error::Could not extract SHA-256 certificate fingerprint from keystore for alias '$KEY_ALIAS'."
+            exit 1
+          fi
+
+          echo "============================================================"
+          echo "  Existing Keystore Certificate Validated"
+          echo "============================================================"
+          echo "$CERT_INFO" | grep -E "Alias name:|Entry type:|Owner:|Issuer:|Serial number:|Valid from:|SHA1:|SHA256:|Signature algorithm name:" || true
+          echo "============================================================"
+          echo "expected_sha256=${EXPECTED_SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew
@@ -128,18 +174,22 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: ./gradlew :app:lintDebug --no-daemon
 
-      - name: Assemble Installable Debug APK
-        env:
-          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
-          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Notice for Untrusted Pull Requests (No Signing Secrets Exposed)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "============================================================"
+          echo "  Pull Request Verification Complete (Tests & Lint Passed)"
+          echo "  Note: GitHub Actions does not expose repository signing secrets"
+          echo "  (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)"
+          echo "  to pull_request runs. APK packaging is skipped because all"
+          echo "  PulsePlay build variants strictly require the single existing"
+          echo "  repository signing key and never generate temporary certificates."
+          echo "============================================================"
 
-      - name: Assemble Signed Release APK (If Release Secrets Configured)
-        id: release_signing
+      - name: Build Debug APK Using Existing Keystore
         if: github.event_name != 'pull_request'
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -147,62 +197,45 @@ jobs:
           APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          if [ -n "$RELEASE_KEYSTORE_BASE64" ] && [ -n "$STORE_PASSWORD" ] && [ -n "$KEY_PASSWORD" ] && [ -n "$KEY_ALIAS" ]; then
-            echo "Decoding release keystore from repository secrets..."
-            # Safely decode Base64, handling possible whitespace/newlines in the secret
-            echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
-            DECODE_EXIT=$?
-            
-            if [ $DECODE_EXIT -ne 0 ]; then
-              echo "::error::Base64 decoding failed. The UPLOAD_KEY_BASE64 secret may be invalid or corrupted."
-              exit 1
-            fi
-
-            export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
-
-            if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
-              echo "::error::Decoded keystore file does not exist or is empty. Please check UPLOAD_KEY_BASE64."
-              exit 1
-            fi
-
-            echo "Verifying alias '$KEY_ALIAS' exists in the decoded keystore..."
-            # Verify alias presence without logging sensitive data
-            if ! keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
-              echo "::error::Keystore verification failed: Alias '$KEY_ALIAS' was not found in the keystore or store password is incorrect."
-              # List aliases (names only) to help diagnose mismatch
-              echo "Available aliases in keystore:"
-              keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" | grep "Entry" || true
-              exit 1
-            fi
-            echo "Keystore verified successfully. Alias '$KEY_ALIAS' confirmed."
-
-            ./gradlew :app:assembleRelease --no-daemon
-            BUILD_EXIT=$?
-            
-            if [ $BUILD_EXIT -ne 0 ] || [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
-              echo "::error::assembleRelease failed or output APK not found."
-              exit 1
-            fi
-            echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Release signing secrets (UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD) not fully configured; packaging Debug-signed APK only."
-            echo "signed_release_built=false" >> "$GITHUB_OUTPUT"
+          ./gradlew :app:assembleDebug --no-daemon
+          if [ ! -f "app/build/outputs/apk/debug/app-debug.apk" ]; then
+            echo "::error::assembleDebug failed to produce app/build/outputs/apk/debug/app-debug.apk"
+            exit 1
           fi
+
+      - name: Build Release APK Using Existing Keystore
+        id: release_signing
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
+          APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          ./gradlew :app:assembleRelease --no-daemon
+          if [ ! -f "app/build/outputs/apk/release/app-release.apk" ]; then
+            echo "::error::assembleRelease failed to produce app/build/outputs/apk/release/app-release.apk"
+            exit 1
+          fi
+          echo "signed_release_built=true" >> "$GITHUB_OUTPUT"
 
       - name: Prepare Release Assets & SHA-256 Checksums
         id: prepare_assets
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p release-assets
           VER="${{ steps.version_meta.outputs.version_name }}"
           cp app/build/outputs/apk/debug/app-debug.apk "release-assets/PulsePlay-v${VER}-debug.apk"
-          if [ "${{ steps.release_signing.outputs.signed_release_built }}" = "true" ]; then
-            cp app/build/outputs/apk/release/app-release.apk "release-assets/PulsePlay-v${VER}-release.apk"
-          fi
+          cp app/build/outputs/apk/release/app-release.apk "release-assets/PulsePlay-v${VER}-release.apk"
           cd release-assets
           sha256sum * > SHA256SUMS.txt
 
-      - name: Verify APK Signature & Display Certificate Information
+      - name: Verify Both APK Signatures & Identical Certificate Fingerprints
         id: verify_apk_cert
+        if: github.event_name != 'pull_request'
         run: |
           # Locate apksigner tool from Android SDK build-tools
           if command -v apksigner >/dev/null 2>&1; then
@@ -221,59 +254,54 @@ jobs:
           fi
 
           VER="${{ steps.version_meta.outputs.version_name }}"
-          RELEASE_APK="release-assets/PulsePlay-v${VER}-release.apk"
           DEBUG_APK="release-assets/PulsePlay-v${VER}-debug.apk"
+          RELEASE_APK="release-assets/PulsePlay-v${VER}-release.apk"
+          EXPECTED_SHA256="${{ steps.validate_keystore.outputs.expected_sha256 }}"
+          EXPECTED_SHA256_HEX=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
-          if [ "${{ steps.release_signing.outputs.signed_release_built }}" = "true" ] && [ -f "$RELEASE_APK" ]; then
-            TARGET_APK="$RELEASE_APK"
-            IS_RELEASE_SIGNED=true
+          for APK_FILE in "$DEBUG_APK" "$RELEASE_APK"; do
+            if [ ! -f "$APK_FILE" ]; then
+              echo "::error::Expected APK file $APK_FILE not found for signature verification."
+              exit 1
+            fi
+            APK_FILENAME=$(basename "$APK_FILE")
+            APK_SHA256=$(sha256sum "$APK_FILE" | awk '{print $1}')
+            APK_FILESIZE=$(stat -c%s "$APK_FILE" 2>/dev/null || wc -c < "$APK_FILE")
             echo "============================================================"
-            echo "  Verifying Production Signed Release APK"
+            echo "  Verifying APK Signature: $APK_FILENAME"
+            echo "  File Size:        $APK_FILESIZE bytes"
+            echo "  File SHA-256:     $APK_SHA256"
+            echo "------------------------------------------------------------"
+            "$APKSIGNER" verify --print-certs -v "$APK_FILE"
             echo "============================================================"
-          else
-            TARGET_APK="$DEBUG_APK"
-            IS_RELEASE_SIGNED=false
-            echo "============================================================"
-            echo "  Notice: Release keystore secrets not configured or pull request."
-            echo "  Verifying Debug-signed APK for verification diagnostics."
-            echo "============================================================"
-          fi
+          done
 
-          if [ ! -f "$TARGET_APK" ]; then
-            echo "::error::Target APK $TARGET_APK not found for certificate verification."
+          DEBUG_CERT_SHA256=$("$APKSIGNER" verify --print-certs "$DEBUG_APK" | awk '/certificate SHA-256 digest:/ {print $NF; exit}' | tr '[:upper:]' '[:lower:]')
+          RELEASE_CERT_SHA256=$("$APKSIGNER" verify --print-certs "$RELEASE_APK" | awk '/certificate SHA-256 digest:/ {print $NF; exit}' | tr '[:upper:]' '[:lower:]')
+
+          echo "Debug APK Certificate SHA-256:   $DEBUG_CERT_SHA256"
+          echo "Release APK Certificate SHA-256: $RELEASE_CERT_SHA256"
+          echo "Keystore Certificate SHA-256:    $EXPECTED_SHA256_HEX"
+
+          if [ -z "$DEBUG_CERT_SHA256" ] || [ -z "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::Failed to extract certificate SHA-256 digest from one or both APKs."
             exit 1
           fi
 
-          APK_FILENAME=$(basename "$TARGET_APK")
-          APK_SHA256=$(sha256sum "$TARGET_APK" | awk '{print $1}')
-          APK_FILESIZE=$(stat -c%s "$TARGET_APK" 2>/dev/null || wc -c < "$TARGET_APK")
-
-          echo "APK Filename:         $APK_FILENAME"
-          echo "APK File Size:        $APK_FILESIZE bytes"
-          echo "APK SHA-256 Checksum: $APK_SHA256"
-          echo "------------------------------------------------------------"
-          echo "Executing: apksigner verify --print-certs -v \"$TARGET_APK\""
-          echo "------------------------------------------------------------"
-
-          "$APKSIGNER" verify --print-certs -v "$TARGET_APK"
-          VERIFY_EXIT=$?
-
-          echo "------------------------------------------------------------"
-          if [ $VERIFY_EXIT -eq 0 ]; then
-            echo " Signature Status: VERIFIED VALID"
-            if [ "$IS_RELEASE_SIGNED" = "true" ]; then
-              echo " Production Release APK signature verified successfully."
-            else
-              echo " Debug APK signature verified successfully."
-            fi
-          else
-            echo "::error::APK Signature Verification FAILED with exit code $VERIFY_EXIT"
-            exit $VERIFY_EXIT
+          if [ "$DEBUG_CERT_SHA256" != "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::Certificate mismatch! Debug APK ($DEBUG_CERT_SHA256) and Release APK ($RELEASE_CERT_SHA256) were not signed with the same certificate."
+            exit 1
           fi
-          echo "============================================================"
+
+          if [ -n "$EXPECTED_SHA256_HEX" ] && [ "$DEBUG_CERT_SHA256" != "$EXPECTED_SHA256_HEX" ]; then
+            echo "::error::APK certificate digest ($DEBUG_CERT_SHA256) does not match the validated keystore certificate ($EXPECTED_SHA256_HEX)."
+            exit 1
+          fi
+
+          echo "Single signing identity verified: Debug APK and Release APK share identical SHA-256 certificate ($EXPECTED_SHA256)."
 
       - name: Upload Build Artifacts (Workflow Run)
-        if: success()
+        if: success() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: pulseplay-apk-artifacts-v${{ steps.version_meta.outputs.version_name }}
@@ -311,7 +339,8 @@ jobs:
             ### PulsePlay ${{ steps.version_meta.outputs.release_tag }}
             - **versionName**: `${{ steps.version_meta.outputs.version_name }}`
             - **versionCode**: `${{ steps.version_meta.outputs.version_code }}`
-            - **Signed Production Release Built**: `${{ steps.release_signing.outputs.signed_release_built == 'true' && 'Yes (Release Keystore)' || 'No (Debug-Signed Build Only)' }}`
+            - **Unified Signing Certificate SHA-256**: `${{ steps.validate_keystore.outputs.expected_sha256 }}`
+            - Both `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-debug.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` are signed with the same repository keystore.
             - Verify downloaded APK integrity against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
           files: |
             release-assets/*
@@ -346,13 +375,48 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Load & Validate Existing Keystore from GitHub Secrets
+        id: load_play_keystore
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "::error::Google Play App Bundles require UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD secrets."
+            exit 1
+          fi
+
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          echo "Decoding existing signing keystore for Google Play bundle..."
+          echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "$KEYSTORE_FILE"
+          DECODE_EXIT=$?
+
+          if [ $DECODE_EXIT -ne 0 ] || [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Base64 decoding failed or produced an empty keystore file. Check UPLOAD_KEY_BASE64."
+            exit 1
+          fi
+
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>/dev/null); then
+            echo "::error::Keystore verification failed: Alias '$KEY_ALIAS' was not found in the keystore or store password is incorrect."
+            echo "Available aliases in keystore:"
+            keytool -list -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" 2>/dev/null | grep "Entry" || true
+            exit 1
+          fi
+
+          EXPECTED_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+          echo "expected_sha256=${EXPECTED_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "Keystore verified successfully for Google Play AAB. Alias '$KEY_ALIAS' SHA-256: $EXPECTED_SHA256"
+
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew
 
       - name: Build Signed Google Play Release Bundle (:app:bundleRelease)
         id: build_aab
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEY_BASE64 }}
+          KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -360,37 +424,6 @@ jobs:
           APP_VERSION_CODE: ${{ needs.build-verify-and-release.outputs.version_code }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          if [ -z "$RELEASE_KEYSTORE_BASE64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
-            echo "ERROR: Google Play App Bundles require UPLOAD_KEY_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and KEY_PASSWORD secrets."
-            exit 1
-          fi
-          echo "Decoding release keystore for Play Store bundle..."
-          # Safely decode Base64, handling possible whitespace/newlines in the secret
-          echo "$RELEASE_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > "${GITHUB_WORKSPACE}/my-upload-key.jks"
-          DECODE_EXIT=$?
-          
-          if [ $DECODE_EXIT -ne 0 ]; then
-            echo "::error::Base64 decoding failed. The UPLOAD_KEY_BASE64 secret may be invalid or corrupted."
-            exit 1
-          fi
-
-          export KEYSTORE_PATH="${GITHUB_WORKSPACE}/my-upload-key.jks"
-
-          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
-            echo "::error::Decoded keystore file does not exist or is empty. Please check UPLOAD_KEY_BASE64."
-            exit 1
-          fi
-
-          echo "Verifying alias '$KEY_ALIAS' exists in the decoded keystore for Play bundle..."
-          if ! keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" > /dev/null 2>&1; then
-            echo "::error::Keystore verification failed: Alias '$KEY_ALIAS' was not found in the keystore or store password is incorrect."
-            # List aliases (names only) to help diagnose mismatch
-            echo "Available aliases in keystore:"
-            keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" | grep "Entry" || true
-            exit 1
-          fi
-          echo "Keystore verified successfully. Alias '$KEY_ALIAS' confirmed."
-
           ./gradlew :app:bundleRelease --no-daemon
 
           if [ ! -f "app/build/outputs/bundle/release/app-release.aab" ]; then
@@ -404,6 +437,36 @@ jobs:
           cp app/build/outputs/bundle/release/app-release.aab "play-bundle-artifacts/PulsePlay-v${VER}-vc${CODE}-release.aab"
           cd play-bundle-artifacts
           sha256sum * > SHA256SUMS-AAB.txt
+
+      - name: Verify Google Play AAB Signing Identity
+        id: verify_aab_cert
+        run: |
+          VER="${{ needs.build-verify-and-release.outputs.version_name }}"
+          CODE="${{ needs.build-verify-and-release.outputs.version_code }}"
+          AAB_FILE="play-bundle-artifacts/PulsePlay-v${VER}-vc${CODE}-release.aab"
+          EXPECTED_SHA256="${{ steps.load_play_keystore.outputs.expected_sha256 }}"
+
+          if [ ! -f "$AAB_FILE" ]; then
+            echo "::error::Signed AAB $AAB_FILE not found for verification."
+            exit 1
+          fi
+
+          jarsigner -verify "$AAB_FILE" >/dev/null
+          AAB_CERT_INFO=$(keytool -printcert -jarfile "$AAB_FILE" 2>/dev/null)
+          AAB_SHA256=$(echo "$AAB_CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+
+          echo "============================================================"
+          echo "  Google Play AAB Signing Certificate Verification"
+          echo "============================================================"
+          echo "AAB Filename:            $(basename "$AAB_FILE")"
+          echo "AAB Certificate SHA-256: $AAB_SHA256"
+          echo "Keystore SHA-256:        $EXPECTED_SHA256"
+          echo "============================================================"
+
+          if [ -z "$AAB_SHA256" ] || [ "$AAB_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "::error::AAB certificate SHA-256 ($AAB_SHA256) does not match keystore SHA-256 ($EXPECTED_SHA256)."
+            exit 1
+          fi
 
       - name: Upload Signed Google Play AAB Artifact
         if: success()

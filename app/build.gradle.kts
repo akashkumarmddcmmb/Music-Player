@@ -29,23 +29,34 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  // Do not remove or modify these signingConfigs. They are necessary for building, installing,
-  // and updating Android apps in AI Studio.
   signingConfigs {
     create("release") {
-      val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
-      storeFile = file(keystorePath)
-      storePassword = System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
-      val resolvedKeyAlias = project.findProperty("KEY_ALIAS")?.toString()
-        ?: System.getenv("KEY_ALIAS")
-      keyAlias = resolvedKeyAlias ?: ""
-      keyPassword = System.getenv("KEY_PASSWORD") ?: System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD") ?: ""
-    }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
+      val envKeystorePath = System.getenv("KEYSTORE_PATH")?.trim()?.takeIf { it.isNotEmpty() }
+      val defaultUploadKey = file("${rootDir}/my-upload-key.jks")
+      val defaultExistingKey = file("${rootDir}/debug.keystore")
+      val isGitHubActions = System.getenv("GITHUB_ACTIONS") == "true"
+      val resolvedKeystoreFile = when {
+        envKeystorePath != null -> file(envKeystorePath)
+        defaultUploadKey.exists() || isGitHubActions -> defaultUploadKey
+        else -> defaultExistingKey
+      }
+      val useLocalExistingKeyDefaults =
+        !isGitHubActions && envKeystorePath == null && !defaultUploadKey.exists()
+
+      storeFile = resolvedKeystoreFile
+      storePassword = (System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD"))
+        ?.takeIf { it.isNotEmpty() }
+        ?: if (useLocalExistingKeyDefaults) "android" else ""
+      val resolvedKeyAlias = (project.findProperty("KEY_ALIAS")?.toString() ?: System.getenv("KEY_ALIAS"))
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+      keyAlias = resolvedKeyAlias ?: if (useLocalExistingKeyDefaults) "androiddebugkey" else ""
+      keyPassword = (
+        System.getenv("KEY_PASSWORD")
+          ?: System.getenv("STORE_PASSWORD")
+          ?: System.getenv("KEYSTORE_PASSWORD")
+      )?.takeIf { it.isNotEmpty() }
+        ?: if (useLocalExistingKeyDefaults) "android" else ""
     }
   }
 
@@ -55,14 +66,10 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
-      // AI Studio.
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      // Do not remove or modify this signingConfig assignment. It is necessary for Android apps in
-      // AI Studio.
-      signingConfig = signingConfigs.getByName("debugConfig")
+      signingConfig = signingConfigs.getByName("release")
     }
   }
   compileOptions {

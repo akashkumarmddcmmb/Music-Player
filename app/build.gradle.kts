@@ -44,18 +44,20 @@ android {
         !isGitHubActions && envKeystorePath == null && !defaultUploadKey.exists()
 
       storeFile = resolvedKeystoreFile
-      storePassword = (System.getenv("STORE_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD"))
+      storePassword = (System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("STORE_PASSWORD"))
+        ?.trim()
         ?.takeIf { it.isNotEmpty() }
         ?: if (useLocalExistingKeyDefaults) "android" else ""
       val resolvedKeyAlias = (project.findProperty("KEY_ALIAS")?.toString() ?: System.getenv("KEY_ALIAS"))
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
-      keyAlias = resolvedKeyAlias ?: if (useLocalExistingKeyDefaults) "androiddebugkey" else ""
+      keyAlias = resolvedKeyAlias ?: if (useLocalExistingKeyDefaults) "androiddebugkey" else "upload"
       keyPassword = (
         System.getenv("KEY_PASSWORD")
-          ?: System.getenv("STORE_PASSWORD")
           ?: System.getenv("KEYSTORE_PASSWORD")
-      )?.takeIf { it.isNotEmpty() }
+          ?: System.getenv("STORE_PASSWORD")
+      )?.trim()
+        ?.takeIf { it.isNotEmpty() }
         ?: if (useLocalExistingKeyDefaults) "android" else ""
     }
   }

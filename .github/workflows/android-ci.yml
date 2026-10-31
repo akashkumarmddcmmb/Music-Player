@@ -26,7 +26,7 @@ on:
       build_play_bundle:
         description: "Build signed Google Play Android App Bundle (:app:bundleRelease)"
         required: false
-        default: false
+        default: true
         type: boolean
       publish_to_play_store:
         description: "Upload signed AAB to Google Play Console (requires GOOGLE_PLAY_SERVICE_ACCOUNT_JSON secret)"
@@ -51,6 +51,9 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  EXPECTED_CERT_SHA256: "39:11:67:E3:46:A0:50:E1:1E:74:56:28:37:CD:2E:AB:C5:09:E2:39:A5:91:40:D9:74:42:6C:49:64:F8:88:C7"
 
 jobs:
   build-verify-and-release:
@@ -101,17 +104,21 @@ jobs:
         id: load_keystore
         if: github.event_name != 'pull_request'
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.UPLOAD_KEY_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           # 1. Verify all 4 required signing secrets are present
+          CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
+          CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+
           MISSING_SECRETS=""
-          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
-          [ -z "$STORE_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
-          [ -z "$KEY_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
-          [ -z "$KEY_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
+          [ -z "$KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
+          [ -z "$CLEAN_STORE_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
+          [ -z "$CLEAN_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
+          [ -z "$CLEAN_KEY_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
 
           if [ -n "$MISSING_SECRETS" ]; then
             echo "::error::Missing required repository signing secret(s):${MISSING_SECRETS}. Refusing to generate or substitute another certificate."
@@ -119,7 +126,7 @@ jobs:
           fi
 
           # 2. Robust whitespace cleanup using printf and tr (stripping \r, \n, \t, and space)
-          CLEAN_BASE64=$(printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n\t ')
+          CLEAN_BASE64=$(printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n\t ')
 
           if [ -z "$CLEAN_BASE64" ]; then
             echo "::error::KEYSTORE_BASE64 secret is empty after stripping whitespace."
@@ -150,47 +157,56 @@ jobs:
 
           B64_LEN=${#CLEAN_BASE64}
 
-          # 6. Decode existing keystore with base64 (with openssl fallback)
+          # 6. Decode strictly to binary file without corrupting binary data
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
           echo "Decoding existing signing keystore from KEYSTORE_BASE64 secret (${B64_LEN} base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
-            if ! printf '%s' "$CLEAN_BASE64" | openssl base64 -d -A > "$KEYSTORE_FILE" 2>> "$DECODE_LOG"; then
-              DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-              echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
-              rm -f "$DECODE_LOG"
-              exit 1
-            fi
+            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
+            echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+            rm -f "$DECODE_LOG"
+            exit 1
           fi
           rm -f "$DECODE_LOG"
 
-          # 7. Verify decoded file exists and is non-empty
-          if [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
-            echo "::error::Base64 decoding produced an empty or missing keystore file ($KEYSTORE_FILE)."
+          # 7. Verify decoded JKS file exists, is readable, and is non-empty
+          if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Base64 decoding produced a missing, unreadable, or empty keystore file ($KEYSTORE_FILE)."
             exit 1
           fi
 
           FILE_BYTES=$(wc -c < "$KEYSTORE_FILE" | tr -d ' ')
-          echo "Successfully decoded keystore ($FILE_BYTES bytes)."
+          echo "Successfully decoded my-upload-key.jks ($FILE_BYTES bytes)."
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Existing Keystore & Alias
+      - name: Validate Existing Keystore, Alias & Certificate SHA-256
         id: validate_keystore
         if: github.event_name != 'pull_request'
         env:
-          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
-            echo "::error::Keystore file not found at KEYSTORE_PATH ($KEYSTORE_PATH)."
+          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -r "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
+            echo "::error::Keystore file is missing, unreadable, or empty at KEYSTORE_PATH ($KEYSTORE_PATH)."
             exit 1
           fi
 
-          # 1. Test keystore integrity and store password with keytool
-          echo "Verifying keystore integrity and store password..."
-          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" 2>&1); then
+          CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
+          CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+
+          # 1. Validate alias is "upload"
+          if [ "$CLEAN_ALIAS" != "upload" ]; then
+            echo "::error::Invalid KEY_ALIAS ('$CLEAN_ALIAS'). Expected alias 'upload' for my-upload-key.jks."
+            exit 1
+          fi
+
+          # 2. Test keystore integrity and store password with keytool
+          echo "Verifying keystore integrity and KEYSTORE_PASSWORD..."
+          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" 2>&1); then
             if echo "$KS_OUT" | grep -qi "password was incorrect"; then
               echo "::error::Password validation failed: KEYSTORE_PASSWORD was incorrect for the decoded keystore."
             elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|not a keystore"; then
@@ -201,31 +217,53 @@ jobs:
             exit 1
           fi
 
-          # 2. Test alias existence in keystore
-          echo "Validating alias '$KEY_ALIAS' in existing keystore..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>&1); then
+          # 3. Validate alias "upload" existence and entry metadata in keystore
+          echo "Validating alias '$CLEAN_ALIAS' in my-upload-key.jks..."
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -alias "$CLEAN_ALIAS" 2>&1); then
             if echo "$CERT_INFO" | grep -qi "does not exist"; then
-              echo "::error::Alias validation failed: KEY_ALIAS ('$KEY_ALIAS') was not found in the keystore."
+              echo "::error::Alias validation failed: KEY_ALIAS ('$CLEAN_ALIAS') was not found in the keystore."
               echo "Available entry aliases in keystore:"
               echo "$KS_OUT" | grep "Entry" || true
             else
-              echo "::error::Keystore entry validation failed for alias '$KEY_ALIAS': $CERT_INFO"
+              echo "::error::Keystore entry validation failed for alias '$CLEAN_ALIAS': $CERT_INFO"
             fi
             exit 1
           fi
 
-          EXPECTED_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
-          if [ -z "$EXPECTED_SHA256" ]; then
-            echo "::error::Could not extract SHA-256 certificate fingerprint from keystore for alias '$KEY_ALIAS'."
+          if ! echo "$CERT_INFO" | grep -q "PrivateKeyEntry"; then
+            echo "::error::Alias '$CLEAN_ALIAS' is not a PrivateKeyEntry in the keystore."
             exit 1
           fi
 
+          # 4. Extract and compare decoded certificate SHA-256 against verified fingerprint
+          ACTUAL_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          if [ -z "$ACTUAL_SHA256" ]; then
+            echo "::error::Could not extract SHA-256 certificate fingerprint from keystore for alias '$CLEAN_ALIAS'."
+            exit 1
+          fi
+
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::Keystore certificate SHA-256 mismatch! Expected '$EXPECTED_CERT_SHA256', but decoded keystore has '$ACTUAL_SHA256'."
+            exit 1
+          fi
+
+          # 5. Pre-validate private key password (KEY_PASSWORD) using jarsigner
+          echo "Verifying private key password (KEY_PASSWORD) for alias '$CLEAN_ALIAS'..."
+          TEMP_JAR=$(mktemp /tmp/keypass_check_XXXXXX.jar)
+          jar cf "$TEMP_JAR" README.md
+          if ! JARSIGN_OUT=$(jarsigner -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -keypass "$CLEAN_KEY_PASS" "$TEMP_JAR" "$CLEAN_ALIAS" 2>&1); then
+            rm -f "$TEMP_JAR"
+            echo "::error::Private key password (KEY_PASSWORD) validation failed for alias '$CLEAN_ALIAS': $JARSIGN_OUT"
+            exit 1
+          fi
+          rm -f "$TEMP_JAR"
+
           echo "============================================================"
-          echo "  Existing Keystore Certificate Validated"
+          echo "  Existing Keystore Certificate & Private Key Validated"
           echo "============================================================"
-          echo "$CERT_INFO" | grep -E "Alias name:|Entry type:|Owner:|Issuer:|Serial number:|Valid from:|SHA1:|SHA256:|Signature algorithm name:" || true
+          echo "$CERT_INFO" | grep -E "Keystore type:|Alias name:|Entry type:|Owner:|Issuer:|Serial number:|Valid from:|SHA1:|SHA256:|Signature algorithm name:|Subject Public Key Algorithm:" || true
           echo "============================================================"
-          echo "expected_sha256=${EXPECTED_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "expected_sha256=${ACTUAL_SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew
@@ -260,6 +298,7 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -278,6 +317,7 @@ jobs:
         if: github.event_name != 'pull_request'
         env:
           KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -326,7 +366,7 @@ jobs:
           VER="${{ steps.version_meta.outputs.version_name }}"
           DEBUG_APK="release-assets/PulsePlay-v${VER}-debug.apk"
           RELEASE_APK="release-assets/PulsePlay-v${VER}-release.apk"
-          EXPECTED_SHA256="${{ steps.validate_keystore.outputs.expected_sha256 }}"
+          EXPECTED_SHA256="${EXPECTED_CERT_SHA256}"
           EXPECTED_SHA256_HEX=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
           for APK_FILE in "$DEBUG_APK" "$RELEASE_APK"; do
@@ -351,7 +391,7 @@ jobs:
 
           echo "Debug APK Certificate SHA-256:   $DEBUG_CERT_SHA256"
           echo "Release APK Certificate SHA-256: $RELEASE_CERT_SHA256"
-          echo "Keystore Certificate SHA-256:    $EXPECTED_SHA256_HEX"
+          echo "Verified Expected SHA-256:       $EXPECTED_SHA256_HEX"
 
           if [ -z "$DEBUG_CERT_SHA256" ] || [ -z "$RELEASE_CERT_SHA256" ]; then
             echo "::error::Failed to extract certificate SHA-256 digest from one or both APKs."
@@ -363,8 +403,8 @@ jobs:
             exit 1
           fi
 
-          if [ -n "$EXPECTED_SHA256_HEX" ] && [ "$DEBUG_CERT_SHA256" != "$EXPECTED_SHA256_HEX" ]; then
-            echo "::error::APK certificate digest ($DEBUG_CERT_SHA256) does not match the validated keystore certificate ($EXPECTED_SHA256_HEX)."
+          if [ "$DEBUG_CERT_SHA256" != "$EXPECTED_SHA256_HEX" ]; then
+            echo "::error::APK certificate digest ($DEBUG_CERT_SHA256) does not match the verified keystore certificate ($EXPECTED_SHA256_HEX)."
             exit 1
           fi
 
@@ -410,7 +450,7 @@ jobs:
             - **versionName**: `${{ steps.version_meta.outputs.version_name }}`
             - **versionCode**: `${{ steps.version_meta.outputs.version_code }}`
             - **Unified Signing Certificate SHA-256**: `${{ steps.validate_keystore.outputs.expected_sha256 }}`
-            - Both `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-debug.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` are signed with the same repository keystore.
+            - Both `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-debug.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` are signed with the same repository keystore (`alias: upload`).
             - Verify downloaded APK integrity against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
           files: |
             release-assets/*
@@ -420,11 +460,13 @@ jobs:
         run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
 
   google-play-bundle:
-    name: Google Play Store Bundle & Track Deployment (Manual / Guarded)
+    name: Google Play Store Bundle & Track Deployment
     needs: build-verify-and-release
     if: >
-      github.event_name == 'workflow_dispatch' &&
-      (inputs.build_play_bundle == true || inputs.publish_to_play_store == true)
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_dispatch' ||
+       inputs.build_play_bundle == true ||
+       inputs.publish_to_play_store == true)
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
@@ -445,28 +487,32 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Load & Validate Existing Keystore from GitHub Secrets
+      - name: Load Existing Keystore from GitHub Secrets
         id: load_play_keystore
         env:
-          RELEASE_KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 || secrets.UPLOAD_KEY_BASE64 }}
-          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           # 1. Verify all 4 required signing secrets are present
+          CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
+          CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+
           MISSING_SECRETS=""
-          [ -z "$RELEASE_KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
-          [ -z "$STORE_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
-          [ -z "$KEY_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
-          [ -z "$KEY_PASSWORD" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
+          [ -z "$KEYSTORE_BASE64" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_BASE64"
+          [ -z "$CLEAN_STORE_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEYSTORE_PASSWORD"
+          [ -z "$CLEAN_ALIAS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_ALIAS"
+          [ -z "$CLEAN_KEY_PASS" ] && MISSING_SECRETS="${MISSING_SECRETS} KEY_PASSWORD"
 
           if [ -n "$MISSING_SECRETS" ]; then
-            echo "::error::Google Play App Bundles require repository signing secrets:${MISSING_SECRETS}."
+            echo "::error::Google Play App Bundles require repository signing secrets:${MISSING_SECRETS}. Refusing to generate or substitute another certificate."
             exit 1
           fi
 
           # 2. Robust whitespace cleanup using printf and tr (stripping \r, \n, \t, and space)
-          CLEAN_BASE64=$(printf '%s' "$RELEASE_KEYSTORE_BASE64" | tr -d '\r\n\t ')
+          CLEAN_BASE64=$(printf '%s' "$KEYSTORE_BASE64" | tr -d '\r\n\t ')
 
           if [ -z "$CLEAN_BASE64" ]; then
             echo "::error::KEYSTORE_BASE64 secret is empty after stripping whitespace."
@@ -497,30 +543,55 @@ jobs:
 
           B64_LEN=${#CLEAN_BASE64}
 
-          # 6. Decode existing keystore with base64 (with openssl fallback)
+          # 6. Decode strictly to binary file without corrupting binary data
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
 
           echo "Decoding existing signing keystore for Google Play bundle (${B64_LEN} base64 chars)..."
           if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
-            if ! printf '%s' "$CLEAN_BASE64" | openssl base64 -d -A > "$KEYSTORE_FILE" 2>> "$DECODE_LOG"; then
-              DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-              echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
-              rm -f "$DECODE_LOG"
-              exit 1
-            fi
+            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
+            echo "::error::Base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+            rm -f "$DECODE_LOG"
+            exit 1
           fi
           rm -f "$DECODE_LOG"
 
-          # 7. Verify decoded file exists and is non-empty
-          if [ ! -f "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
-            echo "::error::Base64 decoding produced an empty or missing keystore file ($KEYSTORE_FILE)."
+          # 7. Verify decoded JKS file exists, is readable, and is non-empty
+          if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
+            echo "::error::Base64 decoding produced a missing, unreadable, or empty keystore file ($KEYSTORE_FILE)."
             exit 1
           fi
 
-          # 8. Test keystore integrity and store password with keytool
-          echo "Verifying keystore integrity and store password for Play bundle..."
-          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" 2>&1); then
+          FILE_BYTES=$(wc -c < "$KEYSTORE_FILE" | tr -d ' ')
+          echo "Successfully decoded my-upload-key.jks ($FILE_BYTES bytes) for Google Play bundle."
+          echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+          echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate Existing Keystore, Alias & Certificate SHA-256
+        id: validate_play_keystore
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ ! -f "$KEYSTORE_PATH" ] || [ ! -r "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
+            echo "::error::Keystore file is missing, unreadable, or empty at KEYSTORE_PATH ($KEYSTORE_PATH)."
+            exit 1
+          fi
+
+          CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
+          CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+
+          # 1. Validate alias is "upload"
+          if [ "$CLEAN_ALIAS" != "upload" ]; then
+            echo "::error::Invalid KEY_ALIAS ('$CLEAN_ALIAS'). Expected alias 'upload' for my-upload-key.jks."
+            exit 1
+          fi
+
+          # 2. Test keystore integrity and store password with keytool
+          echo "Verifying keystore integrity and KEYSTORE_PASSWORD for Play bundle..."
+          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" 2>&1); then
             if echo "$KS_OUT" | grep -qi "password was incorrect"; then
               echo "::error::Password validation failed: KEYSTORE_PASSWORD was incorrect for the decoded keystore."
             elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|not a keystore"; then
@@ -531,29 +602,53 @@ jobs:
             exit 1
           fi
 
-          # 9. Test alias existence in keystore
-          echo "Validating alias '$KEY_ALIAS' in existing keystore..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_FILE" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>&1); then
+          # 3. Validate alias "upload" existence and entry metadata in keystore
+          echo "Validating alias '$CLEAN_ALIAS' in my-upload-key.jks..."
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -alias "$CLEAN_ALIAS" 2>&1); then
             if echo "$CERT_INFO" | grep -qi "does not exist"; then
-              echo "::error::Alias validation failed: KEY_ALIAS ('$KEY_ALIAS') was not found in the keystore."
+              echo "::error::Alias validation failed: KEY_ALIAS ('$CLEAN_ALIAS') was not found in the keystore."
               echo "Available entry aliases in keystore:"
               echo "$KS_OUT" | grep "Entry" || true
             else
-              echo "::error::Keystore entry validation failed for alias '$KEY_ALIAS': $CERT_INFO"
+              echo "::error::Keystore entry validation failed for alias '$CLEAN_ALIAS': $CERT_INFO"
             fi
             exit 1
           fi
 
-          EXPECTED_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
-          if [ -z "$EXPECTED_SHA256" ]; then
-            echo "::error::Could not extract SHA-256 certificate fingerprint from keystore for alias '$KEY_ALIAS'."
+          if ! echo "$CERT_INFO" | grep -q "PrivateKeyEntry"; then
+            echo "::error::Alias '$CLEAN_ALIAS' is not a PrivateKeyEntry in the keystore."
             exit 1
           fi
 
-          FILE_BYTES=$(wc -c < "$KEYSTORE_FILE" | tr -d ' ')
-          echo "Keystore verified successfully ($FILE_BYTES bytes) for Google Play AAB. Alias '$KEY_ALIAS' SHA-256: $EXPECTED_SHA256"
-          echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
-          echo "expected_sha256=${EXPECTED_SHA256}" >> "$GITHUB_OUTPUT"
+          # 4. Extract and compare decoded certificate SHA-256 against verified fingerprint
+          ACTUAL_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          if [ -z "$ACTUAL_SHA256" ]; then
+            echo "::error::Could not extract SHA-256 certificate fingerprint from keystore for alias '$CLEAN_ALIAS'."
+            exit 1
+          fi
+
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
+            echo "::error::Keystore certificate SHA-256 mismatch! Expected '$EXPECTED_CERT_SHA256', but decoded keystore has '$ACTUAL_SHA256'."
+            exit 1
+          fi
+
+          # 5. Pre-validate private key password (KEY_PASSWORD) using jarsigner
+          echo "Verifying private key password (KEY_PASSWORD) for alias '$CLEAN_ALIAS'..."
+          TEMP_JAR=$(mktemp /tmp/keypass_play_check_XXXXXX.jar)
+          jar cf "$TEMP_JAR" README.md
+          if ! JARSIGN_OUT=$(jarsigner -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -keypass "$CLEAN_KEY_PASS" "$TEMP_JAR" "$CLEAN_ALIAS" 2>&1); then
+            rm -f "$TEMP_JAR"
+            echo "::error::Private key password (KEY_PASSWORD) validation failed for alias '$CLEAN_ALIAS': $JARSIGN_OUT"
+            exit 1
+          fi
+          rm -f "$TEMP_JAR"
+
+          echo "============================================================"
+          echo "  Existing Keystore Certificate & Private Key Validated"
+          echo "============================================================"
+          echo "$CERT_INFO" | grep -E "Keystore type:|Alias name:|Entry type:|Owner:|Issuer:|Serial number:|Valid from:|SHA1:|SHA256:|Signature algorithm name:|Subject Public Key Algorithm:" || true
+          echo "============================================================"
+          echo "expected_sha256=${ACTUAL_SHA256}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew
@@ -562,6 +657,7 @@ jobs:
         id: build_aab
         env:
           KEYSTORE_PATH: ${{ env.KEYSTORE_PATH }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
@@ -589,29 +685,37 @@ jobs:
           VER="${{ needs.build-verify-and-release.outputs.version_name }}"
           CODE="${{ needs.build-verify-and-release.outputs.version_code }}"
           AAB_FILE="play-bundle-artifacts/PulsePlay-v${VER}-vc${CODE}-release.aab"
-          EXPECTED_SHA256="${{ steps.load_play_keystore.outputs.expected_sha256 }}"
+          EXPECTED_SHA256="${EXPECTED_CERT_SHA256}"
+          EXPECTED_SHA256_HEX=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
           if [ ! -f "$AAB_FILE" ]; then
             echo "::error::Signed AAB $AAB_FILE not found for verification."
             exit 1
           fi
 
-          jarsigner -verify "$AAB_FILE" >/dev/null
+          if ! jarsigner -verify -verbose -certs "$AAB_FILE" >/dev/null 2>&1; then
+            echo "::error::jarsigner verification failed for $AAB_FILE."
+            exit 1
+          fi
+
           AAB_CERT_INFO=$(keytool -printcert -jarfile "$AAB_FILE" 2>/dev/null)
           AAB_SHA256=$(echo "$AAB_CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
+          AAB_SHA256_HEX=$(echo "$AAB_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
           echo "============================================================"
           echo "  Google Play AAB Signing Certificate Verification"
           echo "============================================================"
           echo "AAB Filename:            $(basename "$AAB_FILE")"
           echo "AAB Certificate SHA-256: $AAB_SHA256"
-          echo "Keystore SHA-256:        $EXPECTED_SHA256"
+          echo "Verified Expected SHA-256: $EXPECTED_SHA256"
           echo "============================================================"
 
-          if [ -z "$AAB_SHA256" ] || [ "$AAB_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "::error::AAB certificate SHA-256 ($AAB_SHA256) does not match keystore SHA-256 ($EXPECTED_SHA256)."
+          if [ -z "$AAB_SHA256_HEX" ] || [ "$AAB_SHA256_HEX" != "$EXPECTED_SHA256_HEX" ]; then
+            echo "::error::AAB certificate SHA-256 ($AAB_SHA256) does not match verified keystore SHA-256 ($EXPECTED_SHA256)."
             exit 1
           fi
+
+          echo "Single signing identity verified: Google Play AAB is signed with certificate ($EXPECTED_SHA256)."
 
       - name: Upload Signed Google Play AAB Artifact
         if: success()
@@ -625,7 +729,7 @@ jobs:
 
       - name: Verify Play Console Credentials Before Upload
         id: play_credentials
-        if: inputs.publish_to_play_store == true
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_to_play_store == true
         env:
           GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
         run: |
@@ -637,7 +741,7 @@ jobs:
           fi
 
       - name: Publish Signed AAB to Google Play Track (${{ inputs.play_track }})
-        if: inputs.publish_to_play_store == true && steps.play_credentials.outputs.can_upload == 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_to_play_store == true && steps.play_credentials.outputs.can_upload == 'true'
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}

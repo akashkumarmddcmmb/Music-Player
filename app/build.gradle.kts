@@ -30,41 +30,23 @@ android {
   }
 
   signingConfigs {
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
-    }
     create("release") {
       val envKeystorePath = System.getenv("KEYSTORE_PATH")?.trim()?.takeIf { it.isNotEmpty() }
       val defaultUploadKey = file("${rootDir}/my-upload-key.jks")
-      val defaultExistingKey = file("${rootDir}/debug.keystore")
-      val isGitHubActions = System.getenv("GITHUB_ACTIONS") == "true"
-      val resolvedKeystoreFile = when {
-        envKeystorePath != null -> file(envKeystorePath)
-        defaultUploadKey.exists() || isGitHubActions -> defaultUploadKey
-        else -> defaultExistingKey
-      }
-      val useLocalExistingKeyDefaults =
-        !isGitHubActions && envKeystorePath == null && !defaultUploadKey.exists()
-
-      storeFile = resolvedKeystoreFile
+      storeFile = if (envKeystorePath != null) file(envKeystorePath) else defaultUploadKey
       storePassword = (System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("STORE_PASSWORD"))
         ?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?: if (useLocalExistingKeyDefaults) "android" else ""
-      val resolvedKeyAlias = (project.findProperty("KEY_ALIAS")?.toString() ?: System.getenv("KEY_ALIAS"))
+        .orEmpty()
+      keyAlias = (project.findProperty("KEY_ALIAS")?.toString() ?: System.getenv("KEY_ALIAS"))
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
-      keyAlias = resolvedKeyAlias ?: if (useLocalExistingKeyDefaults) "androiddebugkey" else "upload"
+        ?: "upload"
       keyPassword = (
         System.getenv("KEY_PASSWORD")
           ?: System.getenv("KEYSTORE_PASSWORD")
           ?: System.getenv("STORE_PASSWORD")
       )?.trim()
-        ?.takeIf { it.isNotEmpty() }
-        ?: if (useLocalExistingKeyDefaults) "android" else ""
+        .orEmpty()
     }
   }
 
@@ -77,7 +59,7 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // Uses Android Gradle Plugin's standard debug signingConfig automatically
     }
   }
   compileOptions {

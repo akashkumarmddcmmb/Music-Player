@@ -100,12 +100,6 @@ jobs:
           echo "version_name=${CLEAN_VERSION}" >> "$GITHUB_OUTPUT"
           echo "version_code=${MONOTONIC_CODE}" >> "$GITHUB_OUTPUT"
 
-      - name: Restore Tracked Debug Keystore for Normal Debug Signing
-        run: |
-          if [ ! -f "debug.keystore" ] && [ -f "debug.keystore.base64" ]; then
-            tr -d '\r\n\t ' < debug.keystore.base64 | base64 --decode > debug.keystore
-          fi
-
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew
 
@@ -123,7 +117,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: ./gradlew :app:lintDebug --no-daemon
 
-      - name: Build Debug APK (Normal Debug Signing)
+      - name: Build Debug APK (AGP Default Debug Signing)
         env:
           APP_VERSION_NAME: ${{ steps.version_meta.outputs.version_name }}
           APP_VERSION_CODE: ${{ steps.version_meta.outputs.version_code }}
@@ -368,7 +362,7 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: Verify Release APK, Release AAB & Debug APK Signing Certificates
+      - name: Verify Debug APK, Release APK & Release AAB Signing Certificates
         id: verify_apk_cert
         if: github.event_name != 'pull_request'
         run: |
@@ -396,22 +390,29 @@ jobs:
           EXPECTED_SHA256="${EXPECTED_CERT_SHA256}"
           EXPECTED_SHA256_HEX=$(echo "$EXPECTED_SHA256" | tr -d ':' | tr '[:upper:]' '[:lower:]')
 
-          for APK_FILE in "$DEBUG_APK" "$RELEASE_APK"; do
-            if [ ! -f "$APK_FILE" ]; then
-              echo "::error::Expected APK file $APK_FILE not found for signature verification."
-              exit 1
-            fi
-            APK_FILENAME=$(basename "$APK_FILE")
-            APK_SHA256=$(sha256sum "$APK_FILE" | awk '{print $1}')
-            APK_FILESIZE=$(stat -c%s "$APK_FILE")
-            echo "============================================================"
-            echo "  Verifying APK Signature: $APK_FILENAME"
-            echo "  File Size:        $APK_FILESIZE bytes"
-            echo "  File SHA-256:     $APK_SHA256"
-            echo "------------------------------------------------------------"
-            "$APKSIGNER" verify --print-certs -v "$APK_FILE"
-            echo "============================================================"
-          done
+          # 1. Verify Debug APK is a valid debug-signed APK
+          if [ ! -f "$DEBUG_APK" ]; then
+            echo "::error::Expected Debug APK $DEBUG_APK not found for signature verification."
+            exit 1
+          fi
+          DEBUG_FILESIZE=$(stat -c%s "$DEBUG_APK")
+          echo "============================================================"
+          echo "  Verifying Debug APK Signature: $(basename "$DEBUG_APK") ($DEBUG_FILESIZE bytes)"
+          echo "------------------------------------------------------------"
+          "$APKSIGNER" verify --print-certs -v "$DEBUG_APK"
+          echo "============================================================"
+
+          # 2. Verify Release APK is signed with the verified upload certificate
+          if [ ! -f "$RELEASE_APK" ]; then
+            echo "::error::Expected Release APK $RELEASE_APK not found for signature verification."
+            exit 1
+          fi
+          RELEASE_FILESIZE=$(stat -c%s "$RELEASE_APK")
+          echo "============================================================"
+          echo "  Verifying Release APK Signature: $(basename "$RELEASE_APK") ($RELEASE_FILESIZE bytes)"
+          echo "------------------------------------------------------------"
+          "$APKSIGNER" verify --print-certs -v "$RELEASE_APK"
+          echo "============================================================"
 
           RELEASE_CERT_SHA256=$("$APKSIGNER" verify --print-certs "$RELEASE_APK" | awk '/certificate SHA-256 digest:/ {print $NF; exit}' | tr '[:upper:]' '[:lower:]')
 
@@ -423,9 +424,9 @@ jobs:
             exit 1
           fi
 
-          # Verify Release AAB signature and certificate SHA-256
+          # 3. Verify Release AAB is signed with the same verified upload certificate
           if [ ! -f "$RELEASE_AAB" ]; then
-            echo "::error::Expected AAB file $RELEASE_AAB not found for signature verification."
+            echo "::error::Expected Release AAB $RELEASE_AAB not found for signature verification."
             exit 1
           fi
 
@@ -440,7 +441,7 @@ jobs:
           AAB_FILESIZE=$(stat -c%s "$RELEASE_AAB")
 
           echo "============================================================"
-          echo "  Verifying AAB Signature: $(basename "$RELEASE_AAB")"
+          echo "  Verifying Release AAB Signature: $(basename "$RELEASE_AAB")"
           echo "  File Size:               $AAB_FILESIZE bytes"
           echo "  AAB Certificate SHA-256: $AAB_SHA256"
           echo "  Expected Upload SHA-256: $EXPECTED_SHA256"
@@ -451,7 +452,12 @@ jobs:
             exit 1
           fi
 
-          echo "Release APK and Release AAB signing certificates verified: $EXPECTED_SHA256"
+          if [ "$RELEASE_CERT_SHA256" != "$AAB_SHA256_HEX" ]; then
+            echo "::error::Release APK ($RELEASE_CERT_SHA256) and Release AAB ($AAB_SHA256_HEX) were not signed with the same upload certificate."
+            exit 1
+          fi
+
+          echo "Signing verification passed: Debug APK is valid debug-signed; Release APK and Release AAB share verified upload certificate ($EXPECTED_SHA256)."
 
       - name: Upload Build Artifacts (Workflow Run)
         if: success() && github.event_name != 'pull_request'
@@ -494,6 +500,7 @@ jobs:
             - **versionCode**: `${{ steps.version_meta.outputs.version_code }}`
             - **Release Signing Certificate SHA-256**: `${{ steps.validate_keystore.outputs.expected_sha256 }}`
             - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-vc${{ steps.version_meta.outputs.version_code }}-release.aab` are signed with the verified upload keystore (`alias: upload`).
+            - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-debug.apk` uses standard Android debug signing.
             - Verify downloaded assets against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
           files: |
             release-assets/*

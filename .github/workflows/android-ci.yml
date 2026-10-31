@@ -70,7 +70,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
@@ -126,20 +126,31 @@ jobs:
             exit 1
           fi
 
-          # 3. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
+          # 3. Normalize URL-safe Base64 (- and _) to standard Base64 (+ and /)
+          CLEAN_BASE64=$(printf '%s' "$CLEAN_BASE64" | tr -- '-_' '+/')
+
+          # 4. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
           if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
             echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in standard Base64 encoding (e.g. quotation marks, PEM headers, or punctuation). Ensure only raw base64 data was added."
             exit 1
           fi
 
-          # 4. Validate Base64 length divisibility by 4
-          B64_LEN=${#CLEAN_BASE64}
-          if [ $(( B64_LEN % 4 )) -ne 0 ]; then
-            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length ($B64_LEN) is not a multiple of 4. Standard Base64 requires length divisible by 4. Check if trailing '=' padding characters were truncated."
+          # 5. Restore missing '=' padding if trailing padding was truncated when saving secret
+          B64_REM=$(( ${#CLEAN_BASE64} % 4 ))
+          if [ "$B64_REM" -eq 2 ]; then
+            echo "Notice: Restoring 2 missing '=' padding characters (length had remainder 2)..."
+            CLEAN_BASE64="${CLEAN_BASE64}=="
+          elif [ "$B64_REM" -eq 3 ]; then
+            echo "Notice: Restoring 1 missing '=' padding character (length had remainder 3)..."
+            CLEAN_BASE64="${CLEAN_BASE64}="
+          elif [ "$B64_REM" -eq 1 ]; then
+            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length (${#CLEAN_BASE64}) has a remainder of 1 when divided by 4. Single-character truncation cannot represent valid data. Check the secret value."
             exit 1
           fi
 
-          # 5. Decode strictly with base64 --decode
+          B64_LEN=${#CLEAN_BASE64}
+
+          # 6. Decode strictly with base64 --decode
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
@@ -422,7 +433,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
@@ -460,20 +471,31 @@ jobs:
             exit 1
           fi
 
-          # 3. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
+          # 3. Normalize URL-safe Base64 (- and _) to standard Base64 (+ and /)
+          CLEAN_BASE64=$(printf '%s' "$CLEAN_BASE64" | tr -- '-_' '+/')
+
+          # 4. Reject invalid Base64 data (only valid Base64 characters permitted: A-Z, a-z, 0-9, +, /, =)
           if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
             echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in standard Base64 encoding. Ensure only raw base64 data was added."
             exit 1
           fi
 
-          # 4. Validate Base64 length divisibility by 4
-          B64_LEN=${#CLEAN_BASE64}
-          if [ $(( B64_LEN % 4 )) -ne 0 ]; then
-            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length ($B64_LEN) is not a multiple of 4. Standard Base64 requires length divisible by 4. Check if trailing '=' padding characters were truncated."
+          # 5. Restore missing '=' padding if trailing padding was truncated when saving secret
+          B64_REM=$(( ${#CLEAN_BASE64} % 4 ))
+          if [ "$B64_REM" -eq 2 ]; then
+            echo "Notice: Restoring 2 missing '=' padding characters for Google Play bundle..."
+            CLEAN_BASE64="${CLEAN_BASE64}=="
+          elif [ "$B64_REM" -eq 3 ]; then
+            echo "Notice: Restoring 1 missing '=' padding character for Google Play bundle..."
+            CLEAN_BASE64="${CLEAN_BASE64}="
+          elif [ "$B64_REM" -eq 1 ]; then
+            echo "::error::Base64 length validation failed: UPLOAD_KEY_BASE64 length (${#CLEAN_BASE64}) has a remainder of 1 when divided by 4. Single-character truncation cannot represent valid data. Check the secret value."
             exit 1
           fi
 
-          # 5. Decode strictly with base64 --decode
+          B64_LEN=${#CLEAN_BASE64}
+
+          # 6. Decode strictly with base64 --decode
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
 

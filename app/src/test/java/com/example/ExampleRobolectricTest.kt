@@ -2447,9 +2447,8 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("transport_forward_10_button").assertExists()
         composeTestRule.onNodeWithTag("transport_previous_button").assertExists()
         composeTestRule.onNodeWithTag("transport_next_button").assertExists()
-        composeTestRule.onNodeWithTag("video_audio_track_pill").assertExists()
         composeTestRule.onNodeWithTag("video_subtitles_chip").assertExists()
-        composeTestRule.onNodeWithTag("video_fullscreen_chip").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").assertExists()
         composeTestRule.onNodeWithTag("active_subtitle_overlay").assertExists()
 
         // 2. Simulate active video playback with 200ms position ticks for 4.2 seconds of inactivity
@@ -2477,7 +2476,7 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
         composeTestRule.onNodeWithTag("now_playing_seek_slider").assertExists()
         composeTestRule.onNodeWithTag("transport_forward_10_button").assertExists()
-        composeTestRule.onNodeWithTag("video_fullscreen_chip").assertExists()
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").assertExists()
 
         // 4. Test transport controls: +10s forward, -10s rewind, Next, Previous, Play/Pause
         val posBeforeSeek = positionMsState
@@ -2502,7 +2501,10 @@ class ExampleRobolectricTest {
         composeTestRule.mainClock.advanceTimeBy(250L)
         composeTestRule.waitForIdle()
 
-        // Toggle Fullscreen from Portrait
+        // Toggle Fullscreen from Portrait via the 3-dot menu
+        composeTestRule.onNodeWithTag("now_playing_more_options_button").performClick()
+        composeTestRule.mainClock.advanceTimeBy(200L)
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("video_fullscreen_chip").performClick()
         composeTestRule.mainClock.advanceTimeBy(200L)
         assertTrue("Fullscreen toggle must activate fullscreen state", isFullscreenState)
@@ -2675,7 +2677,11 @@ class ExampleRobolectricTest {
             }
         }
 
-        // 1. In Compact Landscape (640x360) Video HUD: open Audio Track popup and verify it does not clip
+        // 1. In Compact Landscape (640x360) Video HUD: open 3-dot menu then Audio Track popup and verify it does not clip
+        composeTestRule.onNodeWithTag("now_playing_more_options_button")
+            .assertExists()
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("video_audio_track_pill")
             .assertExists()
             .performSemanticsAction(SemanticsActions.OnClick)

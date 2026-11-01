@@ -252,15 +252,15 @@ fun NowPlayingOverlayScreen(
     onDismissVideoCompatibilityDialog: () -> Unit = {},
     onSelectVideoCompatibilityAction: (VideoCompatibilityAction) -> Unit = {},
     onDismissVideoInfoDetailsDialog: () -> Unit = {},
+    onToggleSpeedPanel: () -> Unit = {},
+    onToggleVideoSettings: () -> Unit = {},
+    onToggleSubtitleSettings: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     val context = LocalContext.current
     val hostActivity = remember(context) { context.findNowPlayingHostActivity() }
     val currentMedia = playbackState.currentMedia
-    var showSubtitleSettings by rememberSaveable { mutableStateOf(false) }
-    var showVideoSettingsSheet by rememberSaveable { mutableStateOf(false) }
     var showSleepTimerPanel by rememberSaveable { mutableStateOf(false) }
-    var showSpeedPanel by rememberSaveable { mutableStateOf(false) }
     var playlistSheetState by rememberSaveable { mutableStateOf(initialPlaylistSheetState) }
     val playlistLazyListState = rememberLazyListState()
     var fullscreenControlsVisible by rememberSaveable { mutableStateOf(true) }
@@ -276,12 +276,29 @@ fun NowPlayingOverlayScreen(
         }
     }
 
+    LaunchedEffect(
+        playbackState.showPlaybackSpeedDialog,
+        playbackState.showVideoSettingsDialog,
+        playbackState.showSubtitleSettingsDialog,
+        playbackState.showVideoCompatibilityDialog,
+        playbackState.showVideoInfoDetailsDialog
+    ) {
+        if (playbackState.showPlaybackSpeedDialog ||
+            playbackState.showVideoSettingsDialog ||
+            playbackState.showSubtitleSettingsDialog ||
+            playbackState.showVideoCompatibilityDialog ||
+            playbackState.showVideoInfoDetailsDialog
+        ) {
+            showSleepTimerPanel = false
+        }
+    }
+
     BackHandler {
         when {
-            showSubtitleSettings -> showSubtitleSettings = false
-            showVideoSettingsSheet -> showVideoSettingsSheet = false
+            playbackState.showSubtitleSettingsDialog -> onToggleSubtitleSettings()
+            playbackState.showVideoSettingsDialog -> onToggleVideoSettings()
             showSleepTimerPanel -> showSleepTimerPanel = false
-            showSpeedPanel -> showSpeedPanel = false
+            playbackState.showPlaybackSpeedDialog -> onToggleSpeedPanel()
             playlistSheetState == PlaylistSheetState.FULLY_EXPANDED -> {
                 playlistSheetState = PlaylistSheetState.PARTIALLY_EXPANDED
             }
@@ -312,11 +329,11 @@ fun NowPlayingOverlayScreen(
         keepScreenOnPreferenceEnabled = userPreferences.keepScreenOnDuringVideo
     )
 
-    if (showSpeedPanel) {
+    if (playbackState.showPlaybackSpeedDialog) {
         PlaybackSpeedDialog(
             playbackState = playbackState,
             onSetPlaybackSpeed = onSetPlaybackSpeed,
-            onDismiss = { showSpeedPanel = false }
+            onDismiss = onToggleSpeedPanel
         )
     }
 
@@ -329,7 +346,7 @@ fun NowPlayingOverlayScreen(
         )
     }
 
-    if (showSubtitleSettings) {
+    if (playbackState.showSubtitleSettingsDialog) {
         SubtitleSettingsDialog(
             playbackState = playbackState,
             userPreferences = userPreferences,
@@ -338,11 +355,11 @@ fun NowPlayingOverlayScreen(
             onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
             onPickSubtitleFileClick = onPickSubtitleFileClick,
             onSeekToCue = onSeekTo,
-            onDismiss = { showSubtitleSettings = false }
+            onDismiss = onToggleSubtitleSettings
         )
     }
 
-    if (currentMedia?.mediaType == MediaType.VIDEO && showVideoSettingsSheet) {
+    if (currentMedia?.mediaType == MediaType.VIDEO && playbackState.showVideoSettingsDialog) {
         VideoSettingsDialog(
             playbackState = playbackState,
             userPreferences = userPreferences,
@@ -358,7 +375,7 @@ fun NowPlayingOverlayScreen(
             onOpenEqualizer = onOpenEqualizer,
             onSelectHighResMode = onSelectHighResVideoPlaybackMode,
             onOpenCompatibilityOptions = onOpenVideoCompatibilityDialog,
-            onDismiss = { showVideoSettingsSheet = false }
+            onDismiss = onToggleVideoSettings
         )
     }
 
@@ -461,8 +478,8 @@ fun NowPlayingOverlayScreen(
                     shouldKeepVideoAwake = shouldKeepVideoAwake,
                     controlsVisible = fullscreenControlsVisible,
                     controlsInteractionTick = controlsInteractionTick,
-                    showVideoSettings = showVideoSettingsSheet,
-                    showSubtitleSettings = showSubtitleSettings,
+                    showVideoSettings = playbackState.showVideoSettingsDialog,
+                    showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
                     onToggleControlsVisible = {
                         fullscreenControlsVisible = !fullscreenControlsVisible
                         controlsInteractionTick++
@@ -478,13 +495,11 @@ fun NowPlayingOverlayScreen(
                     },
                     onToggleVideoSettings = {
                         controlsInteractionTick++
-                        showSubtitleSettings = false
-                        showVideoSettingsSheet = !showVideoSettingsSheet
+                        onToggleVideoSettings()
                     },
                     onToggleSubtitleSettings = {
                         controlsInteractionTick++
-                        showVideoSettingsSheet = false
-                        showSubtitleSettings = !showSubtitleSettings
+                        onToggleSubtitleSettings()
                     },
                     onCollapse = {
                         if (playbackState.isFullscreenVideo) {
@@ -522,6 +537,13 @@ fun NowPlayingOverlayScreen(
                     onVideoSurfaceAttached = onVideoSurfaceAttached,
                     onEnterPipClick = onEnterPipClick,
                     onOpenVideoCompatibilityDialog = onOpenVideoCompatibilityDialog,
+                    onToggleSpeedPanel = {
+                        controlsInteractionTick++
+                        onToggleSpeedPanel()
+                    },
+                    onShareCurrentMedia = onShareCurrentMedia,
+                    onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                    onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia,
                     onRetryPlayback = onRetryPlayback
                 )
             } else if (isLandscapeViewport) {
@@ -530,12 +552,20 @@ fun NowPlayingOverlayScreen(
                     playbackState = playbackState,
                     userPreferences = userPreferences,
                     isFavorite = isFavorite,
-                    showSubtitleSettings = showSubtitleSettings,
+                    showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
                     showSleepTimerPanel = showSleepTimerPanel,
-                    showSpeedPanel = showSpeedPanel,
-                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
-                    onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
-                    onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
+                    showSpeedPanel = playbackState.showPlaybackSpeedDialog,
+                    onToggleSubtitleSettings = onToggleSubtitleSettings,
+                    onToggleSleepTimerPanel = {
+                        val next = !showSleepTimerPanel
+                        if (next) {
+                            if (playbackState.showPlaybackSpeedDialog) onToggleSpeedPanel()
+                            if (playbackState.showVideoSettingsDialog) onToggleVideoSettings()
+                            if (playbackState.showSubtitleSettingsDialog) onToggleSubtitleSettings()
+                        }
+                        showSleepTimerPanel = next
+                    },
+                    onToggleSpeedPanel = onToggleSpeedPanel,
                     onCollapse = onCollapse,
                     onPlayPause = onPlayPause,
                     onSeekTo = onSeekTo,
@@ -641,13 +671,21 @@ fun NowPlayingOverlayScreen(
                                     currentMedia = currentMedia,
                                     playbackState = playbackState,
                                     isFavorite = isFavorite,
-                                    showSpeedPanel = showSpeedPanel,
+                                    showSpeedPanel = playbackState.showPlaybackSpeedDialog,
                                     showSleepTimerPanel = showSleepTimerPanel,
-                                    showSubtitleSettings = showSubtitleSettings,
-                                    onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
+                                    showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
+                                    onToggleSpeedPanel = onToggleSpeedPanel,
                                     onOpenEqualizer = onOpenEqualizer,
-                                    onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
-                                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                                    onToggleSleepTimerPanel = {
+                                        val next = !showSleepTimerPanel
+                                        if (next) {
+                                            if (playbackState.showPlaybackSpeedDialog) onToggleSpeedPanel()
+                                            if (playbackState.showVideoSettingsDialog) onToggleVideoSettings()
+                                            if (playbackState.showSubtitleSettingsDialog) onToggleSubtitleSettings()
+                                        }
+                                        showSleepTimerPanel = next
+                                    },
+                                    onToggleSubtitleSettings = onToggleSubtitleSettings,
                                     onOpenStudio = onOpenStudio,
                                     onToggleFavorite = onToggleFavorite,
                                     onShareCurrentMedia = onShareCurrentMedia,
@@ -696,10 +734,10 @@ fun NowPlayingOverlayScreen(
                                 userPreferences = userPreferences,
                                 playerInstance = playerInstance,
                                 shouldKeepVideoAwake = shouldKeepVideoAwake,
-                                showSubtitleSettings = showSubtitleSettings,
-                                showVideoSettingsSheet = showVideoSettingsSheet,
-                                onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
-                                onToggleVideoSettings = { showVideoSettingsSheet = !showVideoSettingsSheet },
+                                showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
+                                showVideoSettingsSheet = playbackState.showVideoSettingsDialog,
+                                onToggleSubtitleSettings = onToggleSubtitleSettings,
+                                onToggleVideoSettings = onToggleVideoSettings,
                                 onCycleAspectMode = onCycleAspectMode,
                                 onRotateVideo90 = onRotateVideo90,
                                 onToggleFullscreen = onToggleFullscreen,
@@ -1303,12 +1341,17 @@ private fun ImmersiveVideoCinemaLayout(
     onVideoSurfaceAttached: (Boolean) -> Unit = {},
     onEnterPipClick: () -> Unit = {},
     onOpenVideoCompatibilityDialog: () -> Unit = {},
+    onToggleSpeedPanel: () -> Unit = {},
+    onShareCurrentMedia: () -> Unit = {},
+    onAddToPlaylistCurrentMedia: () -> Unit = {},
+    onShowFileInfoCurrentMedia: () -> Unit = {},
     onRetryPlayback: () -> Unit
 ) {
     var containerWidthPx by remember { mutableIntStateOf(1280) }
     var containerHeightPx by remember { mutableIntStateOf(720) }
     var activeAudioTrackLabel by rememberSaveable { mutableStateOf("Original HD Audio") }
     var showAudioTrackSheet by rememberSaveable { mutableStateOf(false) }
+    var showVideoOverflowMenu by rememberSaveable { mutableStateOf(false) }
     var gestureFeedbackBanner by remember { mutableStateOf<String?>(null) }
     var localInteractionTick by rememberSaveable { mutableIntStateOf(0) }
 
@@ -1324,7 +1367,25 @@ private fun ImmersiveVideoCinemaLayout(
         }
     }
 
-    // Single, lifecycle-safe Auto-hide HUD timer (3.8s) while video is actively playing and no sheet is open
+    LaunchedEffect(
+        showVideoSettings,
+        showSubtitleSettings,
+        playbackState.showPlaybackSpeedDialog,
+        playbackState.showVideoCompatibilityDialog,
+        playbackState.showVideoInfoDetailsDialog
+    ) {
+        if (showVideoSettings ||
+            showSubtitleSettings ||
+            playbackState.showPlaybackSpeedDialog ||
+            playbackState.showVideoCompatibilityDialog ||
+            playbackState.showVideoInfoDetailsDialog
+        ) {
+            showAudioTrackSheet = false
+            showVideoOverflowMenu = false
+        }
+    }
+
+    // Single, lifecycle-safe Auto-hide HUD timer (3.8s) while video is actively playing and no sheet/menu is open
     LaunchedEffect(
         controlsVisible,
         controlsInteractionTick,
@@ -1332,13 +1393,17 @@ private fun ImmersiveVideoCinemaLayout(
         playbackState.isPlaying,
         showVideoSettings,
         showSubtitleSettings,
-        showAudioTrackSheet
+        playbackState.showPlaybackSpeedDialog,
+        showAudioTrackSheet,
+        showVideoOverflowMenu
     ) {
         if (controlsVisible &&
             playbackState.isPlaying &&
             !showVideoSettings &&
             !showSubtitleSettings &&
-            !showAudioTrackSheet
+            !playbackState.showPlaybackSpeedDialog &&
+            !showAudioTrackSheet &&
+            !showVideoOverflowMenu
         ) {
             delay(3800L)
             onSetControlsVisible(false)
@@ -1739,9 +1804,10 @@ private fun ImmersiveVideoCinemaLayout(
                             )
                         )
                         .then(hudInsetsModifier)
+                        .navigationBarsPadding()
                         .padding(
                             horizontal = if (isLandscapeViewport) 20.dp else 14.dp,
-                            vertical = if (isLandscapeViewport) 8.dp else 14.dp
+                            vertical = if (isLandscapeViewport) 10.dp else 14.dp
                         )
                         .testTag("video_controls_hud_overlay")
                 ) {
@@ -1875,24 +1941,348 @@ private fun ImmersiveVideoCinemaLayout(
                                     tint = Color.White
                                 )
                             }
-                            // 1-Tap Fullscreen / Landscape-Portrait Toggle Icon
-                            IconButton(
-                                onClick = toggleLandscapePortraitQuick,
-                                modifier = Modifier.testTag("video_fullscreen_chip")
-                            ) {
-                                Icon(
-                                    imageVector = if (isCurrentlyLandscapeMode) {
-                                        Icons.Default.FullscreenExit
-                                    } else {
-                                        Icons.Default.Fullscreen
+                            // 3-Dot Overflow Menu Icon (Houses all bottom video feature options)
+                            Box {
+                                IconButton(
+                                    onClick = {
+                                        notifyUserInteraction()
+                                        showVideoOverflowMenu = !showVideoOverflowMenu
                                     },
-                                    contentDescription = if (isCurrentlyLandscapeMode) {
-                                        "Exit Fullscreen"
-                                    } else {
-                                        "Fullscreen"
-                                    },
-                                    tint = if (isCurrentlyLandscapeMode) CinemaNeonGreen else Color.White
-                                )
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("now_playing_more_options_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MoreVert,
+                                        contentDescription = "More video options",
+                                        tint = if (showVideoOverflowMenu) CinemaNeonGreen else Color.White
+                                    )
+                                }
+
+                                val speedFormatted = "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x"
+                                val repeatLabel = when (playbackState.repeatMode) {
+                                    RepeatModeState.OFF -> "Repeat: Off"
+                                    RepeatModeState.ALL -> "Repeat: All"
+                                    RepeatModeState.ONE -> "Repeat: One"
+                                }
+
+                                DropdownMenu(
+                                    expanded = showVideoOverflowMenu,
+                                    onDismissRequest = { showVideoOverflowMenu = false },
+                                    containerColor = Color(0xFF14181F).copy(alpha = 0.98f),
+                                    modifier = Modifier
+                                        .widthIn(min = 236.dp, max = 280.dp)
+                                        .heightIn(max = if (isLandscapeViewport) 280.dp else 440.dp)
+                                        .testTag("now_playing_overflow_dropdown_menu")
+                                ) {
+                                    // 1. Playback Speed
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "Playback Speed ($speedFormatted)",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.Speed,
+                                                contentDescription = null,
+                                                tint = if (abs(playbackState.playbackSpeed - 1.0f) > 0.04f) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            showAudioTrackSheet = false
+                                            onToggleSpeedPanel()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("video_speed_pill")
+                                    )
+
+                                    // 2. Aspect Ratio / Screen Fit
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "Aspect Ratio: ${playbackState.videoAspectMode.label}",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.AspectRatio,
+                                                contentDescription = null,
+                                                tint = if (playbackState.videoAspectMode != VideoAspectMode.FIT) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onCycleAspectMode()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("video_aspect_ratio_chip")
+                                    )
+
+                                    // 3. Audio Track & Sound Mode (♪ Original HD Audio)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = activeAudioTrackLabel,
+                                                color = Color.White,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.MusicNote,
+                                                contentDescription = null,
+                                                tint = CinemaNeonGreen
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            if (showVideoSettings) onToggleVideoSettings()
+                                            if (showSubtitleSettings) onToggleSubtitleSettings()
+                                            showAudioTrackSheet = !showAudioTrackSheet
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("video_audio_track_pill")
+                                    )
+
+                                    // 4. Screen Mode (Portrait / Landscape Fullscreen)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = if (isCurrentlyLandscapeMode) "Screen: Landscape (Exit Fullscreen)" else "Screen: Portrait (Fullscreen)",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = if (isCurrentlyLandscapeMode) {
+                                                    Icons.Default.ScreenLockLandscape
+                                                } else {
+                                                    Icons.Default.ScreenLockPortrait
+                                                },
+                                                contentDescription = null,
+                                                tint = if (isCurrentlyLandscapeMode) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            showVideoOverflowMenu = false
+                                            toggleLandscapePortraitQuick()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("video_fullscreen_chip")
+                                    )
+
+                                    // 5. Repeat Mode
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = repeatLabel,
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = if (playbackState.repeatMode == RepeatModeState.ONE) {
+                                                    Icons.Default.RepeatOne
+                                                } else {
+                                                    Icons.Default.Repeat
+                                                },
+                                                contentDescription = null,
+                                                tint = if (playbackState.repeatMode != RepeatModeState.OFF) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onCycleRepeat()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("video_repeat_pill")
+                                    )
+
+                                    // 6. Frame Rotate 90°
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "Rotate (${playbackState.videoRotationDegrees}°)",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.ScreenRotation,
+                                                contentDescription = null,
+                                                tint = if (playbackState.videoRotationDegrees != 0) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onRotateVideo90()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("video_rotate_chip")
+                                    )
+
+                                    // 7. Favorite Toggle
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = if (isFavorite) "Saved in Favorites" else "Favorite",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                                contentDescription = null,
+                                                tint = if (isFavorite) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onToggleFavorite()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("now_playing_menu_favorite")
+                                    )
+
+                                    // 8. Media Studio / Cut
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "Studio",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.ContentCut,
+                                                contentDescription = null,
+                                                tint = Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onOpenStudio()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("now_playing_menu_studio")
+                                    )
+
+                                    // 9. Video Settings & Playback
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = "Settings",
+                                                color = Color.White,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        leadingIcon = {
+                                            Icon(
+                                                imageVector = Icons.Default.Settings,
+                                                contentDescription = null,
+                                                tint = if (showVideoSettings) CinemaNeonGreen else Color.White
+                                            )
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            showAudioTrackSheet = false
+                                            onToggleVideoSettings()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("now_playing_video_settings_button")
+                                    )
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 4.dp),
+                                        color = Color.White.copy(alpha = 0.14f)
+                                    )
+
+                                    DropdownMenuItem(
+                                        text = { Text("Share", color = Color.White, maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Share, contentDescription = null, tint = Color.White)
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onShareCurrentMedia()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("now_playing_menu_share")
+                                    )
+
+                                    DropdownMenuItem(
+                                        text = { Text("Add to Playlist", color = Color.White, maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.AutoMirrored.Filled.PlaylistAdd, contentDescription = null, tint = Color.White)
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onAddToPlaylistCurrentMedia()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("now_playing_menu_add_to_playlist")
+                                    )
+
+                                    DropdownMenuItem(
+                                        text = { Text("File Information", color = Color.White, maxLines = 1) },
+                                        leadingIcon = {
+                                            Icon(Icons.Default.Info, contentDescription = null, tint = Color.White)
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                                        onClick = {
+                                            notifyUserInteraction()
+                                            showVideoOverflowMenu = false
+                                            onShowFileInfoCurrentMedia()
+                                        },
+                                        modifier = Modifier
+                                            .heightIn(min = 42.dp)
+                                            .testTag("now_playing_menu_file_info")
+                                    )
+                                }
                             }
                         }
                     }
@@ -2095,211 +2485,6 @@ private fun ImmersiveVideoCinemaLayout(
                                 .height(if (isLandscapeViewport) 20.dp else 26.dp)
                                 .testTag("now_playing_seek_slider")
                         )
-
-                        Spacer(modifier = Modifier.height(if (isLandscapeViewport) 4.dp else if (isCompactHudHeight) 2.dp else 8.dp))
-
-                        // Bottom Dark Translucent Pill Action Bar (matches video recording pills)
-                        LazyRow(
-                            modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp),
-                            horizontalArrangement = Arrangement.spacedBy(if (isLandscapeViewport) 8.dp else 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-
-                            // Pill 1: Playback Speed (1.0x -> 1.25x -> 1.5x -> 2.0x -> 0.5x -> 0.75x)
-                            item {
-                                CinemaActionPill(
-                                    label = "${playbackState.playbackSpeed}x",
-                                    isHighlighted = abs(playbackState.playbackSpeed - 1.0f) > 0.04f,
-                                    onClick = cycleSpeedQuick,
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.Speed,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("video_speed_pill")
-                                )
-                            }
-
-                            // Pill 2: Aspect Ratio (Fit Screen -> Fill (Zoom) -> Original -> 16:9 -> 4:3)
-                            item {
-                                CinemaActionPill(
-                                    label = playbackState.videoAspectMode.label,
-                                    isHighlighted = playbackState.videoAspectMode != VideoAspectMode.FIT,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        onCycleAspectMode()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.AspectRatio,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("video_aspect_ratio_chip")
-                                )
-                            }
-
-                            // Pill 3: Audio Track / Sound Mode (♪ Original HD Audio)
-                            item {
-                                CinemaActionPill(
-                                    label = activeAudioTrackLabel,
-                                    isHighlighted = showAudioTrackSheet,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        showAudioTrackSheet = !showAudioTrackSheet
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.MusicNote,
-                                            contentDescription = null,
-                                            tint = CinemaNeonGreen,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("video_audio_track_pill")
-                                )
-                            }
-
-                            // Pill 4: 1-Tap Orientation Toggle (Portrait / Landscape)
-                            item {
-                                CinemaActionPill(
-                                    label = if (isCurrentlyLandscapeMode) "Landscape" else "Portrait",
-                                    isHighlighted = isCurrentlyLandscapeMode,
-                                    onClick = toggleLandscapePortraitQuick,
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = if (isCurrentlyLandscapeMode) {
-                                                Icons.Default.ScreenLockLandscape
-                                            } else {
-                                                Icons.Default.ScreenLockPortrait
-                                            },
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("video_orientation_mode_chip")
-                                )
-                            }
-
-                            // Pill 5: Repeat Mode Toggle (Repeat Off / All / One)
-                            item {
-                                val repeatLabel = when (playbackState.repeatMode) {
-                                    RepeatModeState.OFF -> "Repeat"
-                                    RepeatModeState.ALL -> "Repeat All"
-                                    RepeatModeState.ONE -> "Repeat One"
-                                }
-                                CinemaActionPill(
-                                    label = repeatLabel,
-                                    isHighlighted = playbackState.repeatMode != RepeatModeState.OFF,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        onCycleRepeat()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = if (playbackState.repeatMode == RepeatModeState.ONE) {
-                                                Icons.Default.RepeatOne
-                                            } else {
-                                                Icons.Default.Repeat
-                                            },
-                                            contentDescription = null,
-                                            tint = if (playbackState.repeatMode != RepeatModeState.OFF) CinemaNeonGreen else Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("video_repeat_pill")
-                                )
-                            }
-
-                            // Pill 6: Frame Rotate 90°
-                            item {
-                                CinemaActionPill(
-                                    label = "Rotate (${playbackState.videoRotationDegrees}°)",
-                                    isHighlighted = playbackState.videoRotationDegrees != 0,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        onRotateVideo90()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.ScreenRotation,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("video_rotate_chip")
-                                )
-                            }
-
-                            // Pill 7: Favorite toggle
-                            item {
-                                CinemaActionPill(
-                                    label = if (isFavorite) "Saved" else "Favorite",
-                                    isHighlighted = isFavorite,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        onToggleFavorite()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
-                                            contentDescription = null,
-                                            tint = if (isFavorite) CinemaNeonGreen else Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                )
-                            }
-
-                            // Pill 8: Media Studio / Cut
-                            item {
-                                CinemaActionPill(
-                                    label = "Studio",
-                                    isHighlighted = false,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        onOpenStudio()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.ContentCut,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("now_playing_studio_button")
-                                )
-                            }
-
-                            // Pill 9: Video Settings Drawer
-                            item {
-                                CinemaActionPill(
-                                    label = "Settings",
-                                    isHighlighted = showVideoSettings,
-                                    onClick = {
-                                        notifyUserInteraction()
-                                        onToggleVideoSettings()
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = Icons.Default.Settings,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    },
-                                    modifier = Modifier.testTag("now_playing_video_settings_button")
-                                )
-                            }
-                        }
                     }
 
                     // Quick Audio Track & Sound Mode selector popup when "♪ Original HD Audio" pill is tapped
@@ -2447,37 +2632,12 @@ private fun ImmersiveVideoCinemaLayout(
                         }
                     }
 
-                    // Floating Video Settings Drawer in Cinema Mode
-                    if (showVideoSettings) {
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.CenterEnd)
-                                .widthIn(max = 380.dp)
-                                .fillMaxWidth(if (isLandscapeViewport) 0.58f else 0.94f)
-                                .fillMaxHeight(0.88f)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            VideoPlayerSettingsCard(
-                                playbackState = playbackState,
-                                userPreferences = userPreferences,
-                                onSetPlaybackSpeed = onSetPlaybackSpeed,
-                                onSelectVideoOrientation = onSelectVideoOrientation,
-                                onRotateVideo90 = onRotateVideo90,
-                                onCycleAspectMode = onCycleAspectMode,
-                                onToggleKeepScreenOn = onToggleKeepScreenOn,
-                                onToggleVideoGestureControls = onToggleVideoGestureControls,
-                                onToggleControlsLock = onToggleControlsLock,
-                                onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                                onPickSubtitleFileClick = onPickSubtitleFileClick,
-                                onOpenEqualizer = onOpenEqualizer
-                            )
-                        }
-                    }
                 }
             }
         }
     }
 }
+
 
 @Composable
 private fun CinemaActionPill(
@@ -2961,537 +3121,6 @@ private fun NowPlayingOverflowMenuButton(
 }
 
 /**
- * Playback Speed Control Card (opened from the Now Playing 3-dot menu).
- */
-@Composable
-private fun PlaybackSpeedControlCard(
-    playbackState: PlaybackUiState,
-    onSetPlaybackSpeed: (Float) -> Unit,
-    onClose: (() -> Unit)? = null
-) {
-    val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("playback_speed_panel"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.Speed,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Playback Speed (${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-                if (onClose != null) {
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Playback Speed panel"
-                        )
-                    }
-                }
-            }
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(speeds) { spd ->
-                    FilterChip(
-                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
-                        onClick = { onSetPlaybackSpeed(spd) },
-                        label = { Text("${spd}x", maxLines = 1) },
-                        modifier = Modifier.testTag("speed_chip_${spd}")
-                    )
-                }
-            }
-            Slider(
-                value = playbackState.playbackSpeed.coerceIn(0.5f, 3.0f),
-                onValueChange = { raw ->
-                    val snapped = (raw * 20f).roundToInt() / 20f
-                    onSetPlaybackSpeed(snapped.coerceIn(0.5f, 3.0f))
-                },
-                valueRange = 0.5f..3.0f,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("now_playing_speed_slider")
-            )
-        }
-    }
-}
-
-/**
- * Sleep Timer (Automatic Stop) Control Card.
- */
-@Composable
-private fun SleepTimerControlCard(
-    playbackState: PlaybackUiState,
-    onSetSleepTimerMinutes: (Int) -> Unit,
-    onSetSleepTimerEndOfTrack: (Boolean) -> Unit,
-    onClose: (() -> Unit)? = null
-) {
-    val presetMinutes = listOf(0, 5, 10, 15, 30, 45, 60)
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("sleep_timer_panel"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Bedtime,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.tertiary
-                    )
-                    Text(
-                        text = "Sleep Timer (Automatic Stop)",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                val statusLabel = when {
-                    playbackState.sleepTimerStopAtEndOfTrack -> "Stops at End of Track"
-                    playbackState.sleepTimerRemainingMs > 0L ->
-                        "Remaining: ${formatDurationMillis(playbackState.sleepTimerRemainingMs)}"
-                    else -> "Off"
-                }
-                Text(
-                    text = statusLabel,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (playbackState.isSleepTimerActive) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier.testTag("sleep_timer_status_text")
-                )
-                if (onClose != null) {
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Sleep Timer panel"
-                        )
-                    }
-                }
-            }
-
-            Text(
-                text = "Automatically pauses music or video playback when the countdown completes or the current track ends.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(presetMinutes) { mins ->
-                    val isSelected = if (mins == 0) {
-                        !playbackState.isSleepTimerActive
-                    } else {
-                        !playbackState.sleepTimerStopAtEndOfTrack && playbackState.sleepTimerTotalMinutes == mins
-                    }
-                    FilterChip(
-                        selected = isSelected,
-                        onClick = { onSetSleepTimerMinutes(mins) },
-                        label = { Text(if (mins == 0) "Off" else "$mins min") },
-                        modifier = Modifier.testTag("sleep_timer_chip_$mins")
-                    )
-                }
-                item {
-                    FilterChip(
-                        selected = playbackState.sleepTimerStopAtEndOfTrack,
-                        onClick = {
-                            onSetSleepTimerEndOfTrack(!playbackState.sleepTimerStopAtEndOfTrack)
-                        },
-                        label = { Text("End of Track") },
-                        modifier = Modifier.testTag("sleep_timer_chip_end_of_track")
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VideoPlayerSettingsCard(
-    playbackState: PlaybackUiState,
-    userPreferences: UserPreferencesState,
-    onSetPlaybackSpeed: (Float) -> Unit,
-    onSelectVideoOrientation: (VideoOrientationPreference) -> Unit,
-    onRotateVideo90: () -> Unit,
-    onCycleAspectMode: () -> Unit,
-    onToggleKeepScreenOn: (Boolean) -> Unit,
-    onToggleVideoGestureControls: (Boolean) -> Unit,
-    onToggleControlsLock: (Boolean) -> Unit,
-    onToggleSubtitlesEnabled: (Boolean) -> Unit,
-    onPickSubtitleFileClick: () -> Unit,
-    onOpenEqualizer: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("video_settings_panel"),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            Text(
-                text = "Video Settings & Orientation",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            // 1. Screen Rotation Mode (Auto / Landscape / Portrait)
-            Text(
-                text = "Screen Rotation Mode",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(VideoOrientationPreference.entries) { pref ->
-                    FilterChip(
-                        selected = userPreferences.videoOrientationPreference == pref,
-                        onClick = { onSelectVideoOrientation(pref) },
-                        label = { Text(pref.label) },
-                        modifier = Modifier.testTag("video_orientation_pref_${pref.name.lowercase()}")
-                    )
-                }
-            }
-
-            // 2. Frame Orientation & Aspect Ratio
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onRotateVideo90,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Frame: ${playbackState.videoRotationDegrees}°")
-                }
-                OutlinedButton(
-                    onClick = onCycleAspectMode,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(playbackState.videoAspectMode.label)
-                }
-            }
-
-            // 3. Playback Speed (0.5x – 3.0x)
-            Text(
-                text = "Playback Speed (${playbackState.playbackSpeed}x • 0.5x–3.0x)",
-                style = MaterialTheme.typography.labelMedium
-            )
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
-                    FilterChip(
-                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
-                        onClick = { onSetPlaybackSpeed(spd) },
-                        label = { Text("${spd}x") }
-                    )
-                }
-            }
-
-            // 4. Keep Screen On During Video toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Keep Screen On During Video", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        "Prevents screen timeout while video is actively playing",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Switch(
-                    checked = userPreferences.keepScreenOnDuringVideo,
-                    onCheckedChange = onToggleKeepScreenOn,
-                    modifier = Modifier.testTag("video_keep_screen_on_switch")
-                )
-            }
-
-            // 5. Gesture Controls toggle
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Brightness & Volume Swipe Gestures", style = MaterialTheme.typography.bodyMedium)
-                Switch(
-                    checked = userPreferences.videoGestureControlsEnabled,
-                    onCheckedChange = onToggleVideoGestureControls,
-                    modifier = Modifier.testTag("video_gesture_controls_switch")
-                )
-            }
-
-            // 6. Subtitles & Audio Track DSP shortcuts
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = onPickSubtitleFileClick,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Subtitles (${if (userPreferences.subtitlesEnabledByDefault) "On" else "Off"})")
-                }
-                OutlinedButton(
-                    onClick = onOpenEqualizer,
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Audio Track EQ")
-                }
-            }
-
-            // 7. Lock Controls button
-            OutlinedButton(
-                onClick = { onToggleControlsLock(!playbackState.isVideoControlsLocked) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Lock Video Touch Controls")
-            }
-        }
-    }
-}
-
-@Composable
-private fun SubtitleSettingsCard(
-    playbackState: PlaybackUiState,
-    userPreferences: UserPreferencesState,
-    onToggleSubtitlesEnabled: (Boolean) -> Unit,
-    onSetSubtitleFontScale: (Float) -> Unit,
-    onSetSubtitleOffsetMs: (Long) -> Unit,
-    onPickSubtitleFileClick: () -> Unit,
-    onSeekToCue: (Long) -> Unit = {},
-    onClose: (() -> Unit)? = null
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("subtitle_settings_panel"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Lyrics & Subtitles (SRT & WebVTT)",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                Switch(
-                    checked = userPreferences.subtitlesEnabledByDefault,
-                    onCheckedChange = onToggleSubtitlesEnabled,
-                    modifier = Modifier.testTag("subtitle_enable_switch")
-                )
-                if (onClose != null) {
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(32.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close Lyrics & Subtitles panel"
-                        )
-                    }
-                }
-            }
-
-            Text(
-                text = playbackState.loadedSubtitleName?.let {
-                    "Loaded: $it (${playbackState.loadedSubtitleFormat}) • ${playbackState.loadedSubtitleCues.size} synchronized cues"
-                } ?: "No SRT/WebVTT lyrics or subtitle track loaded",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (playbackState.subtitleError != null) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = playbackState.subtitleError,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
-
-            // Synchronized Lyrics / Cue List (tap any line to jump to its timestamp)
-            if (playbackState.loadedSubtitleCues.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.65f))
-                        .padding(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "Synchronized Lyrics / Cues (Tap line to seek):",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    playbackState.loadedSubtitleCues.forEachIndexed { idx, cue ->
-                        val isActiveCue = playbackState.activeSubtitleText == cue.text
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(
-                                    if (isActiveCue) {
-                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-                                    } else {
-                                        Color.Transparent
-                                    }
-                                )
-                                .clickable { onSeekToCue(cue.startMs) }
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                                .testTag("lyrics_cue_item_$idx"),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = formatDurationMillis(cue.startMs),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.width(48.dp)
-                            )
-                            Text(
-                                text = cue.text,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = if (isActiveCue) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isActiveCue) {
-                                    MaterialTheme.colorScheme.onPrimaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = "Font Scale: ${(userPreferences.subtitleFontScale * 100).toInt()}%",
-                style = MaterialTheme.typography.labelMedium
-            )
-            Slider(
-                value = userPreferences.subtitleFontScale,
-                onValueChange = onSetSubtitleFontScale,
-                valueRange = 0.7f..1.8f
-            )
-
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = "Sync Offset: ${userPreferences.subtitleSyncOffsetMs} ms",
-                    style = MaterialTheme.typography.labelMedium
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs - 250L) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
-                    ) { Text("-250ms", maxLines = 1) }
-                    OutlinedButton(
-                        onClick = { onSetSubtitleOffsetMs(0L) },
-                        modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
-                    ) { Text("0ms", maxLines = 1) }
-                    OutlinedButton(
-                        onClick = { onSetSubtitleOffsetMs(userPreferences.subtitleSyncOffsetMs + 250L) },
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("subtitle_offset_plus_250_button"),
-                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp)
-                    ) { Text("+250ms", maxLines = 1) }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-            Button(
-                onClick = onPickSubtitleFileClick,
-                modifier = Modifier.testTag("load_external_subtitle_button")
-            ) {
-                Icon(Icons.Default.ClosedCaption, contentDescription = null)
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Load Local .SRT / .VTT Lyrics or Subtitles (SAF)")
-            }
-        }
-    }
-}
-
-/**
  * Multiband Biquad Equalizer, Bass Boost, Preamp Sound Enhancer & Channel Balance DSP Bottom Sheet.
  */
 @kotlin.OptIn(ExperimentalMaterial3Api::class)
@@ -3780,36 +3409,6 @@ private fun LandscapeAudioNowPlayingDeck(
     onSaveQueueAsPlaylist: (String) -> Unit,
     onRetryPlayback: () -> Unit
 ) {
-    if (showSpeedPanel) {
-        PlaybackSpeedDialog(
-            playbackState = playbackState,
-            onSetPlaybackSpeed = onSetPlaybackSpeed,
-            onDismiss = onToggleSpeedPanel
-        )
-    }
-
-    if (showSleepTimerPanel) {
-        SleepTimerDialog(
-            playbackState = playbackState,
-            onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-            onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
-            onDismiss = onToggleSleepTimerPanel
-        )
-    }
-
-    if (showSubtitleSettings) {
-        SubtitleSettingsDialog(
-            playbackState = playbackState,
-            userPreferences = userPreferences,
-            onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-            onSetSubtitleFontScale = onSetSubtitleFontScale,
-            onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-            onPickSubtitleFileClick = onPickSubtitleFileClick,
-            onSeekToCue = onSeekTo,
-            onDismiss = onToggleSubtitleSettings
-        )
-    }
-
     val context = LocalContext.current
 
     Row(
@@ -4453,6 +4052,7 @@ fun NowPlayingSidePanel(
     onToggleShuffle: () -> Unit,
     onCycleRepeat: () -> Unit,
     onSetPlaybackSpeed: (Float) -> Unit,
+    onToggleSpeedPanel: () -> Unit,
     onToggleFavorite: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onOpenStudio: () -> Unit,
@@ -4461,15 +4061,7 @@ fun NowPlayingSidePanel(
     modifier: Modifier = Modifier
 ) {
     val currentMedia = playbackState.currentMedia
-    var showSidePanelSpeedDialog by rememberSaveable { mutableStateOf(false) }
-
-    if (showSidePanelSpeedDialog) {
-        PlaybackSpeedDialog(
-            playbackState = playbackState,
-            onSetPlaybackSpeed = onSetPlaybackSpeed,
-            onDismiss = { showSidePanelSpeedDialog = false }
-        )
-    }
+    // Consolidate PlaybackSpeedDialog to MainActivity to avoid duplicate panels
 
     Surface(
         modifier = modifier
@@ -4621,7 +4213,7 @@ fun NowPlayingSidePanel(
                                         },
                                         onClick = {
                                             sideMenuExpanded = false
-                                            showSidePanelSpeedDialog = true
+                                            onToggleSpeedPanel()
                                         },
                                         modifier = Modifier.testTag("side_panel_speed_chip")
                                     )

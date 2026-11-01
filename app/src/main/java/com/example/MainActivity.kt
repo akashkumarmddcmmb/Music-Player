@@ -862,6 +862,15 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 },
                 onDismissVideoInfoDetailsDialog = {
                     viewModel.dismissVideoInfoDetailsDialog()
+                },
+                onToggleSpeedPanel = {
+                    viewModel.setPlaybackSpeedDialogVisible(!playbackState.showPlaybackSpeedDialog)
+                },
+                onToggleVideoSettings = {
+                    viewModel.setVideoSettingsDialogVisible(!playbackState.showVideoSettingsDialog)
+                },
+                onToggleSubtitleSettings = {
+                    viewModel.setSubtitleSettingsDialogVisible(!playbackState.showSubtitleSettingsDialog)
                 }
             )
             InAppNotificationBanner(
@@ -1398,6 +1407,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                         onToggleShuffle = { viewModel.toggleShuffle() },
                         onCycleRepeat = { viewModel.cycleRepeatMode() },
                         onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
+                        onToggleSpeedPanel = {
+                            viewModel.setPlaybackSpeedDialogVisible(!playbackState.showPlaybackSpeedDialog)
+                        },
                         onToggleFavorite = {
                             playbackState.currentMedia?.let { viewModel.toggleFavorite(it) }
                         },
@@ -1410,6 +1422,17 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 }
             }
         }
+    }
+
+    // --- Global Managed Dialogs (Ensuring Exclusivity) ---
+
+    // 1. Playback Speed Dialog (Managed via ViewModel state for global consistency)
+    if (playbackState.showPlaybackSpeedDialog) {
+        com.example.ui.components.PlaybackSpeedDialog(
+            playbackState = playbackState,
+            onSetPlaybackSpeed = { viewModel.setPlaybackSpeed(it) },
+            onDismiss = { viewModel.setPlaybackSpeedDialogVisible(false) }
+        )
     }
 }
 

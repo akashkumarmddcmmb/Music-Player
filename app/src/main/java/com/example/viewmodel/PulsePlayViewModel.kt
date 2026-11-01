@@ -177,6 +177,9 @@ data class PlaybackUiState(
     val isTemporaryHighResEngineActive: Boolean = false,
     val isDownscaledPlayback: Boolean = false,
     val avSyncHealthy: Boolean = true,
+    val showPlaybackSpeedDialog: Boolean = false,
+    val showVideoSettingsDialog: Boolean = false,
+    val showSubtitleSettingsDialog: Boolean = false,
     val playbackModeAvailabilities: List<PlaybackModeAvailabilityReport> = emptyList()
 ) {
     val isSleepTimerActive: Boolean
@@ -1210,6 +1213,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setEqualizerSheetOpen(open: Boolean) {
         _isEqualizerSheetOpen.value = open
+        if (open) {
+            _playbackState.value = _playbackState.value.copy(
+                showPlaybackSpeedDialog = false,
+                showVideoSettingsDialog = false,
+                showSubtitleSettingsDialog = false,
+                showVideoCompatibilityDialog = false,
+                showVideoInfoDetailsDialog = false
+            )
+        }
     }
 
     fun updateSearchQuery(query: String) {
@@ -1522,6 +1534,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 videoCapabilityEvaluation = videoCapabilityEval,
                 showVideoCompatibilityDialog = false,
                 showVideoInfoDetailsDialog = false,
+                showPlaybackSpeedDialog = false,
+                showVideoSettingsDialog = false,
+                showSubtitleSettingsDialog = false,
                 activeVideoEngineStrategy = videoCapabilityEval?.recommendedStrategy
                     ?: latestTelemetry.activeEngineStrategy,
                 isTemporaryHighResEngineActive = videoCapabilityEval?.resolutionTier?.isHighRes4kOrAbove == true ||
@@ -1898,9 +1913,47 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 media = current,
                 selectedMode = userPreferences.value.highResVideoPlaybackMode
             )
+        _isEqualizerSheetOpen.value = false
         _playbackState.value = _playbackState.value.copy(
             videoCapabilityEvaluation = eval,
-            showVideoCompatibilityDialog = true
+            showVideoCompatibilityDialog = true,
+            showVideoInfoDetailsDialog = false,
+            showPlaybackSpeedDialog = false,
+            showVideoSettingsDialog = false,
+            showSubtitleSettingsDialog = false
+        )
+    }
+
+    fun setPlaybackSpeedDialogVisible(visible: Boolean) {
+        if (visible) _isEqualizerSheetOpen.value = false
+        _playbackState.value = _playbackState.value.copy(
+            showPlaybackSpeedDialog = visible,
+            showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
+            showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
+            showVideoSettingsDialog = if (visible) false else _playbackState.value.showVideoSettingsDialog,
+            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog
+        )
+    }
+
+    fun setVideoSettingsDialogVisible(visible: Boolean) {
+        if (visible) _isEqualizerSheetOpen.value = false
+        _playbackState.value = _playbackState.value.copy(
+            showVideoSettingsDialog = visible,
+            showPlaybackSpeedDialog = if (visible) false else _playbackState.value.showPlaybackSpeedDialog,
+            showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
+            showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
+            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog
+        )
+    }
+
+    fun setSubtitleSettingsDialogVisible(visible: Boolean) {
+        if (visible) _isEqualizerSheetOpen.value = false
+        _playbackState.value = _playbackState.value.copy(
+            showSubtitleSettingsDialog = visible,
+            showPlaybackSpeedDialog = if (visible) false else _playbackState.value.showPlaybackSpeedDialog,
+            showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
+            showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
+            showVideoSettingsDialog = if (visible) false else _playbackState.value.showVideoSettingsDialog
         )
     }
 

@@ -500,7 +500,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 hasRenderedFirstFrame = false,
                 playbackError = null,
                 videoCapabilityEvaluation = nextVideoEval,
-                showVideoCompatibilityDialog = nextVideoEval?.requiresCompatibilityPrompt == true,
+                showVideoCompatibilityDialog = false,
                 showVideoInfoDetailsDialog = false,
                 activeVideoEngineStrategy = nextVideoEval?.recommendedStrategy
                     ?: AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
@@ -1520,7 +1520,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 currentArtworkUri = activeResolvedArtwork.artworkUri?.toString(),
                 currentArtworkSource = activeResolvedArtwork.sourceLabel,
                 videoCapabilityEvaluation = videoCapabilityEval,
-                showVideoCompatibilityDialog = videoCapabilityEval?.requiresCompatibilityPrompt == true,
+                showVideoCompatibilityDialog = false,
                 showVideoInfoDetailsDialog = false,
                 activeVideoEngineStrategy = videoCapabilityEval?.recommendedStrategy
                     ?: latestTelemetry.activeEngineStrategy,

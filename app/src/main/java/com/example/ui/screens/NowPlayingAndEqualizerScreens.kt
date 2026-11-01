@@ -2085,25 +2085,26 @@ private fun ImmersiveVideoCinemaLayout(
                             thumb = {
                                 Box(
                                     modifier = Modifier
-                                        .width(6.dp)
-                                        .height(20.dp)
+                                        .width(if (isLandscapeViewport) 4.dp else 6.dp)
+                                        .height(if (isLandscapeViewport) 16.dp else 20.dp)
                                         .background(CinemaNeonGreen, RoundedCornerShape(3.dp))
                                 )
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(26.dp)
+                                .height(if (isLandscapeViewport) 20.dp else 26.dp)
                                 .testTag("now_playing_seek_slider")
                         )
 
-                        Spacer(modifier = Modifier.height(if (isCompactHudHeight) 2.dp else 8.dp))
+                        Spacer(modifier = Modifier.height(if (isLandscapeViewport) 4.dp else if (isCompactHudHeight) 2.dp else 8.dp))
 
                         // Bottom Dark Translucent Pill Action Bar (matches video recording pills)
                         LazyRow(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(min = 36.dp),
+                            horizontalArrangement = Arrangement.spacedBy(if (isLandscapeViewport) 8.dp else 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+
                             // Pill 1: Playback Speed (1.0x -> 1.25x -> 1.5x -> 2.0x -> 0.5x -> 0.75x)
                             item {
                                 CinemaActionPill(

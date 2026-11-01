@@ -98,6 +98,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.scale
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
 import com.example.data.preferences.HighResVideoPlaybackMode
@@ -1339,10 +1341,15 @@ fun VideoSettingsDialog(
     onOpenCompatibilityOptions: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
+    val dialogWidth = if (isLandscape) 640.dp else 520.dp
+    val contentMaxHeight = if (isLandscape) 260.dp else 460.dp
+
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier
-            .widthIn(max = 520.dp)
+            .widthIn(max = dialogWidth)
             .testTag("video_settings_panel"),
         title = {
             Row(
@@ -1367,172 +1374,211 @@ fun VideoSettingsDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 440.dp)
+                    .heightIn(max = contentMaxHeight)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    text = "Screen Rotation Mode",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(VideoOrientationPreference.entries) { pref ->
-                        FilterChip(
-                            selected = userPreferences.videoOrientationPreference == pref,
-                            onClick = { onSelectVideoOrientation(pref) },
-                            label = { Text(pref.label) },
-                            modifier = Modifier.testTag("video_orientation_pref_${pref.name.lowercase()}")
-                        )
-                    }
-                }
-
-                Text(
-                    text = "Frame & Aspect Ratio",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onRotateVideo90,
-                        modifier = Modifier.weight(1f)
+                if (isLandscape) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(24.dp)
                     ) {
-                        Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Frame: ${playbackState.videoRotationDegrees}°")
-                    }
-                    OutlinedButton(
-                        onClick = onCycleAspectMode,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(playbackState.videoAspectMode.label)
-                    }
-                }
+                        // Left Column: Display & Rotation
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            VideoSettingsSectionHeader("Screen Rotation Mode")
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                items(VideoOrientationPreference.entries) { pref ->
+                                    FilterChip(
+                                        selected = userPreferences.videoOrientationPreference == pref,
+                                        onClick = { onSelectVideoOrientation(pref) },
+                                        label = { Text(pref.label, fontSize = 11.sp) },
+                                        modifier = Modifier.testTag("video_orientation_pref_${pref.name.lowercase()}")
+                                    )
+                                }
+                            }
 
-                Text(
-                    text = "Playback Speed (${playbackState.playbackSpeed}x)",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
-                        FilterChip(
-                            selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
-                            onClick = { onSetPlaybackSpeed(spd) },
-                            label = { Text("${spd}x") }
-                        )
-                    }
-                }
+                            VideoSettingsSectionHeader("Frame & Aspect Ratio")
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = onRotateVideo90,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("${playbackState.videoRotationDegrees}°", fontSize = 11.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = onCycleAspectMode,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(playbackState.videoAspectMode.label, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Keep Screen On During Video", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Prevents screen timeout while video is actively playing",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                            VideoSettingsSwitchRow(
+                                title = "Keep Screen On",
+                                checked = userPreferences.keepScreenOnDuringVideo,
+                                onCheckedChange = onToggleKeepScreenOn,
+                                testTag = "video_keep_screen_on_switch"
+                            )
+                        }
+
+                        // Right Column: Playback & Advanced
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            VideoSettingsSectionHeader("Playback Speed")
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 3.0f)) { spd ->
+                                    FilterChip(
+                                        selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                                        onClick = { onSetPlaybackSpeed(spd) },
+                                        label = { Text("${spd}x", fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+
+                            VideoSettingsSectionHeader("Advanced Options")
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(
+                                    onClick = onPickSubtitleFileClick,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Subs", fontSize = 11.sp)
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenEqualizer()
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(horizontal = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("EQ", fontSize = 11.sp)
+                                }
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    onDismiss()
+                                    onOpenCompatibilityOptions()
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(vertical = 4.dp)
+                            ) {
+                                Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("4K Decoder Options", fontSize = 11.sp)
+                            }
+                        }
                     }
-                    Switch(
+                } else {
+                    // Portrait Layout (Original Vertical Stack)
+                    VideoSettingsSectionHeader("Screen Rotation Mode")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(VideoOrientationPreference.entries) { pref ->
+                            FilterChip(
+                                selected = userPreferences.videoOrientationPreference == pref,
+                                onClick = { onSelectVideoOrientation(pref) },
+                                label = { Text(pref.label) },
+                                modifier = Modifier.testTag("video_orientation_pref_${pref.name.lowercase()}")
+                            )
+                        }
+                    }
+
+                    VideoSettingsSectionHeader("Frame & Aspect Ratio")
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onRotateVideo90, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.ScreenRotation, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Frame: ${playbackState.videoRotationDegrees}°")
+                        }
+                        OutlinedButton(onClick = onCycleAspectMode, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.AspectRatio, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(playbackState.videoAspectMode.label)
+                        }
+                    }
+
+                    VideoSettingsSectionHeader("Playback Speed (${playbackState.playbackSpeed}x)")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
+                            FilterChip(
+                                selected = abs(playbackState.playbackSpeed - spd) < 0.05f,
+                                onClick = { onSetPlaybackSpeed(spd) },
+                                label = { Text("${spd}x") }
+                            )
+                        }
+                    }
+
+                    VideoSettingsSwitchRow(
+                        title = "Keep Screen On During Video",
+                        subtitle = "Prevents screen timeout while video is actively playing",
                         checked = userPreferences.keepScreenOnDuringVideo,
                         onCheckedChange = onToggleKeepScreenOn,
-                        modifier = Modifier.testTag("video_keep_screen_on_switch")
+                        testTag = "video_keep_screen_on_switch"
                     )
-                }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Brightness & Volume Gestures", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Vertical swipe gestures on left/right screen edges",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
+                    VideoSettingsSwitchRow(
+                        title = "Brightness & Volume Gestures",
+                        subtitle = "Vertical swipe gestures on screen edges",
                         checked = userPreferences.videoGestureControlsEnabled,
                         onCheckedChange = onToggleVideoGestureControls,
-                        modifier = Modifier.testTag("video_gesture_controls_switch")
+                        testTag = "video_gesture_controls_switch"
                     )
-                }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onPickSubtitleFileClick, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Subtitles (${if (userPreferences.subtitlesEnabledByDefault) "On" else "Off"})")
+                        }
+                        OutlinedButton(onClick = { onDismiss(); onOpenEqualizer() }, modifier = Modifier.weight(1f)) {
+                            Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Audio EQ")
+                        }
+                    }
+
+                    VideoSettingsSectionHeader("High-Resolution Video Playback Mode")
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(HighResVideoPlaybackMode.entries) { mode ->
+                            val avail = playbackState.playbackModeAvailabilities.find { it.mode == mode }
+                            val isEnabled = avail?.isAvailable ?: true
+                            FilterChip(
+                                selected = userPreferences.highResVideoPlaybackMode == mode,
+                                onClick = { if (isEnabled) onSelectHighResMode(mode) },
+                                enabled = isEnabled,
+                                label = { Text(mode.label, maxLines = 1) },
+                                modifier = Modifier.testTag("video_dialog_high_res_${mode.name.lowercase()}")
+                            )
+                        }
+                    }
+
                     OutlinedButton(
-                        onClick = onPickSubtitleFileClick,
-                        modifier = Modifier.weight(1f)
+                        onClick = { onDismiss(); onOpenCompatibilityOptions() },
+                        modifier = Modifier.fillMaxWidth().testTag("open_video_compatibility_options_button")
                     ) {
-                        Icon(Icons.Default.ClosedCaption, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Subtitles (${if (userPreferences.subtitlesEnabledByDefault) "On" else "Off"})")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            onDismiss()
-                            onOpenEqualizer()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Equalizer, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Audio EQ")
+                        Text("4K/8K Decoder & Compatibility Options")
                     }
                 }
 
-                Text(
-                    text = "High-Resolution Video Playback Mode",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(HighResVideoPlaybackMode.entries) { mode ->
-                        val avail = playbackState.playbackModeAvailabilities.find { it.mode == mode }
-                        val isEnabled = avail?.isAvailable ?: true
-                        FilterChip(
-                            selected = userPreferences.highResVideoPlaybackMode == mode,
-                            onClick = {
-                                if (isEnabled) onSelectHighResMode(mode)
-                            },
-                            enabled = isEnabled,
-                            label = { Text(mode.label, maxLines = 1) },
-                            modifier = Modifier.testTag("video_dialog_high_res_${mode.name.lowercase()}")
-                        )
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        onDismiss()
-                        onOpenCompatibilityOptions()
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("open_video_compatibility_options_button")
-                ) {
-                    Icon(Icons.Default.Movie, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("4K/8K Decoder & Compatibility Options")
-                }
-
+                // Common footer for both orientations (if needed, or just Lock button)
                 OutlinedButton(
                     onClick = {
                         onToggleControlsLock(!playbackState.isVideoControlsLocked)
@@ -1556,6 +1602,48 @@ fun VideoSettingsDialog(
         }
     )
 }
+
+@Composable
+private fun VideoSettingsSectionHeader(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.primary
+    )
+}
+
+@Composable
+private fun VideoSettingsSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    testTag: String
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium)
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            modifier = Modifier.testTag(testTag).scale(0.85f)
+        )
+    }
+}
+
 
 /**
  * In-Player Compatibility Options Panel / Dialog for 4K, 8K, or unsupported-codec videos.

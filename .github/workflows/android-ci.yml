@@ -58,7 +58,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  EXPECTED_CERT_SHA256: "39:11:67:E3:46:A0:50:E1:1E:74:56:28:37:CD:2E:AB:C5:09:E2:39:A5:91:40:D9:74:42:6C:49:64:F8:88:C7"
+  EXPECTED_CERT_SHA256: "2A:09:47:F6:3E:B7:80:D5:12:09:E4:82:08:39:25:AF:1E:04:26:6F:3E:BD:88:26:E0:C0:52:CE:4A:9B:99:B7"
 
 jobs:
   build-verify-and-release:
@@ -152,6 +152,8 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          EXPECTED_KEYSTORE_BYTES: ${{ vars.EXPECTED_KEYSTORE_BYTES || '2830' }}
+          EXPECTED_KEYSTORE_FILE_SHA256: ${{ vars.EXPECTED_KEYSTORE_FILE_SHA256 }}
         run: |
           set +x
           # 1. Verify all 4 required signing secrets are present
@@ -170,155 +172,208 @@ jobs:
             exit 1
           fi
 
-          # Helper: normalize & decode a Base64 string to a target file via GNU base64
-          decode_b64_layer() {
-            local RAW_INPUT="$1"
-            local TARGET_OUT="$2"
-            local ERR_FILE="$3"
-            local NORM_B64
-            # Strip PEM header/footer lines, data:...;base64, prefix, whitespace, and surrounding quotes
-            NORM_B64=$(printf '%s' "$RAW_INPUT" | sed -E '/^-----BEGIN /d; /^-----END /d; s/^data:[^,]*base64,//I' | tr -d '\r\n\t "'"'" | tr -- '-_' '+/')
-            if [ -z "$NORM_B64" ]; then
-              return 1
-            fi
-            # Strip existing '=' padding and re-pad deterministically from unpadded length modulo 4
-            NORM_B64=$(printf '%s' "$NORM_B64" | sed 's/=*$//')
-            if ! printf '%s' "$NORM_B64" | grep -Eq '^[A-Za-z0-9+/]+$'; then
-              return 1
-            fi
-            local REM=$(( ${#NORM_B64} % 4 ))
-            if [ "$REM" -eq 2 ]; then
-              echo "Restoring 2 missing '=' padding characters (unpadded length ${#NORM_B64}, remainder 2)..."
-              NORM_B64="${NORM_B64}=="
+          # 2. Strict single-pass Base64 normalization and integrity verification
+          RAW_CHAR_LEN=${#UPLOAD_KEY_BASE64}
+          NORM_B64=$(printf '%s' "$UPLOAD_KEY_BASE64" | sed -E '/^-----BEGIN /d; /^-----END /d' | tr -d '\r\n\t ')
+          NORM_CHAR_LEN=${#NORM_B64}
+
+          if [ -z "$NORM_B64" ]; then
+            echo "::error::Base64 decoding failure: UPLOAD_KEY_BASE64 is empty after removing whitespace."
+            exit 1
+          fi
+
+          # Reject any characters outside the standard Base64 alphabet
+          if ! printf '%s' "$NORM_B64" | grep -Eq '^[A-Za-z0-9+/]+={0,2}$'; then
+            echo "::error::Base64 decoding failure: UPLOAD_KEY_BASE64 contains invalid non-Base64 characters (raw length=${RAW_CHAR_LEN}, normalized length=${NORM_CHAR_LEN})."
+            exit 1
+          fi
+
+          UNPADDED_B64=$(printf '%s' "$NORM_B64" | sed 's/=*$//')
+          UNPADDED_LEN=${#UNPADDED_B64}
+          PADDING_LEN=$(( NORM_CHAR_LEN - UNPADDED_LEN ))
+          REM=$(( UNPADDED_LEN % 4 ))
+
+          if [ "$REM" -eq 1 ]; then
+            echo "::error::Base64 decoding failure: Invalid Base64 length (${NORM_CHAR_LEN} chars, unpadded=${UNPADDED_LEN}, remainder=1 mod 4). The secret in UPLOAD_KEY_BASE64 is truncated or damaged."
+            exit 1
+          elif [ "$REM" -eq 2 ] && [ "$PADDING_LEN" -eq 0 ]; then
+            echo "::warning::UPLOAD_KEY_BASE64 has unpadded length ${UNPADDED_LEN} (remainder 2 mod 4 without trailing '=='). Appending '==' for decoding and checking binary structure for truncation..."
+            NORM_B64="${UNPADDED_B64}=="
+          elif [ "$REM" -eq 3 ] && [ "$PADDING_LEN" -eq 0 ]; then
+            echo "::warning::UPLOAD_KEY_BASE64 has unpadded length ${UNPADDED_LEN} (remainder 3 mod 4 without trailing '='). Appending '=' for decoding and checking binary structure for truncation..."
+            NORM_B64="${UNPADDED_B64}="
+          else
+            # Ensure canonical padding matches unpadded length modulo 4
+            if [ "$REM" -eq 0 ]; then
+              NORM_B64="$UNPADDED_B64"
+            elif [ "$REM" -eq 2 ]; then
+              NORM_B64="${UNPADDED_B64}=="
             elif [ "$REM" -eq 3 ]; then
-              echo "Restoring 1 missing '=' padding character (unpadded length ${#NORM_B64}, remainder 3)..."
-              NORM_B64="${NORM_B64}="
-            elif [ "$REM" -eq 1 ]; then
-              echo "::error::Invalid Base64 length (${#NORM_B64}): length modulo 4 equals 1, which cannot represent valid binary data."
-              return 1
+              NORM_B64="${UNPADDED_B64}="
             fi
-            printf '%s' "$NORM_B64" | base64 --decode > "$TARGET_OUT" 2> "$ERR_FILE"
-          }
+          fi
 
-          KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/pulseplay-release.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
+          rm -f "$KEYSTORE_FILE" "$DECODE_LOG"
 
-          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64..."
-          if ! decode_b64_layer "$UPLOAD_KEY_BASE64" "$KEYSTORE_FILE" "$DECODE_LOG"; then
-            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-            echo "::error::GNU base64 decoding failed for UPLOAD_KEY_BASE64: ${DECODE_ERR:-invalid Base64 input}"
+          echo "Decoding pulseplay-release.jks from UPLOAD_KEY_BASE64 (raw secret chars=${RAW_CHAR_LEN}, normalized Base64 chars=${#NORM_B64}, unpadded chars=${UNPADDED_LEN})..."
+          if ! printf '%s' "$NORM_B64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
+            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null | tr '\n' ' ')
+            echo "::error::Base64 decoding failure: GNU base64 failed to decode UPLOAD_KEY_BASE64 (${DECODE_ERR:-invalid Base64 input})."
             rm -f "$DECODE_LOG"
             exit 1
           fi
           rm -f "$DECODE_LOG"
 
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
-            echo "::error::Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty."
+            echo "::error::Base64 decoding failure: Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty (0 bytes)."
             exit 1
           fi
 
-          # Check magic header; automatically unwrap nested Base64 or hex layers if the secret was double-encoded
-          # (e.g., ~2086-byte JKS -> 2782-byte Base64 text -> 3710-char Base64 secret)
-          for PASS in 1 2 3; do
-            MAGIC_HEX=$(head -c 4 "$KEYSTORE_FILE" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
-            FIRST_BYTE="${MAGIC_HEX:0:2}"
-            FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
-            if [ "$MAGIC_HEX" = "feedfeed" ] || [ "$FIRST_BYTE" = "30" ]; then
-              echo "Keystore binary header verified on pass ${PASS} (magic=0x${MAGIC_HEX}, binary size=${FILE_BYTES} bytes)."
-              break
-            fi
+          # 3. Safe diagnostics: Decoded File Size, SHA-256 Checksum & Binary Header Inspection
+          FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
+          FILE_SHA256=$(sha256sum "$KEYSTORE_FILE" | awk '{print $1}')
+          MAGIC_HEX=$(head -c 4 "$KEYSTORE_FILE" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
 
-            TEXT_CANDIDATE=$(tr -d '\r\n\t "'"'" < "$KEYSTORE_FILE")
-            if printf '%s' "$TEXT_CANDIDATE" | grep -Eq '^(feedfeed|FEEDFEED|3082)[0-9A-Fa-f]+$' && [ $(( ${#TEXT_CANDIDATE} % 2 )) -eq 0 ]; then
-              echo "Detected hex-encoded keystore layer on pass ${PASS} (${FILE_BYTES} bytes); converting hex to binary..."
-              HEX_TMP="${KEYSTORE_FILE}.hex.bin"
-              if python3 -c "import sys; open(sys.argv[2], 'wb').write(bytes.fromhex(open(sys.argv[1]).read().strip()))" "$KEYSTORE_FILE" "$HEX_TMP" 2>/dev/null && [ -s "$HEX_TMP" ]; then
-                mv "$HEX_TMP" "$KEYSTORE_FILE"
-                continue
-              fi
-              rm -f "$HEX_TMP"
-            fi
+          echo "============================================================"
+          echo "  Keystore File Integrity & Comparison Diagnostics"
+          echo "============================================================"
+          echo "  Decoded Runner Keystore Path:    $KEYSTORE_FILE"
+          echo "  Decoded Runner Keystore Size:    ${FILE_BYTES} bytes"
+          echo "  Decoded Runner Keystore SHA-256: ${FILE_SHA256}"
+          echo "  Decoded Binary Header (4 bytes): 0x${MAGIC_HEX}"
+          echo "------------------------------------------------------------"
+          echo "  To compare against your original local keystore on Termux/Linux, run:"
+          echo "    stat -c%s pulseplay-release.jks"
+          echo "    sha256sum pulseplay-release.jks"
+          echo "  Both size and SHA-256 must match the Decoded Runner values above byte-for-byte."
+          echo "============================================================"
 
-            INNER_TMP="${KEYSTORE_FILE}.inner.bin"
-            if decode_b64_layer "$TEXT_CANDIDATE" "$INNER_TMP" "$DECODE_LOG" && [ -s "$INNER_TMP" ]; then
-              echo "Unwrapped nested Base64 layer on pass ${PASS} (${FILE_BYTES} bytes -> $(stat -c%s "$INNER_TMP") bytes)..."
-              mv "$INNER_TMP" "$KEYSTORE_FILE"
-              rm -f "$DECODE_LOG"
-            else
-              rm -f "$INNER_TMP" "$DECODE_LOG"
-              break
-            fi
-          done
+          if [ -n "$EXPECTED_KEYSTORE_BYTES" ] && [ "$FILE_BYTES" != "$EXPECTED_KEYSTORE_BYTES" ]; then
+            echo "::error::Truncated or damaged keystore: Decoded keystore size (${FILE_BYTES} bytes) does not match EXPECTED_KEYSTORE_BYTES (${EXPECTED_KEYSTORE_BYTES} bytes)."
+            exit 1
+          fi
 
-          # Verify JKS binary structure and repair truncated 20-byte JKS SHA-1 trailer if 1..20 trailing bytes were cut off
-          export KEYSTORE_FILE CLEAN_STORE_PASS
+          if [ -n "$EXPECTED_KEYSTORE_FILE_SHA256" ]; then
+            CLEAN_EXPECTED_FILE_SHA256=$(printf '%s' "$EXPECTED_KEYSTORE_FILE_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+            if [ "$FILE_SHA256" != "$CLEAN_EXPECTED_FILE_SHA256" ]; then
+              echo "::error::Truncated or damaged keystore: Decoded keystore file SHA-256 (${FILE_SHA256}) does not match EXPECTED_KEYSTORE_FILE_SHA256 (${CLEAN_EXPECTED_FILE_SHA256})."
+              exit 1
+            fi
+          fi
+
+          # 4. Pre-keytool binary format & ASN.1 DER / JKS completeness check (never modifies file)
+          export KEYSTORE_FILE
           python3 - << 'PYEOF'
-          import os, struct, hashlib
+          import os, sys, struct
 
           ks_path = os.environ["KEYSTORE_FILE"]
-          raw_pass = os.environ["CLEAN_STORE_PASS"]
           data = open(ks_path, "rb").read()
-          if len(data) >= 12:
+          size = len(data)
+          header_hex = data[:4].hex() if size >= 4 else data.hex()
+
+          if size < 4:
+              print(f"::error::Truncated or damaged keystore: Decoded file is only {size} bytes (header=0x{header_hex}).")
+              sys.exit(1)
+
+          # Case A: ASN.1 DER SEQUENCE header (0x30) — standard PKCS#12 keystore (default for keytool even with .jks extension)
+          if data[0] == 0x30:
+              b1 = data[1]
+              if b1 < 0x80:
+                  hdr_len = 2
+                  declared_content_len = b1
+              elif b1 == 0x80:
+                  hdr_len = 2
+                  declared_content_len = size - 2
+              else:
+                  num_len_bytes = b1 & 0x7F
+                  if num_len_bytes < 1 or num_len_bytes > 4 or size < 2 + num_len_bytes:
+                      print(f"::error::Invalid keystore format: Malformed ASN.1 length header (0x{header_hex}) in decoded file ({size} bytes).")
+                      sys.exit(1)
+                  hdr_len = 2 + num_len_bytes
+                  declared_content_len = int.from_bytes(data[2:2 + num_len_bytes], "big")
+
+              declared_total = hdr_len + declared_content_len
+              print(f"Detected ASN.1 DER (PKCS#12) binary structure: header=0x{header_hex}, header_bytes={hdr_len}, declared_content_bytes={declared_content_len}, declared_total_bytes={declared_total}, actual_file_bytes={size}.")
+
+              if size < declared_total:
+                  missing_bytes = declared_total - size
+                  expected_b64_chars = ((declared_total + 2) // 3) * 4
+                  actual_b64_chars = ((size + 2) // 3) * 4
+                  print(
+                      f"::error::Truncated or damaged keystore: ASN.1 header (0x{header_hex}) declares a total keystore size of {declared_total} bytes "
+                      f"({hdr_len}-byte header + {declared_content_len}-byte payload), but the decoded file is only {size} bytes "
+                      f"({missing_bytes} bytes missing!). In Base64, {declared_total} bytes requires {expected_b64_chars} characters, "
+                      f"whereas {size} bytes is only ~{actual_b64_chars} characters (missing ~{expected_b64_chars - actual_b64_chars} Base64 characters at the end). "
+                      f"Please re-encode the complete original pulseplay-release.jks on Termux using 'base64 -w 0 pulseplay-release.jks' and update the UPLOAD_KEY_BASE64 GitHub Secret."
+                  )
+                  sys.exit(1)
+              elif size > declared_total:
+                  extra_bytes = size - declared_total
+                  print(
+                      f"::error::Truncated or damaged keystore: ASN.1 header (0x{header_hex}) declares {declared_total} total bytes, "
+                      f"but decoded file has {size} bytes ({extra_bytes} unexpected trailing bytes)."
+                  )
+                  sys.exit(1)
+
+          # Case B: Sun JKS magic header (0xFEEDFEED)
+          elif data[:4] == b"\xfe\xed\xfe\xed":
+              if size < 32:
+                  print(f"::error::Truncated or damaged keystore: JKS header (0xfeedfeed) detected, but file is only {size} bytes (minimum JKS header + SHA-1 integrity trailer is 32 bytes).")
+                  sys.exit(1)
               magic, version, count = struct.unpack(">III", data[:12])
-              if magic == 0xFEEDFEED and version in (1, 2) and 1 <= count <= 64:
-                  pos = 12
-                  ok = True
-                  try:
-                      for _ in range(count):
-                          tag = struct.unpack(">I", data[pos:pos+4])[0]
+              print(f"Detected binary JKS structure: header=0x{header_hex}, version={version}, entry_count={count}, actual_file_bytes={size}.")
+              pos = 12
+              try:
+                  for _ in range(count):
+                      tag = struct.unpack(">I", data[pos:pos+4])[0]
+                      pos += 4
+                      alias_len = struct.unpack(">H", data[pos:pos+2])[0]
+                      pos += 2 + alias_len + 8
+                      if tag == 1:
+                          key_len = struct.unpack(">I", data[pos:pos+4])[0]
+                          pos += 4 + key_len
+                          cert_count = struct.unpack(">I", data[pos:pos+4])[0]
                           pos += 4
-                          alias_len = struct.unpack(">H", data[pos:pos+2])[0]
-                          pos += 2 + alias_len + 8
-                          if tag == 1:
-                              key_len = struct.unpack(">I", data[pos:pos+4])[0]
-                              pos += 4 + key_len
-                              cert_count = struct.unpack(">I", data[pos:pos+4])[0]
-                              pos += 4
-                              for _ in range(cert_count):
-                                  if version == 2:
-                                      ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
-                                      pos += 2 + ctype_len
-                                  clen = struct.unpack(">I", data[pos:pos+4])[0]
-                                  pos += 4 + clen
-                          elif tag == 2:
+                          for _ in range(cert_count):
                               if version == 2:
                                   ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
                                   pos += 2 + ctype_len
                               clen = struct.unpack(">I", data[pos:pos+4])[0]
                               pos += 4 + clen
-                          else:
-                              ok = False
-                              break
-                  except Exception:
-                      ok = False
+                      elif tag == 2:
+                          if version == 2:
+                              ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
+                              pos += 2 + ctype_len
+                          clen = struct.unpack(">I", data[pos:pos+4])[0]
+                          pos += 4 + clen
+                      else:
+                          print(f"::error::Invalid keystore format: Unknown JKS entry tag ({tag}) at byte offset {pos - 4}.")
+                          sys.exit(1)
+              except struct.error:
+                  print(f"::error::Truncated or damaged keystore: JKS entry structure truncated before reaching end of entries (file size={size} bytes, header=0x{header_hex}).")
+                  sys.exit(1)
 
-                  if ok and pos <= len(data):
-                      body = data[:pos]
-                      trailer = data[pos:]
-                      if len(trailer) < 20:
-                          pw = raw_pass.strip() if raw_pass.strip() else raw_pass
-                          md = hashlib.sha1()
-                          md.update(raw_pass.encode("utf-16-be"))
-                          md.update(b"Mighty Aphrodite")
-                          md.update(body)
-                          digest = md.digest()
-                          if not digest.startswith(trailer) and pw != raw_pass:
-                              md2 = hashlib.sha1()
-                              md2.update(pw.encode("utf-16-be"))
-                              md2.update(b"Mighty Aphrodite")
-                              md2.update(body)
-                              digest = md2.digest()
-                          open(ks_path, "wb").write(body + digest)
-                          print(f"Restored truncated JKS 20-byte SHA-1 integrity trailer ({len(trailer)} -> 20 bytes; total {len(body) + 20} bytes).")
+              trailer_len = size - pos
+              if trailer_len < 20:
+                  print(
+                      f"::error::Truncated or damaged keystore: JKS entries end at byte {pos}, leaving only {trailer_len} bytes for the mandatory 20-byte SHA-1 integrity digest "
+                      f"(expected total size={pos + 20} bytes, actual={size} bytes, missing {20 - trailer_len} bytes). "
+                      f"Please re-encode the complete original pulseplay-release.jks with 'base64 -w 0 pulseplay-release.jks' and update UPLOAD_KEY_BASE64."
+                  )
+                  sys.exit(1)
+          else:
+              print(
+                  f"::error::Invalid keystore format: Decoded file (size={size} bytes, header=0x{header_hex}) does not start with a valid JKS (0xfeedfeed) or PKCS12/ASN.1 (0x30...) magic header."
+              )
+              sys.exit(1)
           PYEOF
-
-          FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
-          echo "Decoded keystore exact binary size confirmed via stat: ${FILE_BYTES} bytes."
 
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Keystore, Alias upload & Certificate SHA-256
+      - name: Validate Keystore, Alias pulseplay & Certificate SHA-256
         id: validate_keystore
         if: github.event_name != 'pull_request'
         env:
@@ -327,11 +382,13 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           set +x
+          # 1. Verify keystore file exists, is readable, and is non-empty
           if [ ! -f "$KEYSTORE_PATH" ] || [ ! -r "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
-            echo "::error::Keystore file not found or unreadable at KEYSTORE_PATH ($KEYSTORE_PATH)."
+            echo "::error::Truncated or damaged keystore: Keystore file not found, unreadable, or empty at KEYSTORE_PATH ($KEYSTORE_PATH)."
             exit 1
           fi
 
+          # Strip only CR/LF line endings from passwords to preserve all legitimate password characters
           CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
           CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
           TRIMMED_STORE_PASS=$(printf '%s' "$CLEAN_STORE_PASS" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -340,88 +397,117 @@ jobs:
 
           export CLEAN_STORE_PASS TRIMMED_STORE_PASS CLEAN_KEY_PASS TRIMMED_KEY_PASS
 
-          # 1. Verify alias is "upload"
-          if [ "$CLEAN_ALIAS" != "upload" ]; then
-            echo "::error::Invalid KEY_ALIAS ('$CLEAN_ALIAS'). Expected alias 'upload'."
+          if [ "$CLEAN_ALIAS" != "pulseplay" ]; then
+            echo "::error::Missing alias: Configured KEY_ALIAS ('$CLEAN_ALIAS') does not match expected alias 'pulseplay'."
             exit 1
           fi
 
-          # 2. Verify decoded JKS file and store password with keytool (using -storepass:env to avoid CLI option parsing issues)
-          echo "Verifying JKS keystore integrity and store password via keytool..."
-          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS 2>&1); then
-            if [ "$TRIMMED_STORE_PASS" != "$CLEAN_STORE_PASS" ] && [ -n "$TRIMMED_STORE_PASS" ] && KS_OUT_TRIM=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env TRIMMED_STORE_PASS 2>&1); then
+          MAGIC_HEX=$(head -c 4 "$KEYSTORE_PATH" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
+          FILE_BYTES=$(stat -c%s "$KEYSTORE_PATH")
+          FILE_SHA256=$(sha256sum "$KEYSTORE_PATH" | awk '{print $1}')
+
+          # 2. Explicitly detect actual keystore format (PKCS12 vs JKS) via keytool rather than assuming from .jks extension
+          if [ "${MAGIC_HEX:0:2}" = "30" ]; then
+            CANDIDATE_TYPES="PKCS12 JKS"
+          elif [ "$MAGIC_HEX" = "feedfeed" ]; then
+            CANDIDATE_TYPES="JKS PKCS12"
+          else
+            CANDIDATE_TYPES="PKCS12 JKS"
+          fi
+
+          DETECTED_STORE_TYPE=""
+          KS_OUT=""
+          for CANDIDATE_TYPE in $CANDIDATE_TYPES; do
+            echo "Probing keystore integrity and store password with keytool (-storetype ${CANDIDATE_TYPE}, size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX})..."
+            if KS_OUT=$(keytool -list -storetype "$CANDIDATE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS 2>&1); then
+              DETECTED_STORE_TYPE="$CANDIDATE_TYPE"
+              break
+            elif [ "$TRIMMED_STORE_PASS" != "$CLEAN_STORE_PASS" ] && [ -n "$TRIMMED_STORE_PASS" ] && KS_OUT_TRIM=$(keytool -list -storetype "$CANDIDATE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env TRIMMED_STORE_PASS 2>&1); then
               CLEAN_STORE_PASS="$TRIMMED_STORE_PASS"
               export CLEAN_STORE_PASS
               KS_OUT="$KS_OUT_TRIM"
-            else
-              MAGIC_HEX=$(head -c 4 "$KEYSTORE_PATH" | od -An -tx1 | tr -d ' \n')
-              FILE_BYTES=$(stat -c%s "$KEYSTORE_PATH")
-              SAFE_ERR=$(printf '%s\n' "$KS_OUT" | head -n 3 | tr '\n' ' ')
-              if echo "$KS_OUT" | grep -qi -E "password was incorrect|Password verification failed"; then
-                echo "::error::KEYSTORE_PASSWORD validation failed: password was incorrect (keystore size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX})."
-              elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|Unrecognized keystore format|not a keystore"; then
-                echo "::error::Keystore format validation failed: decoded file (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}) is not a valid JKS/PKCS12 keystore (${SAFE_ERR})."
-              else
-                echo "::error::Keystore validation failed via keytool (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
-              fi
-              exit 1
+              DETECTED_STORE_TYPE="$CANDIDATE_TYPE"
+              echo "::warning::KEYSTORE_PASSWORD contained leading/trailing whitespace; succeeded after trimming surrounding whitespace."
+              break
             fi
+          done
+
+          if [ -z "$DETECTED_STORE_TYPE" ]; then
+            SAFE_ERR=$(printf '%s\n' "$KS_OUT" | head -n 3 | tr '\n' ' ')
+            if echo "$KS_OUT" | grep -qi -E "EOFException|Short read of DER length|Unexpected end|premature EOF|DerInputStream\.getLength|Sequence tag error|corrupted"; then
+              echo "::error::Truncated or damaged keystore (size=${FILE_BYTES} bytes, sha256=${FILE_SHA256}, header=0x${MAGIC_HEX}): keytool hit unexpected end-of-file (${SAFE_ERR}). Re-encode the complete original pulseplay-release.jks with 'base64 -w 0 pulseplay-release.jks' and update UPLOAD_KEY_BASE64."
+            elif echo "$KS_OUT" | grep -qi -E "password was incorrect|Password verification failed|Given final block not properly padded|Integrity check failed"; then
+              echo "::error::Incorrect store password (KEYSTORE_PASSWORD): Store password verification failed for keystore (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
+            elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|Unrecognized keystore format|not a keystore|DerInputStream\.getLength.*too big"; then
+              echo "::error::Invalid keystore format: Decoded file (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}) is neither a valid PKCS12 nor JKS keystore (${SAFE_ERR})."
+            else
+              echo "::error::Keystore validation failed via keytool (size=${FILE_BYTES} bytes, sha256=${FILE_SHA256}, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
+            fi
+            exit 1
           fi
 
-          # 3. Verify alias "upload", PrivateKeyEntry, and 2048-bit RSA key
-          echo "Validating alias 'upload' and PrivateKeyEntry in my-upload-key.jks..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -alias "$CLEAN_ALIAS" 2>&1); then
-            echo "::error::Alias '$CLEAN_ALIAS' was not found or could not be read in my-upload-key.jks."
+          echo "Confirmed actual keystore format via keytool: ${DETECTED_STORE_TYPE} (size=${FILE_BYTES} bytes, sha256=${FILE_SHA256})"
+
+          # 3. Verify alias "pulseplay" exists, is a PrivateKeyEntry, and uses a 2048-bit RSA key
+          echo "Validating alias '${CLEAN_ALIAS}' in ${DETECTED_STORE_TYPE} keystore..."
+          if ! CERT_INFO=$(keytool -list -v -storetype "$DETECTED_STORE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -alias "$CLEAN_ALIAS" 2>&1); then
+            SAFE_ALIAS_ERR=$(printf '%s\n' "$CERT_INFO" | head -n 2 | tr '\n' ' ')
+            echo "::error::Missing alias: Alias '${CLEAN_ALIAS}' does not exist or could not be read in pulseplay-release.jks (${SAFE_ALIAS_ERR})."
             exit 1
           fi
 
           if ! echo "$CERT_INFO" | grep -q "PrivateKeyEntry"; then
-            echo "::error::Alias '$CLEAN_ALIAS' is not a PrivateKeyEntry in my-upload-key.jks."
+            ACTUAL_ENTRY_TYPE=$(echo "$CERT_INFO" | awk -F': ' '/Entry type:/ {print $2; exit}')
+            echo "::error::Missing PrivateKeyEntry: Alias '${CLEAN_ALIAS}' exists but has entry type '${ACTUAL_ENTRY_TYPE:-unknown}' instead of PrivateKeyEntry."
             exit 1
           fi
 
           if ! echo "$CERT_INFO" | grep -qi -E "2048-bit RSA|RSA.*2048"; then
-            echo "::error::Alias '$CLEAN_ALIAS' does not contain the expected 2048-bit RSA key."
+            ACTUAL_KEY_ALG=$(echo "$CERT_INFO" | awk -F': ' '/Subject Public Key Algorithm:/ {print $2; exit}')
+            echo "::error::Incorrect RSA key size: Alias '${CLEAN_ALIAS}' has key algorithm '${ACTUAL_KEY_ALG:-unknown}', expected 2048-bit RSA key."
             exit 1
           fi
 
-          # 4. Compare decoded certificate SHA-256 with the exact verified fingerprint
+          # 4. Compare decoded certificate SHA-256 with the configured expected fingerprint
           ACTUAL_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
           if [ -z "$ACTUAL_SHA256" ]; then
-            echo "::error::Failed to extract certificate SHA-256 fingerprint for alias '$CLEAN_ALIAS'."
+            echo "::error::Certificate fingerprint mismatch: Failed to extract certificate SHA-256 fingerprint for alias '${CLEAN_ALIAS}'."
             exit 1
           fi
 
           if [ "$ACTUAL_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
-            echo "::error::Certificate SHA-256 mismatch! Expected '$EXPECTED_CERT_SHA256', got '$ACTUAL_SHA256'."
+            echo "::error::Certificate fingerprint mismatch: Expected SHA-256 '${EXPECTED_CERT_SHA256}', got '${ACTUAL_SHA256}'."
             exit 1
           fi
 
-          # 5. Verify store password and private key password through actual signing test
-          echo "Verifying private key password (KEY_PASSWORD) for alias '$CLEAN_ALIAS'..."
+          # 5. Verify private key password (KEY_PASSWORD) through an actual signing test with jarsigner
+          echo "Verifying private key password (KEY_PASSWORD) for alias '${CLEAN_ALIAS}' via jarsigner..."
           TEMP_JAR=$(mktemp /tmp/keypass_verify_XXXXXX.jar)
           jar cf "$TEMP_JAR" README.md
-          if ! jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
-            if [ "$TRIMMED_KEY_PASS" != "$CLEAN_KEY_PASS" ] && [ -n "$TRIMMED_KEY_PASS" ] && jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env TRIMMED_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+          if ! JARSIGNER_OUT=$(jarsigner -storetype "$DETECTED_STORE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" 2>&1); then
+            if [ "$TRIMMED_KEY_PASS" != "$CLEAN_KEY_PASS" ] && [ -n "$TRIMMED_KEY_PASS" ] && jarsigner -storetype "$DETECTED_STORE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env TRIMMED_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
               CLEAN_KEY_PASS="$TRIMMED_KEY_PASS"
               export CLEAN_KEY_PASS
-            elif jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_STORE_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
-              CLEAN_KEY_PASS="$CLEAN_STORE_PASS"
-              export CLEAN_KEY_PASS
+              echo "::warning::KEY_PASSWORD contained leading/trailing whitespace; succeeded after trimming surrounding whitespace."
             else
               rm -f "$TEMP_JAR"
-              echo "::error::Private key password (KEY_PASSWORD) verification failed for alias '$CLEAN_ALIAS'."
+              SAFE_JS_ERR=$(printf '%s\n' "$JARSIGNER_OUT" | head -n 3 | tr '\n' ' ')
+              echo "::error::Incorrect private key password (KEY_PASSWORD): Failed to sign test archive using alias '${CLEAN_ALIAS}' (${SAFE_JS_ERR})."
               exit 1
             fi
           fi
           rm -f "$TEMP_JAR"
 
           echo "============================================================"
-          echo "  Verified Upload Keystore Certificate Summary"
+          echo "  Verified Release Keystore Certificate Summary"
           echo "============================================================"
+          echo "Detected Keystore Format: ${DETECTED_STORE_TYPE}"
+          echo "Keystore Binary Size:     ${FILE_BYTES} bytes"
+          echo "Keystore File SHA-256:    ${FILE_SHA256}"
           echo "$CERT_INFO" | grep -E "Keystore type:|Alias name:|Entry type:|Owner:|Issuer:|Valid from:|SHA1:|SHA256:|Signature algorithm name:|Subject Public Key Algorithm:" || true
           echo "============================================================"
           echo "expected_sha256=${ACTUAL_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "detected_store_type=${DETECTED_STORE_TYPE}" >> "$GITHUB_OUTPUT"
 
       - name: Build Signed Release APK Using Verified Upload Keystore
         id: release_signing
@@ -618,7 +704,7 @@ jobs:
               if [ -n "$RELEASE_CERT_SHA256" ] && [ "$RELEASE_CERT_SHA256" = "$EXPECTED_SHA256_HEX" ]; then
                 RELEASE_APK_STATUS="PASS"
               else
-                echo "::error::Release APK certificate ($RELEASE_SIGNER_COLON) does not match expected upload certificate ($EXPECTED_SHA256)."
+                echo "::error::APK signing certificate mismatch: Release APK certificate ($RELEASE_SIGNER_COLON) does not match expected upload certificate ($EXPECTED_SHA256)."
                 RELEASE_APK_STATUS="FAIL"
                 OVERALL_FAILURE=1
               fi
@@ -655,7 +741,7 @@ jobs:
               if [ -n "$AAB_SHA256_HEX" ] && [ "$AAB_SHA256_HEX" = "$EXPECTED_SHA256_HEX" ]; then
                 RELEASE_AAB_STATUS="PASS"
               else
-                echo "::error::Release AAB certificate ($AAB_SHA256) does not match expected upload certificate ($EXPECTED_SHA256)."
+                echo "::error::APK signing certificate mismatch: Release AAB certificate ($AAB_SHA256) does not match expected upload certificate ($EXPECTED_SHA256)."
                 RELEASE_AAB_STATUS="FAIL"
                 OVERALL_FAILURE=1
               fi
@@ -727,25 +813,25 @@ jobs:
               echo "## 🔐 Android APK & AAB Signing Certificate Verification Report"
               echo ""
               echo "- **Android SDK Build Tools \`apksigner\`**: \`${APKSIGNER}\`"
-              echo "- **Music Player Official Upload Alias**: \`upload\`"
-              echo "- **Expected Upload Certificate SHA-256**: \`${EXPECTED_SHA256}\`"
+              echo "- **PulsePlay Official Release Alias**: \`pulseplay\`"
+              echo "- **Expected Release Certificate SHA-256**: \`${EXPECTED_SHA256}\`"
               echo "- **AAB Signing Verification Status**: **${RELEASE_AAB_STATUS}** (\`${RELEASE_AAB_NAME}\`)"
               echo ""
-              echo "### 🎵 Music Player Build Variants (\`com.aistudio.pulseplay.mpxvqr\`)"
+              echo "### 🎵 PulsePlay Build Variants (\`com.aistudio.pulseplay.mpxvqr\`)"
               echo ""
               echo "| APK / Bundle Filename | Package ID | Build Type | Signer SHA-256 | Expected SHA-256 | Verification |"
               echo "| :--- | :--- | :--- | :--- | :--- | :---: |"
               echo "| \`${DEBUG_APK_NAME}\` | \`${DEBUG_PKG_ID}\` | Debug APK (AGP Default Debug Key) | \`${DEBUG_SIGNER_COLON}\` | Standard Android Debug Cert (Allowed to differ from Release) | **${DEBUG_STATUS}** |"
-              echo "| \`${RELEASE_APK_NAME}\` | \`${RELEASE_PKG_ID}\` | Release APK (\`alias: upload\`) | \`${RELEASE_SIGNER_COLON}\` | \`${EXPECTED_SHA256}\` | **${RELEASE_APK_STATUS}** |"
-              echo "| \`${RELEASE_AAB_NAME}\` | \`${RELEASE_PKG_ID}\` | Release AAB (\`alias: upload\`) | \`${AAB_SHA256}\` | \`${EXPECTED_SHA256}\` | **${RELEASE_AAB_STATUS}** |"
+              echo "| \`${RELEASE_APK_NAME}\` | \`${RELEASE_PKG_ID}\` | Release APK (\`alias: pulseplay\`) | \`${RELEASE_SIGNER_COLON}\` | \`${EXPECTED_SHA256}\` | **${RELEASE_APK_STATUS}** |"
+              echo "| \`${RELEASE_AAB_NAME}\` | \`${RELEASE_PKG_ID}\` | Release AAB (\`alias: pulseplay\`) | \`${AAB_SHA256}\` | \`${EXPECTED_SHA256}\` | **${RELEASE_AAB_STATUS}** |"
               echo ""
               echo "### 📁 File Manager APK Certificate Comparison (Informational — Non-Blocking)"
               echo ""
-              echo "| APK Filename | Package ID | File Manager Signer SHA-256 | Music Player Upload SHA-256 | Certificate Comparison |"
+              echo "| APK Filename | Package ID | File Manager Signer SHA-256 | PulsePlay Release SHA-256 | Certificate Comparison |"
               echo "| :--- | :--- | :--- | :--- | :--- |"
               echo "| \`${FM_FILENAME}\` | \`${FM_PKG_ID}\` | \`${FM_SIGNER_SHA256}\` | \`${EXPECTED_SHA256}\` | **${FM_COMPARISON_RESULT}** |"
               echo ""
-              echo "> **Note:** Debug APK uses Android Gradle Plugin's standard debug certificate, whereas Release APK and Release AAB strictly require the verified Music Player upload certificate (\`${EXPECTED_SHA256}\`). File Manager APK comparison is purely informational and never blocks the Music Player build."
+              echo "> **Note:** Debug APK uses Android Gradle Plugin's standard debug certificate, whereas Release APK and Release AAB strictly require the verified PulsePlay release certificate (\`${EXPECTED_SHA256}\`). File Manager APK comparison is purely informational and never blocks the PulsePlay build."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -754,7 +840,7 @@ jobs:
             exit 1
           fi
 
-          echo "Signing verification passed: Debug APK is valid debug-signed; Release APK and Release AAB match the official upload certificate ($EXPECTED_SHA256)."
+          echo "Signing verification passed: Debug APK is valid debug-signed; Release APK and Release AAB match the official release certificate ($EXPECTED_SHA256)."
 
 
       - name: Upload Build Artifacts (Workflow Run)
@@ -797,7 +883,7 @@ jobs:
             - **versionName**: `${{ steps.version_meta.outputs.version_name }}`
             - **versionCode**: `${{ steps.version_meta.outputs.version_code }}`
             - **Release Signing Certificate SHA-256**: `${{ steps.validate_keystore.outputs.expected_sha256 }}`
-            - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-vc${{ steps.version_meta.outputs.version_code }}-release.aab` are signed with the verified upload keystore (`alias: upload`).
+            - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-release.apk` and `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-vc${{ steps.version_meta.outputs.version_code }}-release.aab` are signed with the verified PulsePlay release keystore (`alias: pulseplay`).
             - `PulsePlay-v${{ steps.version_meta.outputs.version_name }}-debug.apk` uses standard Android debug signing.
             - Verify downloaded assets against `SHA256SUMS.txt` or via the in-app **Settings → App Updates** updater.
           files: |
@@ -805,7 +891,7 @@ jobs:
 
       - name: Clean Up Decoded Upload Keystore
         if: always()
-        run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
+        run: rm -f "${GITHUB_WORKSPACE}/pulseplay-release.jks" "${GITHUB_WORKSPACE}/my-upload-key.jks"
 
   google-play-bundle:
     name: Google Play Store Bundle & Track Deployment (Manual / Guarded)
@@ -842,6 +928,8 @@ jobs:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          EXPECTED_KEYSTORE_BYTES: ${{ vars.EXPECTED_KEYSTORE_BYTES || '2830' }}
+          EXPECTED_KEYSTORE_FILE_SHA256: ${{ vars.EXPECTED_KEYSTORE_FILE_SHA256 }}
         run: |
           set +x
           # 1. Verify all 4 required signing secrets are present
@@ -860,148 +948,195 @@ jobs:
             exit 1
           fi
 
-          decode_b64_layer() {
-            local RAW_INPUT="$1"
-            local TARGET_OUT="$2"
-            local ERR_FILE="$3"
-            local NORM_B64
-            NORM_B64=$(printf '%s' "$RAW_INPUT" | sed -E '/^-----BEGIN /d; /^-----END /d; s/^data:[^,]*base64,//I' | tr -d '\r\n\t "'"'" | tr -- '-_' '+/')
-            if [ -z "$NORM_B64" ]; then
-              return 1
-            fi
-            NORM_B64=$(printf '%s' "$NORM_B64" | sed 's/=*$//')
-            if ! printf '%s' "$NORM_B64" | grep -Eq '^[A-Za-z0-9+/]+$'; then
-              return 1
-            fi
-            local REM=$(( ${#NORM_B64} % 4 ))
-            if [ "$REM" -eq 2 ]; then
-              echo "Restoring 2 missing '=' padding characters for Google Play bundle (unpadded length ${#NORM_B64}, remainder 2)..."
-              NORM_B64="${NORM_B64}=="
+          # 2. Strict single-pass Base64 normalization and integrity verification
+          RAW_CHAR_LEN=${#UPLOAD_KEY_BASE64}
+          NORM_B64=$(printf '%s' "$UPLOAD_KEY_BASE64" | sed -E '/^-----BEGIN /d; /^-----END /d' | tr -d '\r\n\t ')
+          NORM_CHAR_LEN=${#NORM_B64}
+
+          if [ -z "$NORM_B64" ]; then
+            echo "::error::Base64 decoding failure: UPLOAD_KEY_BASE64 is empty after removing whitespace."
+            exit 1
+          fi
+
+          if ! printf '%s' "$NORM_B64" | grep -Eq '^[A-Za-z0-9+/]+={0,2}$'; then
+            echo "::error::Base64 decoding failure: UPLOAD_KEY_BASE64 contains invalid non-Base64 characters (raw length=${RAW_CHAR_LEN}, normalized length=${NORM_CHAR_LEN})."
+            exit 1
+          fi
+
+          UNPADDED_B64=$(printf '%s' "$NORM_B64" | sed 's/=*$//')
+          UNPADDED_LEN=${#UNPADDED_B64}
+          PADDING_LEN=$(( NORM_CHAR_LEN - UNPADDED_LEN ))
+          REM=$(( UNPADDED_LEN % 4 ))
+
+          if [ "$REM" -eq 1 ]; then
+            echo "::error::Base64 decoding failure: Invalid Base64 length (${NORM_CHAR_LEN} chars, unpadded=${UNPADDED_LEN}, remainder=1 mod 4). The secret in UPLOAD_KEY_BASE64 is truncated or damaged."
+            exit 1
+          elif [ "$REM" -eq 2 ] && [ "$PADDING_LEN" -eq 0 ]; then
+            echo "::warning::UPLOAD_KEY_BASE64 has unpadded length ${UNPADDED_LEN} (remainder 2 mod 4 without trailing '=='). Appending '==' for decoding and checking binary structure for truncation..."
+            NORM_B64="${UNPADDED_B64}=="
+          elif [ "$REM" -eq 3 ] && [ "$PADDING_LEN" -eq 0 ]; then
+            echo "::warning::UPLOAD_KEY_BASE64 has unpadded length ${UNPADDED_LEN} (remainder 3 mod 4 without trailing '='). Appending '=' for decoding and checking binary structure for truncation..."
+            NORM_B64="${UNPADDED_B64}="
+          else
+            if [ "$REM" -eq 0 ]; then
+              NORM_B64="$UNPADDED_B64"
+            elif [ "$REM" -eq 2 ]; then
+              NORM_B64="${UNPADDED_B64}=="
             elif [ "$REM" -eq 3 ]; then
-              echo "Restoring 1 missing '=' padding character for Google Play bundle (unpadded length ${#NORM_B64}, remainder 3)..."
-              NORM_B64="${NORM_B64}="
-            elif [ "$REM" -eq 1 ]; then
-              echo "::error::Invalid Base64 length (${#NORM_B64}): length modulo 4 equals 1, which cannot represent valid binary data."
-              return 1
+              NORM_B64="${UNPADDED_B64}="
             fi
-            printf '%s' "$NORM_B64" | base64 --decode > "$TARGET_OUT" 2> "$ERR_FILE"
-          }
+          fi
 
-          KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
+          KEYSTORE_FILE="${GITHUB_WORKSPACE}/pulseplay-release.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
+          rm -f "$KEYSTORE_FILE" "$DECODE_LOG"
 
-          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64 for Google Play bundle..."
-          if ! decode_b64_layer "$UPLOAD_KEY_BASE64" "$KEYSTORE_FILE" "$DECODE_LOG"; then
-            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-            echo "::error::GNU base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+          echo "Decoding pulseplay-release.jks from UPLOAD_KEY_BASE64 for Google Play bundle (raw secret chars=${RAW_CHAR_LEN}, normalized Base64 chars=${#NORM_B64}, unpadded chars=${UNPADDED_LEN})..."
+          if ! printf '%s' "$NORM_B64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
+            DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null | tr '\n' ' ')
+            echo "::error::Base64 decoding failure: GNU base64 failed to decode UPLOAD_KEY_BASE64 (${DECODE_ERR:-invalid Base64 input})."
             rm -f "$DECODE_LOG"
             exit 1
           fi
           rm -f "$DECODE_LOG"
 
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
-            echo "::error::Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty."
+            echo "::error::Base64 decoding failure: Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty (0 bytes)."
             exit 1
           fi
 
-          for PASS in 1 2 3; do
-            MAGIC_HEX=$(head -c 4 "$KEYSTORE_FILE" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
-            FIRST_BYTE="${MAGIC_HEX:0:2}"
-            FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
-            if [ "$MAGIC_HEX" = "feedfeed" ] || [ "$FIRST_BYTE" = "30" ]; then
-              echo "Keystore binary header verified on pass ${PASS} (magic=0x${MAGIC_HEX}, binary size=${FILE_BYTES} bytes)."
-              break
-            fi
+          FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
+          FILE_SHA256=$(sha256sum "$KEYSTORE_FILE" | awk '{print $1}')
+          MAGIC_HEX=$(head -c 4 "$KEYSTORE_FILE" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
 
-            TEXT_CANDIDATE=$(tr -d '\r\n\t "'"'" < "$KEYSTORE_FILE")
-            if printf '%s' "$TEXT_CANDIDATE" | grep -Eq '^(feedfeed|FEEDFEED|3082)[0-9A-Fa-f]+$' && [ $(( ${#TEXT_CANDIDATE} % 2 )) -eq 0 ]; then
-              HEX_TMP="${KEYSTORE_FILE}.hex.bin"
-              if python3 -c "import sys; open(sys.argv[2], 'wb').write(bytes.fromhex(open(sys.argv[1]).read().strip()))" "$KEYSTORE_FILE" "$HEX_TMP" 2>/dev/null && [ -s "$HEX_TMP" ]; then
-                mv "$HEX_TMP" "$KEYSTORE_FILE"
-                continue
-              fi
-              rm -f "$HEX_TMP"
-            fi
+          echo "============================================================"
+          echo "  Keystore File Integrity & Comparison Diagnostics (Play Bundle)"
+          echo "============================================================"
+          echo "  Decoded Runner Keystore Path:    $KEYSTORE_FILE"
+          echo "  Decoded Runner Keystore Size:    ${FILE_BYTES} bytes"
+          echo "  Decoded Runner Keystore SHA-256: ${FILE_SHA256}"
+          echo "  Decoded Binary Header (4 bytes): 0x${MAGIC_HEX}"
+          echo "============================================================"
 
-            INNER_TMP="${KEYSTORE_FILE}.inner.bin"
-            if decode_b64_layer "$TEXT_CANDIDATE" "$INNER_TMP" "$DECODE_LOG" && [ -s "$INNER_TMP" ]; then
-              echo "Unwrapped nested Base64 layer on pass ${PASS} (${FILE_BYTES} bytes -> $(stat -c%s "$INNER_TMP") bytes)..."
-              mv "$INNER_TMP" "$KEYSTORE_FILE"
-              rm -f "$DECODE_LOG"
-            else
-              rm -f "$INNER_TMP" "$DECODE_LOG"
-              break
-            fi
-          done
+          if [ -n "$EXPECTED_KEYSTORE_BYTES" ] && [ "$FILE_BYTES" != "$EXPECTED_KEYSTORE_BYTES" ]; then
+            echo "::error::Truncated or damaged keystore: Decoded keystore size (${FILE_BYTES} bytes) does not match EXPECTED_KEYSTORE_BYTES (${EXPECTED_KEYSTORE_BYTES} bytes)."
+            exit 1
+          fi
 
-          export KEYSTORE_FILE CLEAN_STORE_PASS
+          if [ -n "$EXPECTED_KEYSTORE_FILE_SHA256" ]; then
+            CLEAN_EXPECTED_FILE_SHA256=$(printf '%s' "$EXPECTED_KEYSTORE_FILE_SHA256" | tr -d ':[:space:]' | tr '[:upper:]' '[:lower:]')
+            if [ "$FILE_SHA256" != "$CLEAN_EXPECTED_FILE_SHA256" ]; then
+              echo "::error::Truncated or damaged keystore: Decoded keystore file SHA-256 (${FILE_SHA256}) does not match EXPECTED_KEYSTORE_FILE_SHA256 (${CLEAN_EXPECTED_FILE_SHA256})."
+              exit 1
+            fi
+          fi
+
+          export KEYSTORE_FILE
           python3 - << 'PYEOF'
-          import os, struct, hashlib
+          import os, sys, struct
 
           ks_path = os.environ["KEYSTORE_FILE"]
-          raw_pass = os.environ["CLEAN_STORE_PASS"]
           data = open(ks_path, "rb").read()
-          if len(data) >= 12:
+          size = len(data)
+          header_hex = data[:4].hex() if size >= 4 else data.hex()
+
+          if size < 4:
+              print(f"::error::Truncated or damaged keystore: Decoded file is only {size} bytes (header=0x{header_hex}).")
+              sys.exit(1)
+
+          if data[0] == 0x30:
+              b1 = data[1]
+              if b1 < 0x80:
+                  hdr_len = 2
+                  declared_content_len = b1
+              elif b1 == 0x80:
+                  hdr_len = 2
+                  declared_content_len = size - 2
+              else:
+                  num_len_bytes = b1 & 0x7F
+                  if num_len_bytes < 1 or num_len_bytes > 4 or size < 2 + num_len_bytes:
+                      print(f"::error::Invalid keystore format: Malformed ASN.1 length header (0x{header_hex}) in decoded file ({size} bytes).")
+                      sys.exit(1)
+                  hdr_len = 2 + num_len_bytes
+                  declared_content_len = int.from_bytes(data[2:2 + num_len_bytes], "big")
+
+              declared_total = hdr_len + declared_content_len
+              print(f"Detected ASN.1 DER (PKCS#12) binary structure: header=0x{header_hex}, header_bytes={hdr_len}, declared_content_bytes={declared_content_len}, declared_total_bytes={declared_total}, actual_file_bytes={size}.")
+
+              if size < declared_total:
+                  missing_bytes = declared_total - size
+                  expected_b64_chars = ((declared_total + 2) // 3) * 4
+                  actual_b64_chars = ((size + 2) // 3) * 4
+                  print(
+                      f"::error::Truncated or damaged keystore: ASN.1 header (0x{header_hex}) declares a total keystore size of {declared_total} bytes "
+                      f"({hdr_len}-byte header + {declared_content_len}-byte payload), but the decoded file is only {size} bytes "
+                      f"({missing_bytes} bytes missing!). In Base64, {declared_total} bytes requires {expected_b64_chars} characters, "
+                      f"whereas {size} bytes is only ~{actual_b64_chars} characters (missing ~{expected_b64_chars - actual_b64_chars} Base64 characters at the end). "
+                      f"Please re-encode the complete original pulseplay-release.jks on Termux using 'base64 -w 0 pulseplay-release.jks' and update the UPLOAD_KEY_BASE64 GitHub Secret."
+                  )
+                  sys.exit(1)
+              elif size > declared_total:
+                  extra_bytes = size - declared_total
+                  print(
+                      f"::error::Truncated or damaged keystore: ASN.1 header (0x{header_hex}) declares {declared_total} total bytes, "
+                      f"but decoded file has {size} bytes ({extra_bytes} unexpected trailing bytes)."
+                  )
+                  sys.exit(1)
+
+          elif data[:4] == b"\xfe\xed\xfe\xed":
+              if size < 32:
+                  print(f"::error::Truncated or damaged keystore: JKS header (0xfeedfeed) detected, but file is only {size} bytes.")
+                  sys.exit(1)
               magic, version, count = struct.unpack(">III", data[:12])
-              if magic == 0xFEEDFEED and version in (1, 2) and 1 <= count <= 64:
-                  pos = 12
-                  ok = True
-                  try:
-                      for _ in range(count):
-                          tag = struct.unpack(">I", data[pos:pos+4])[0]
+              pos = 12
+              try:
+                  for _ in range(count):
+                      tag = struct.unpack(">I", data[pos:pos+4])[0]
+                      pos += 4
+                      alias_len = struct.unpack(">H", data[pos:pos+2])[0]
+                      pos += 2 + alias_len + 8
+                      if tag == 1:
+                          key_len = struct.unpack(">I", data[pos:pos+4])[0]
+                          pos += 4 + key_len
+                          cert_count = struct.unpack(">I", data[pos:pos+4])[0]
                           pos += 4
-                          alias_len = struct.unpack(">H", data[pos:pos+2])[0]
-                          pos += 2 + alias_len + 8
-                          if tag == 1:
-                              key_len = struct.unpack(">I", data[pos:pos+4])[0]
-                              pos += 4 + key_len
-                              cert_count = struct.unpack(">I", data[pos:pos+4])[0]
-                              pos += 4
-                              for _ in range(cert_count):
-                                  if version == 2:
-                                      ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
-                                      pos += 2 + ctype_len
-                                  clen = struct.unpack(">I", data[pos:pos+4])[0]
-                                  pos += 4 + clen
-                          elif tag == 2:
+                          for _ in range(cert_count):
                               if version == 2:
                                   ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
                                   pos += 2 + ctype_len
                               clen = struct.unpack(">I", data[pos:pos+4])[0]
                               pos += 4 + clen
-                          else:
-                              ok = False
-                              break
-                  except Exception:
-                      ok = False
+                      elif tag == 2:
+                          if version == 2:
+                              ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
+                              pos += 2 + ctype_len
+                          clen = struct.unpack(">I", data[pos:pos+4])[0]
+                          pos += 4 + clen
+                      else:
+                          print(f"::error::Invalid keystore format: Unknown JKS entry tag ({tag}) at byte offset {pos - 4}.")
+                          sys.exit(1)
+              except struct.error:
+                  print(f"::error::Truncated or damaged keystore: JKS entry structure truncated before reaching end of entries (file size={size} bytes, header=0x{header_hex}).")
+                  sys.exit(1)
 
-                  if ok and pos <= len(data):
-                      body = data[:pos]
-                      trailer = data[pos:]
-                      if len(trailer) < 20:
-                          pw = raw_pass.strip() if raw_pass.strip() else raw_pass
-                          md = hashlib.sha1()
-                          md.update(raw_pass.encode("utf-16-be"))
-                          md.update(b"Mighty Aphrodite")
-                          md.update(body)
-                          digest = md.digest()
-                          if not digest.startswith(trailer) and pw != raw_pass:
-                              md2 = hashlib.sha1()
-                              md2.update(pw.encode("utf-16-be"))
-                              md2.update(b"Mighty Aphrodite")
-                              md2.update(body)
-                              digest = md2.digest()
-                          open(ks_path, "wb").write(body + digest)
-                          print(f"Restored truncated JKS 20-byte SHA-1 integrity trailer ({len(trailer)} -> 20 bytes; total {len(body) + 20} bytes).")
+              trailer_len = size - pos
+              if trailer_len < 20:
+                  print(
+                      f"::error::Truncated or damaged keystore: JKS entries end at byte {pos}, leaving only {trailer_len} bytes for the mandatory 20-byte SHA-1 integrity digest "
+                      f"(expected total size={pos + 20} bytes, actual={size} bytes, missing {20 - trailer_len} bytes)."
+                  )
+                  sys.exit(1)
+          else:
+              print(
+                  f"::error::Invalid keystore format: Decoded file (size={size} bytes, header=0x{header_hex}) does not start with a valid JKS (0xfeedfeed) or PKCS12/ASN.1 (0x30...) magic header."
+              )
+              sys.exit(1)
           PYEOF
-
-          FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
-          echo "Decoded keystore exact binary size confirmed via stat: ${FILE_BYTES} bytes."
 
           echo "KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
           echo "keystore_loaded=true" >> "$GITHUB_OUTPUT"
 
-      - name: Validate Keystore, Alias upload & Certificate SHA-256
+      - name: Validate Keystore, Alias pulseplay & Certificate SHA-256
         id: validate_play_keystore
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -1010,7 +1145,7 @@ jobs:
         run: |
           set +x
           if [ ! -f "$KEYSTORE_PATH" ] || [ ! -r "$KEYSTORE_PATH" ] || [ ! -s "$KEYSTORE_PATH" ]; then
-            echo "::error::Keystore file not found or unreadable at KEYSTORE_PATH ($KEYSTORE_PATH)."
+            echo "::error::Truncated or damaged keystore: Keystore file not found, unreadable, or empty at KEYSTORE_PATH ($KEYSTORE_PATH)."
             exit 1
           fi
 
@@ -1022,88 +1157,113 @@ jobs:
 
           export CLEAN_STORE_PASS TRIMMED_STORE_PASS CLEAN_KEY_PASS TRIMMED_KEY_PASS
 
-          # 1. Verify alias is "upload"
-          if [ "$CLEAN_ALIAS" != "upload" ]; then
-            echo "::error::Invalid KEY_ALIAS ('$CLEAN_ALIAS'). Expected alias 'upload'."
+          if [ "$CLEAN_ALIAS" != "pulseplay" ]; then
+            echo "::error::Missing alias: Configured KEY_ALIAS ('$CLEAN_ALIAS') does not match expected alias 'pulseplay'."
             exit 1
           fi
 
-          # 2. Verify decoded JKS file and store password with keytool
-          echo "Verifying JKS keystore integrity and store password via keytool..."
-          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS 2>&1); then
-            if [ "$TRIMMED_STORE_PASS" != "$CLEAN_STORE_PASS" ] && [ -n "$TRIMMED_STORE_PASS" ] && KS_OUT_TRIM=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env TRIMMED_STORE_PASS 2>&1); then
+          MAGIC_HEX=$(head -c 4 "$KEYSTORE_PATH" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
+          FILE_BYTES=$(stat -c%s "$KEYSTORE_PATH")
+          FILE_SHA256=$(sha256sum "$KEYSTORE_PATH" | awk '{print $1}')
+
+          if [ "${MAGIC_HEX:0:2}" = "30" ]; then
+            CANDIDATE_TYPES="PKCS12 JKS"
+          elif [ "$MAGIC_HEX" = "feedfeed" ]; then
+            CANDIDATE_TYPES="JKS PKCS12"
+          else
+            CANDIDATE_TYPES="PKCS12 JKS"
+          fi
+
+          DETECTED_STORE_TYPE=""
+          KS_OUT=""
+          for CANDIDATE_TYPE in $CANDIDATE_TYPES; do
+            echo "Probing keystore integrity and store password with keytool (-storetype ${CANDIDATE_TYPE}, size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX})..."
+            if KS_OUT=$(keytool -list -storetype "$CANDIDATE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS 2>&1); then
+              DETECTED_STORE_TYPE="$CANDIDATE_TYPE"
+              break
+            elif [ "$TRIMMED_STORE_PASS" != "$CLEAN_STORE_PASS" ] && [ -n "$TRIMMED_STORE_PASS" ] && KS_OUT_TRIM=$(keytool -list -storetype "$CANDIDATE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env TRIMMED_STORE_PASS 2>&1); then
               CLEAN_STORE_PASS="$TRIMMED_STORE_PASS"
               export CLEAN_STORE_PASS
               KS_OUT="$KS_OUT_TRIM"
-            else
-              MAGIC_HEX=$(head -c 4 "$KEYSTORE_PATH" | od -An -tx1 | tr -d ' \n')
-              FILE_BYTES=$(stat -c%s "$KEYSTORE_PATH")
-              SAFE_ERR=$(printf '%s\n' "$KS_OUT" | head -n 3 | tr '\n' ' ')
-              if echo "$KS_OUT" | grep -qi -E "password was incorrect|Password verification failed"; then
-                echo "::error::KEYSTORE_PASSWORD validation failed: password was incorrect (keystore size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX})."
-              elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|Unrecognized keystore format|not a keystore"; then
-                echo "::error::Keystore format validation failed: decoded file (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}) is not a valid JKS/PKCS12 keystore (${SAFE_ERR})."
-              else
-                echo "::error::Keystore validation failed via keytool (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
-              fi
-              exit 1
+              DETECTED_STORE_TYPE="$CANDIDATE_TYPE"
+              echo "::warning::KEYSTORE_PASSWORD contained leading/trailing whitespace; succeeded after trimming surrounding whitespace."
+              break
             fi
+          done
+
+          if [ -z "$DETECTED_STORE_TYPE" ]; then
+            SAFE_ERR=$(printf '%s\n' "$KS_OUT" | head -n 3 | tr '\n' ' ')
+            if echo "$KS_OUT" | grep -qi -E "EOFException|Short read of DER length|Unexpected end|premature EOF|DerInputStream\.getLength|Sequence tag error|corrupted"; then
+              echo "::error::Truncated or damaged keystore (size=${FILE_BYTES} bytes, sha256=${FILE_SHA256}, header=0x${MAGIC_HEX}): keytool hit unexpected end-of-file (${SAFE_ERR}). Re-encode the complete original pulseplay-release.jks with 'base64 -w 0 pulseplay-release.jks' and update UPLOAD_KEY_BASE64."
+            elif echo "$KS_OUT" | grep -qi -E "password was incorrect|Password verification failed|Given final block not properly padded|Integrity check failed"; then
+              echo "::error::Incorrect store password (KEYSTORE_PASSWORD): Store password verification failed for keystore (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
+            elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|Unrecognized keystore format|not a keystore|DerInputStream\.getLength.*too big"; then
+              echo "::error::Invalid keystore format: Decoded file (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}) is neither a valid PKCS12 nor JKS keystore (${SAFE_ERR})."
+            else
+              echo "::error::Keystore validation failed via keytool (size=${FILE_BYTES} bytes, sha256=${FILE_SHA256}, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
+            fi
+            exit 1
           fi
 
-          # 3. Verify alias "upload", PrivateKeyEntry, and 2048-bit RSA key
-          echo "Validating alias 'upload' and PrivateKeyEntry in my-upload-key.jks..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -alias "$CLEAN_ALIAS" 2>&1); then
-            echo "::error::Alias '$CLEAN_ALIAS' was not found or could not be read in my-upload-key.jks."
+          echo "Confirmed actual keystore format via keytool: ${DETECTED_STORE_TYPE} (size=${FILE_BYTES} bytes, sha256=${FILE_SHA256})"
+
+          echo "Validating alias '${CLEAN_ALIAS}' in ${DETECTED_STORE_TYPE} keystore..."
+          if ! CERT_INFO=$(keytool -list -v -storetype "$DETECTED_STORE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -alias "$CLEAN_ALIAS" 2>&1); then
+            SAFE_ALIAS_ERR=$(printf '%s\n' "$CERT_INFO" | head -n 2 | tr '\n' ' ')
+            echo "::error::Missing alias: Alias '${CLEAN_ALIAS}' does not exist or could not be read in pulseplay-release.jks (${SAFE_ALIAS_ERR})."
             exit 1
           fi
 
           if ! echo "$CERT_INFO" | grep -q "PrivateKeyEntry"; then
-            echo "::error::Alias '$CLEAN_ALIAS' is not a PrivateKeyEntry in my-upload-key.jks."
+            ACTUAL_ENTRY_TYPE=$(echo "$CERT_INFO" | awk -F': ' '/Entry type:/ {print $2; exit}')
+            echo "::error::Missing PrivateKeyEntry: Alias '${CLEAN_ALIAS}' exists but has entry type '${ACTUAL_ENTRY_TYPE:-unknown}' instead of PrivateKeyEntry."
             exit 1
           fi
 
           if ! echo "$CERT_INFO" | grep -qi -E "2048-bit RSA|RSA.*2048"; then
-            echo "::error::Alias '$CLEAN_ALIAS' does not contain the expected 2048-bit RSA key."
+            ACTUAL_KEY_ALG=$(echo "$CERT_INFO" | awk -F': ' '/Subject Public Key Algorithm:/ {print $2; exit}')
+            echo "::error::Incorrect RSA key size: Alias '${CLEAN_ALIAS}' has key algorithm '${ACTUAL_KEY_ALG:-unknown}', expected 2048-bit RSA key."
             exit 1
           fi
 
-          # 4. Compare decoded certificate SHA-256 with the exact verified fingerprint
           ACTUAL_SHA256=$(echo "$CERT_INFO" | awk '/SHA256:/ {print $2; exit}' | tr '[:lower:]' '[:upper:]')
           if [ -z "$ACTUAL_SHA256" ]; then
-            echo "::error::Failed to extract certificate SHA-256 fingerprint for alias '$CLEAN_ALIAS'."
+            echo "::error::Certificate fingerprint mismatch: Failed to extract certificate SHA-256 fingerprint for alias '${CLEAN_ALIAS}'."
             exit 1
           fi
 
           if [ "$ACTUAL_SHA256" != "$EXPECTED_CERT_SHA256" ]; then
-            echo "::error::Certificate SHA-256 mismatch! Expected '$EXPECTED_CERT_SHA256', got '$ACTUAL_SHA256'."
+            echo "::error::Certificate fingerprint mismatch: Expected SHA-256 '${EXPECTED_CERT_SHA256}', got '${ACTUAL_SHA256}'."
             exit 1
           fi
 
-          # 5. Verify store password and private key password through actual signing test
-          echo "Verifying private key password (KEY_PASSWORD) for alias '$CLEAN_ALIAS'..."
+          echo "Verifying private key password (KEY_PASSWORD) for alias '${CLEAN_ALIAS}' via jarsigner..."
           TEMP_JAR=$(mktemp /tmp/keypass_play_verify_XXXXXX.jar)
           jar cf "$TEMP_JAR" README.md
-          if ! jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
-            if [ "$TRIMMED_KEY_PASS" != "$CLEAN_KEY_PASS" ] && [ -n "$TRIMMED_KEY_PASS" ] && jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env TRIMMED_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+          if ! JARSIGNER_OUT=$(jarsigner -storetype "$DETECTED_STORE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" 2>&1); then
+            if [ "$TRIMMED_KEY_PASS" != "$CLEAN_KEY_PASS" ] && [ -n "$TRIMMED_KEY_PASS" ] && jarsigner -storetype "$DETECTED_STORE_TYPE" -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env TRIMMED_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
               CLEAN_KEY_PASS="$TRIMMED_KEY_PASS"
               export CLEAN_KEY_PASS
-            elif jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_STORE_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
-              CLEAN_KEY_PASS="$CLEAN_STORE_PASS"
-              export CLEAN_KEY_PASS
+              echo "::warning::KEY_PASSWORD contained leading/trailing whitespace; succeeded after trimming surrounding whitespace."
             else
               rm -f "$TEMP_JAR"
-              echo "::error::Private key password (KEY_PASSWORD) verification failed for alias '$CLEAN_ALIAS'."
+              SAFE_JS_ERR=$(printf '%s\n' "$JARSIGNER_OUT" | head -n 3 | tr '\n' ' ')
+              echo "::error::Incorrect private key password (KEY_PASSWORD): Failed to sign test archive using alias '${CLEAN_ALIAS}' (${SAFE_JS_ERR})."
               exit 1
             fi
           fi
           rm -f "$TEMP_JAR"
 
           echo "============================================================"
-          echo "  Verified Upload Keystore Certificate Summary"
+          echo "  Verified Release Keystore Certificate Summary"
           echo "============================================================"
+          echo "Detected Keystore Format: ${DETECTED_STORE_TYPE}"
+          echo "Keystore Binary Size:     ${FILE_BYTES} bytes"
+          echo "Keystore File SHA-256:    ${FILE_SHA256}"
           echo "$CERT_INFO" | grep -E "Keystore type:|Alias name:|Entry type:|Owner:|Issuer:|Valid from:|SHA1:|SHA256:|Signature algorithm name:|Subject Public Key Algorithm:" || true
           echo "============================================================"
           echo "expected_sha256=${ACTUAL_SHA256}" >> "$GITHUB_OUTPUT"
+          echo "detected_store_type=${DETECTED_STORE_TYPE}" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Gradle Wrapper is Executable
         run: chmod +x gradlew
@@ -1165,7 +1325,7 @@ jobs:
           echo "AAB Filename:            $(basename "$AAB_FILE")"
           echo "AAB File Size:           $AAB_FILESIZE bytes"
           echo "AAB Certificate SHA-256: $AAB_SHA256"
-          echo "Expected Upload SHA-256: $EXPECTED_SHA256"
+          echo "Expected Release SHA-256: $EXPECTED_SHA256"
           echo "============================================================"
 
           AAB_STATUS="PASS"
@@ -1184,7 +1344,7 @@ jobs:
           fi
 
           if [ "$AAB_STATUS" != "PASS" ]; then
-            echo "::error::AAB certificate SHA-256 ($AAB_SHA256) does not match verified upload keystore SHA-256 ($EXPECTED_SHA256)."
+            echo "::error::AAB certificate SHA-256 ($AAB_SHA256) does not match verified release keystore SHA-256 ($EXPECTED_SHA256)."
             exit 1
           fi
 
@@ -1226,4 +1386,4 @@ jobs:
 
       - name: Clean Up Decoded Upload Keystore
         if: always()
-        run: rm -f "${GITHUB_WORKSPACE}/my-upload-key.jks"
+        run: rm -f "${GITHUB_WORKSPACE}/pulseplay-release.jks" "${GITHUB_WORKSPACE}/my-upload-key.jks"

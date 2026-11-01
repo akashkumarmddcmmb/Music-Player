@@ -20,7 +20,10 @@ local.properties
 .env
 debug.keystore
 my-upload-key.jks
+pulseplay-release.jks
 *.jks
+*.p12
+*.keystore
 /.aistudio/
 /public/assets/aistudio/
 .tempmediaStorage/

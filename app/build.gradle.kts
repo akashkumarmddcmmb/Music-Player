@@ -32,21 +32,28 @@ android {
   signingConfigs {
     create("release") {
       val envKeystorePath = System.getenv("KEYSTORE_PATH")?.trim()?.takeIf { it.isNotEmpty() }
-      val defaultUploadKey = file("${rootDir}/my-upload-key.jks")
-      storeFile = if (envKeystorePath != null) file(envKeystorePath) else defaultUploadKey
+      val defaultUploadKey = file("${rootDir}/pulseplay-release.jks")
+      val legacyUploadKey = file("${rootDir}/my-upload-key.jks")
+      storeFile = when {
+        envKeystorePath != null -> file(envKeystorePath)
+        defaultUploadKey.exists() -> defaultUploadKey
+        legacyUploadKey.exists() -> legacyUploadKey
+        else -> defaultUploadKey
+      }
       storePassword = (System.getenv("KEYSTORE_PASSWORD") ?: System.getenv("STORE_PASSWORD"))
         ?.trim()
         .orEmpty()
       keyAlias = (project.findProperty("KEY_ALIAS")?.toString() ?: System.getenv("KEY_ALIAS"))
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
-        ?: "upload"
+        ?: "pulseplay"
       keyPassword = (
         System.getenv("KEY_PASSWORD")
           ?: System.getenv("KEYSTORE_PASSWORD")
           ?: System.getenv("STORE_PASSWORD")
       )?.trim()
         .orEmpty()
+      storeType = "PKCS12"
     }
   }
 

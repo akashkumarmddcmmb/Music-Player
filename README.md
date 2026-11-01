@@ -61,10 +61,11 @@ The compiled debug APK is written to `app/build/outputs/apk/debug/app-debug.apk`
    - In GitHub Actions, `GITHUB_REPOSITORY` is automatically injected into `BuildConfig.GITHUB_REPOSITORY` during build.
    - Locally or inside the app, you can also set your exact `owner/repo` in **Settings → App Updates (GitHub Releases)** or pass `-PGITHUB_REPOSITORY=owner/repo` to Gradle.
 2. **Release Keystore Secrets (for Signed Production Releases)**:
-   - `UPLOAD_KEY_BASE64`: Base64-encoded JKS upload keystore (`my-upload-key.jks`).
+   - `UPLOAD_KEY_BASE64`: Base64-encoded PKCS12 release keystore (`pulseplay-release.jks`).
    - `KEYSTORE_PASSWORD`: Keystore password.
-   - `KEY_ALIAS`: Key alias in the keystore (`upload`).
-   - `KEY_PASSWORD`: Private key password for the alias (`upload`).
+   - `KEY_ALIAS`: Key alias in the keystore (`pulseplay`).
+   - `KEY_PASSWORD`: Private key password for the alias (`pulseplay`).
+   - `EXPECTED_CERT_SHA256`: Verified PulsePlay certificate SHA-256 (`2A:09:47:F6:3E:B7:80:D5:12:09:E4:82:08:39:25:AF:1E:04:26:6F:3E:BD:88:26:E0:C0:52:CE:4A:9B:99:B7`).
    - Push a tag matching `v*` (e.g., `git tag v1.0.1 && git push origin v1.0.1`) or trigger the workflow manually via `workflow_dispatch` to publish a GitHub Release with `PulsePlay-vX.Y.Z-release.apk`, `PulsePlay-vX.Y.Z-debug.apk`, and `SHA256SUMS.txt`.
 
 ---

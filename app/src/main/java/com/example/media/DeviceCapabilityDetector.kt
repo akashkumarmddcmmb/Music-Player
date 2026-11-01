@@ -355,8 +355,12 @@ object DeviceCapabilityDetector {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && display != null) {
             runCatching {
-                val hdrCaps = display.hdrCapabilities
-                val types = hdrCaps?.supportedHdrTypes ?: intArrayOf()
+                val types = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    display.mode?.supportedHdrTypes ?: intArrayOf()
+                } else {
+                    @Suppress("DEPRECATION")
+                    display.hdrCapabilities?.supportedHdrTypes ?: intArrayOf()
+                }
                 for (t in types) {
                     when (t) {
                         Display.HdrCapabilities.HDR_TYPE_HDR10 -> {

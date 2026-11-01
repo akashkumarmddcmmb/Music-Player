@@ -252,15 +252,75 @@ fun NowPlayingOverlayScreen(
     onDismissVideoCompatibilityDialog: () -> Unit = {},
     onSelectVideoCompatibilityAction: (VideoCompatibilityAction) -> Unit = {},
     onDismissVideoInfoDetailsDialog: () -> Unit = {},
-    onToggleSpeedPanel: () -> Unit = {},
-    onToggleVideoSettings: () -> Unit = {},
-    onToggleSubtitleSettings: () -> Unit = {},
+    onToggleSpeedPanel: (() -> Unit)? = null,
+    onToggleVideoSettings: (() -> Unit)? = null,
+    onToggleSubtitleSettings: (() -> Unit)? = null,
     onRetryPlayback: () -> Unit
 ) {
     val context = LocalContext.current
     val hostActivity = remember(context) { context.findNowPlayingHostActivity() }
     val currentMedia = playbackState.currentMedia
     var showSleepTimerPanel by rememberSaveable { mutableStateOf(false) }
+    var localShowSpeedPanel by rememberSaveable { mutableStateOf(false) }
+    var localShowVideoSettings by rememberSaveable { mutableStateOf(false) }
+    var localShowSubtitleSettings by rememberSaveable { mutableStateOf(false) }
+
+    val effectiveShowSpeedPanel = if (onToggleSpeedPanel != null) {
+        playbackState.showPlaybackSpeedDialog
+    } else {
+        playbackState.showPlaybackSpeedDialog || localShowSpeedPanel
+    }
+    val effectiveShowVideoSettings = if (onToggleVideoSettings != null) {
+        playbackState.showVideoSettingsDialog
+    } else {
+        playbackState.showVideoSettingsDialog || localShowVideoSettings
+    }
+    val effectiveShowSubtitleSettings = if (onToggleSubtitleSettings != null) {
+        playbackState.showSubtitleSettingsDialog
+    } else {
+        playbackState.showSubtitleSettingsDialog || localShowSubtitleSettings
+    }
+
+    val handleToggleSpeedPanel: () -> Unit = {
+        if (onToggleSpeedPanel != null) {
+            onToggleSpeedPanel()
+        } else {
+            val next = !localShowSpeedPanel
+            localShowSpeedPanel = next
+            if (next) {
+                localShowVideoSettings = false
+                localShowSubtitleSettings = false
+                showSleepTimerPanel = false
+            }
+        }
+    }
+    val handleToggleVideoSettings: () -> Unit = {
+        if (onToggleVideoSettings != null) {
+            onToggleVideoSettings()
+        } else {
+            val next = !localShowVideoSettings
+            localShowVideoSettings = next
+            if (next) {
+                localShowSpeedPanel = false
+                localShowSubtitleSettings = false
+                showSleepTimerPanel = false
+            }
+        }
+    }
+    val handleToggleSubtitleSettings: () -> Unit = {
+        if (onToggleSubtitleSettings != null) {
+            onToggleSubtitleSettings()
+        } else {
+            val next = !localShowSubtitleSettings
+            localShowSubtitleSettings = next
+            if (next) {
+                localShowSpeedPanel = false
+                localShowVideoSettings = false
+                showSleepTimerPanel = false
+            }
+        }
+    }
+
     var playlistSheetState by rememberSaveable { mutableStateOf(initialPlaylistSheetState) }
     val playlistLazyListState = rememberLazyListState()
     var fullscreenControlsVisible by rememberSaveable { mutableStateOf(true) }
@@ -277,15 +337,15 @@ fun NowPlayingOverlayScreen(
     }
 
     LaunchedEffect(
-        playbackState.showPlaybackSpeedDialog,
-        playbackState.showVideoSettingsDialog,
-        playbackState.showSubtitleSettingsDialog,
+        effectiveShowSpeedPanel,
+        effectiveShowVideoSettings,
+        effectiveShowSubtitleSettings,
         playbackState.showVideoCompatibilityDialog,
         playbackState.showVideoInfoDetailsDialog
     ) {
-        if (playbackState.showPlaybackSpeedDialog ||
-            playbackState.showVideoSettingsDialog ||
-            playbackState.showSubtitleSettingsDialog ||
+        if (effectiveShowSpeedPanel ||
+            effectiveShowVideoSettings ||
+            effectiveShowSubtitleSettings ||
             playbackState.showVideoCompatibilityDialog ||
             playbackState.showVideoInfoDetailsDialog
         ) {
@@ -295,10 +355,10 @@ fun NowPlayingOverlayScreen(
 
     BackHandler {
         when {
-            playbackState.showSubtitleSettingsDialog -> onToggleSubtitleSettings()
-            playbackState.showVideoSettingsDialog -> onToggleVideoSettings()
+            effectiveShowSubtitleSettings -> handleToggleSubtitleSettings()
+            effectiveShowVideoSettings -> handleToggleVideoSettings()
             showSleepTimerPanel -> showSleepTimerPanel = false
-            playbackState.showPlaybackSpeedDialog -> onToggleSpeedPanel()
+            effectiveShowSpeedPanel -> handleToggleSpeedPanel()
             playlistSheetState == PlaylistSheetState.FULLY_EXPANDED -> {
                 playlistSheetState = PlaylistSheetState.PARTIALLY_EXPANDED
             }
@@ -329,11 +389,11 @@ fun NowPlayingOverlayScreen(
         keepScreenOnPreferenceEnabled = userPreferences.keepScreenOnDuringVideo
     )
 
-    if (playbackState.showPlaybackSpeedDialog) {
+    if (effectiveShowSpeedPanel) {
         PlaybackSpeedDialog(
             playbackState = playbackState,
             onSetPlaybackSpeed = onSetPlaybackSpeed,
-            onDismiss = onToggleSpeedPanel
+            onDismiss = handleToggleSpeedPanel
         )
     }
 
@@ -346,7 +406,7 @@ fun NowPlayingOverlayScreen(
         )
     }
 
-    if (playbackState.showSubtitleSettingsDialog) {
+    if (effectiveShowSubtitleSettings) {
         SubtitleSettingsDialog(
             playbackState = playbackState,
             userPreferences = userPreferences,
@@ -355,11 +415,11 @@ fun NowPlayingOverlayScreen(
             onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
             onPickSubtitleFileClick = onPickSubtitleFileClick,
             onSeekToCue = onSeekTo,
-            onDismiss = onToggleSubtitleSettings
+            onDismiss = handleToggleSubtitleSettings
         )
     }
 
-    if (currentMedia?.mediaType == MediaType.VIDEO && playbackState.showVideoSettingsDialog) {
+    if (currentMedia?.mediaType == MediaType.VIDEO && effectiveShowVideoSettings) {
         VideoSettingsDialog(
             playbackState = playbackState,
             userPreferences = userPreferences,
@@ -375,7 +435,7 @@ fun NowPlayingOverlayScreen(
             onOpenEqualizer = onOpenEqualizer,
             onSelectHighResMode = onSelectHighResVideoPlaybackMode,
             onOpenCompatibilityOptions = onOpenVideoCompatibilityDialog,
-            onDismiss = onToggleVideoSettings
+            onDismiss = handleToggleVideoSettings
         )
     }
 
@@ -466,7 +526,7 @@ fun NowPlayingOverlayScreen(
 
             if (isImmersiveVideoCanvas) {
                 // Unified Cinema Video Player (Portrait & Landscape): Full black canvas, 5-button transport
-                // with -10s / +10s & Neon Green Play/Pause, Neon Green seekbar, and 1-tap bottom pills.
+                // with -10s / +10s & Neon Green Play/Pause, Neon Green seekbar, and 3-dot top-right overflow menu.
                 ImmersiveVideoCinemaLayout(
                     currentMedia = currentMedia,
                     playbackState = playbackState,
@@ -478,8 +538,8 @@ fun NowPlayingOverlayScreen(
                     shouldKeepVideoAwake = shouldKeepVideoAwake,
                     controlsVisible = fullscreenControlsVisible,
                     controlsInteractionTick = controlsInteractionTick,
-                    showVideoSettings = playbackState.showVideoSettingsDialog,
-                    showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
+                    showVideoSettings = effectiveShowVideoSettings,
+                    showSubtitleSettings = effectiveShowSubtitleSettings,
                     onToggleControlsVisible = {
                         fullscreenControlsVisible = !fullscreenControlsVisible
                         controlsInteractionTick++
@@ -495,11 +555,11 @@ fun NowPlayingOverlayScreen(
                     },
                     onToggleVideoSettings = {
                         controlsInteractionTick++
-                        onToggleVideoSettings()
+                        handleToggleVideoSettings()
                     },
                     onToggleSubtitleSettings = {
                         controlsInteractionTick++
-                        onToggleSubtitleSettings()
+                        handleToggleSubtitleSettings()
                     },
                     onCollapse = {
                         if (playbackState.isFullscreenVideo) {
@@ -539,7 +599,7 @@ fun NowPlayingOverlayScreen(
                     onOpenVideoCompatibilityDialog = onOpenVideoCompatibilityDialog,
                     onToggleSpeedPanel = {
                         controlsInteractionTick++
-                        onToggleSpeedPanel()
+                        handleToggleSpeedPanel()
                     },
                     onShareCurrentMedia = onShareCurrentMedia,
                     onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
@@ -552,20 +612,20 @@ fun NowPlayingOverlayScreen(
                     playbackState = playbackState,
                     userPreferences = userPreferences,
                     isFavorite = isFavorite,
-                    showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
+                    showSubtitleSettings = effectiveShowSubtitleSettings,
                     showSleepTimerPanel = showSleepTimerPanel,
-                    showSpeedPanel = playbackState.showPlaybackSpeedDialog,
-                    onToggleSubtitleSettings = onToggleSubtitleSettings,
+                    showSpeedPanel = effectiveShowSpeedPanel,
+                    onToggleSubtitleSettings = handleToggleSubtitleSettings,
                     onToggleSleepTimerPanel = {
                         val next = !showSleepTimerPanel
                         if (next) {
-                            if (playbackState.showPlaybackSpeedDialog) onToggleSpeedPanel()
-                            if (playbackState.showVideoSettingsDialog) onToggleVideoSettings()
-                            if (playbackState.showSubtitleSettingsDialog) onToggleSubtitleSettings()
+                            if (effectiveShowSpeedPanel) handleToggleSpeedPanel()
+                            if (effectiveShowVideoSettings) handleToggleVideoSettings()
+                            if (effectiveShowSubtitleSettings) handleToggleSubtitleSettings()
                         }
                         showSleepTimerPanel = next
                     },
-                    onToggleSpeedPanel = onToggleSpeedPanel,
+                    onToggleSpeedPanel = handleToggleSpeedPanel,
                     onCollapse = onCollapse,
                     onPlayPause = onPlayPause,
                     onSeekTo = onSeekTo,
@@ -671,21 +731,21 @@ fun NowPlayingOverlayScreen(
                                     currentMedia = currentMedia,
                                     playbackState = playbackState,
                                     isFavorite = isFavorite,
-                                    showSpeedPanel = playbackState.showPlaybackSpeedDialog,
+                                    showSpeedPanel = effectiveShowSpeedPanel,
                                     showSleepTimerPanel = showSleepTimerPanel,
-                                    showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
-                                    onToggleSpeedPanel = onToggleSpeedPanel,
+                                    showSubtitleSettings = effectiveShowSubtitleSettings,
+                                    onToggleSpeedPanel = handleToggleSpeedPanel,
                                     onOpenEqualizer = onOpenEqualizer,
                                     onToggleSleepTimerPanel = {
                                         val next = !showSleepTimerPanel
                                         if (next) {
-                                            if (playbackState.showPlaybackSpeedDialog) onToggleSpeedPanel()
-                                            if (playbackState.showVideoSettingsDialog) onToggleVideoSettings()
-                                            if (playbackState.showSubtitleSettingsDialog) onToggleSubtitleSettings()
+                                            if (effectiveShowSpeedPanel) handleToggleSpeedPanel()
+                                            if (effectiveShowVideoSettings) handleToggleVideoSettings()
+                                            if (effectiveShowSubtitleSettings) handleToggleSubtitleSettings()
                                         }
                                         showSleepTimerPanel = next
                                     },
-                                    onToggleSubtitleSettings = onToggleSubtitleSettings,
+                                    onToggleSubtitleSettings = handleToggleSubtitleSettings,
                                     onOpenStudio = onOpenStudio,
                                     onToggleFavorite = onToggleFavorite,
                                     onShareCurrentMedia = onShareCurrentMedia,
@@ -734,10 +794,10 @@ fun NowPlayingOverlayScreen(
                                 userPreferences = userPreferences,
                                 playerInstance = playerInstance,
                                 shouldKeepVideoAwake = shouldKeepVideoAwake,
-                                showSubtitleSettings = playbackState.showSubtitleSettingsDialog,
-                                showVideoSettingsSheet = playbackState.showVideoSettingsDialog,
-                                onToggleSubtitleSettings = onToggleSubtitleSettings,
-                                onToggleVideoSettings = onToggleVideoSettings,
+                                showSubtitleSettings = effectiveShowSubtitleSettings,
+                                showVideoSettingsSheet = effectiveShowVideoSettings,
+                                onToggleSubtitleSettings = handleToggleSubtitleSettings,
+                                onToggleVideoSettings = handleToggleVideoSettings,
                                 onCycleAspectMode = onCycleAspectMode,
                                 onRotateVideo90 = onRotateVideo90,
                                 onToggleFullscreen = onToggleFullscreen,

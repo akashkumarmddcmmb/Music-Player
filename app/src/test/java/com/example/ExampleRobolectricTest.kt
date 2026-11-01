@@ -1902,9 +1902,8 @@ class ExampleRobolectricTest {
         assertFalse("isBuffering must be false when decoder recovery is exhausted", stateAfterExhausted.isBuffering)
         assertNotNull("Diagnostic error must be reported once retries are exhausted", stateAfterExhausted.playbackError)
         assertTrue(
-            "Diagnostic error should include resolution or codec context",
-            stateAfterExhausted.playbackError!!.contains("3840x2160") ||
-                stateAfterExhausted.playbackError!!.contains("video/hevc")
+            "Diagnostic error must show simple user-friendly error message",
+            stateAfterExhausted.playbackError!!.contains("Unable to play this video on your device")
         )
 
         // Verify non-decoder error (e.g., IO error) does NOT trigger decoder fallback retry
@@ -5259,6 +5258,93 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("confirm_clear_queue_button").performClick()
         composeTestRule.waitForIdle()
         assertTrue(queueState.isEmpty())
+    }
+
+    @Test
+    fun `first launch device capability detection inspects decoders, persists locally, and supports redetection`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+
+        // 1. First-launch detection
+        val initialCaps = com.example.media.DeviceCapabilityDetector.detectAndCacheDeviceCapabilities(app)
+        assertNotNull(initialCaps)
+        assertTrue(initialCaps.summaryLabel.isNotBlank())
+        assertEquals(android.os.Build.VERSION.SDK_INT, initialCaps.sdkInt)
+
+        // 2. Local persistence check
+        val cachedCaps = com.example.media.DeviceCapabilityDetector.getCachedCapabilities(app)
+        assertEquals(initialCaps.detectionTimestampEpochMs, cachedCaps.detectionTimestampEpochMs)
+        assertEquals(initialCaps.supportedMimeTypes, cachedCaps.supportedMimeTypes)
+
+        // 3. Resilient4KCodecEngine capability update
+        assertNotNull(com.example.media.Resilient4KCodecEngine.persistedDeviceCapabilities)
+        assertEquals(
+            initialCaps.detectionTimestampEpochMs,
+            com.example.media.Resilient4KCodecEngine.persistedDeviceCapabilities?.detectionTimestampEpochMs
+        )
+
+        // 4. Force re-detection (e.g. after config change)
+        val redetected = com.example.media.DeviceCapabilityDetector.forceRedetectCapabilities(app)
+        assertNotNull(redetected)
+        assertEquals(redetected.sdkInt, initialCaps.sdkInt)
+    }
+
+    @Test
+    fun `device video playback capability covers 6 resolution categories, 4 codecs, and ViewModel recheck`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val caps = com.example.media.DeviceCapabilityDetector.forceRedetectCapabilities(app)
+
+        // Verify 6 resolution categories
+        val expectedCategories = listOf(
+            "480p — SD",
+            "720p — HD",
+            "1080p — Full HD",
+            "1440p — 2K / QHD",
+            "2160p — 4K / UHD",
+            "4320p — 8K / UHD"
+        )
+        val categoryNames = caps.resolutionCategories.map { it.categoryName }
+        for (expected in expectedCategories) {
+            assertTrue("Expected category $expected in $categoryNames", categoryNames.contains(expected))
+        }
+
+        // Verify each category has a valid ResolutionStatus
+        for (cat in caps.resolutionCategories) {
+            assertTrue(
+                "Category ${cat.categoryName} has invalid status",
+                cat.status in com.example.media.ResolutionStatus.values()
+            )
+            assertTrue(cat.details.isNotBlank())
+            assertTrue(cat.standardWidth > 0 && cat.standardHeight > 0)
+        }
+
+        // Verify 4 target video codecs: H.264/AVC, H.265/HEVC, VP9, AV1
+        val codecNames = caps.codecCapabilities.map { it.codecDisplayName }
+        assertTrue(codecNames.any { it.contains("H.264") || it.contains("AVC") })
+        assertTrue(codecNames.any { it.contains("H.265") || it.contains("HEVC") })
+        assertTrue(codecNames.any { it.contains("VP9") })
+        assertTrue(codecNames.any { it.contains("AV1") })
+
+        // Verify overview & pipeline fields
+        assertTrue(caps.maxNormalResolution.isNotBlank())
+        assertTrue(caps.maxHighResResolution.isNotBlank())
+        assertTrue(caps.displayResolutionString.isNotBlank())
+        assertTrue(caps.displayRefreshRateFps > 0f)
+        assertTrue(caps.supportedFrameRatesSummary.isNotBlank())
+        assertTrue(caps.hdrAndBitDepthSummary.isNotBlank())
+        assertTrue(caps.formattedScanTime.isNotBlank())
+
+        // Verify ViewModel exposure and recheck
+        val viewModel = PulsePlayViewModel(app)
+        val vmCaps = viewModel.deviceCapabilities.value
+        assertNotNull(vmCaps)
+        assertFalse(viewModel.isScanningCapabilities.value)
+        assertEquals(6, vmCaps.resolutionCategories.size)
+
+        // Trigger manual recheck
+        viewModel.recheckDeviceCapabilities()
+        val afterRecheckCaps = viewModel.deviceCapabilities.value
+        assertNotNull(afterRecheckCaps)
+        assertEquals(6, afterRecheckCaps.resolutionCategories.size)
     }
 }
 

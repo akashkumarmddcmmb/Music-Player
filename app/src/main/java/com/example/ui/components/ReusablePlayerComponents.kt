@@ -1753,32 +1753,18 @@ private fun CompatibilityOptionButton(
                         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                     }
                 )
-                if (!enabled) {
-                    Text(
-                        text = "Unavailable",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
             }
             Text(
                 text = action.subtitle,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (!enabled && !unavailableReason.isNullOrBlank()) {
-                Text(
-                    text = unavailableReason,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error
-                )
-            }
         }
     }
 }
 
 /**
- * Detailed Video Stream & Hardware Capability Information Dialog opened when the user selects
+ * Clean Video Information Dialog opened when the user selects
  * "Video information" from the compatibility panel.
  */
 @Composable
@@ -1810,7 +1796,7 @@ fun VideoTechnicalInfoDialog(
                     tint = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = "Video Stream & Decoder Diagnostics",
+                    text = "Video Information",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
@@ -1824,24 +1810,10 @@ fun VideoTechnicalInfoDialog(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text("Title: ${media.title}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
-                Text("Source Resolution: ${width}x${height} (${evaluation?.resolutionTier?.label ?: "Standard"})", style = MaterialTheme.typography.bodySmall)
-                Text("Codec MIME: ${media.mimeType}", style = MaterialTheme.typography.bodySmall)
+                Text("Resolution: ${width}x${height} (${evaluation?.resolutionTier?.displayLabel ?: "Standard"})", style = MaterialTheme.typography.bodySmall)
+                Text("Format: ${media.mimeType}", style = MaterialTheme.typography.bodySmall)
                 Text("Estimated Bitrate: $bitrateMbps", style = MaterialTheme.typography.bodySmall)
                 Text("Color Profile: ${if (evaluation?.is10BitOrHdr == true) "10-bit / HDR" else "8-bit SDR"}", style = MaterialTheme.typography.bodySmall)
-                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                Text("Active Engine Path: ${playbackState.activeVideoEngineStrategy.label}", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
-                Text("Verified Decoder: ${playbackState.verifiedDecoderName ?: evaluation?.primaryDecoderName ?: "Pending / Uninitialized"}", style = MaterialTheme.typography.bodySmall)
-                Text("Hardware Supported at Native Res: ${if (evaluation?.isHardwareSupported == true) "Yes" else "No"}", style = MaterialTheme.typography.bodySmall)
-                if (!evaluation?.hardwareUnsupportedReason.isNullOrBlank()) {
-                    Text("Hardware Limit: ${evaluation?.hardwareUnsupportedReason}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
-                }
-                Text("Software Fallback Safe: ${if (evaluation?.isSoftwareFallbackSafe == true) "Yes" else "No"}", style = MaterialTheme.typography.bodySmall)
-                if (!evaluation?.softwareUnavailableReason.isNullOrBlank()) {
-                    Text("Software Limit: ${evaluation?.softwareUnavailableReason}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Text("Downscaled Compatibility Active: ${if (playbackState.isDownscaledPlayback) "Yes (≤1080p)" else "No (Native)"}", style = MaterialTheme.typography.bodySmall)
-                Text("Dropped Video Frames: ${playbackState.droppedVideoFrames}", style = MaterialTheme.typography.bodySmall)
-                Text("Temporary High-Res Session Active: ${if (playbackState.isTemporaryHighResEngineActive) "Yes (auto-releases on stop/end)" else "No (Standard path)"}", style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {

@@ -38,23 +38,23 @@ enum class HighResVideoPlaybackMode(
 ) {
     AUTO(
         label = "Auto (Recommended)",
-        description = "Automatically selects the optimal hardware or compatibility decoder based on real device and video stream capabilities."
+        description = "Automatically selects the best available playback method. Uses normal playback whenever it works properly, and automatically attempts a compatible fallback only when necessary."
     ),
     COMPATIBILITY(
         label = "Compatibility Mode",
-        description = "Prioritizes conservative decoder parameters and proven fallback decoders for older or resource-constrained Android devices."
+        description = "Provides more conservative playback settings for older or resource-limited devices. Automatically uses compatible path where possible."
     ),
     HIGH_RESOLUTION(
         label = "High-Resolution Playback",
-        description = "Attempts available 4K/8K UHD hardware and alternate high-profile decoders when supported by the chipset."
+        description = "Attempts 4K/8K playback when supported by the device and video stream. Automatically falls back to standard playback when high-resolution playback is not supported."
     ),
     HARDWARE_PREFERENCE(
         label = "Hardware Decoder Preference",
-        description = "Strictly prioritizes hardware-accelerated MediaCodec decoders for maximum battery and thermal efficiency."
+        description = "Prefers hardware-accelerated playback when available."
     ),
     SOFTWARE_FALLBACK(
         label = "Software Decoder Fallback",
-        description = "Allows CPU software decoding fallback only when hardware decoding fails and device RAM, CPU cores, and thermal status are safe."
+        description = "Attempts software decoding only when hardware decoding fails and the device can safely handle it."
     )
 }
 
@@ -79,7 +79,9 @@ data class UserPreferencesState(
     val bassBoostStrength: Int = 0, // 0..1000
     val preampGainDb: Float = 0.0f, // -12.0f .. +12.0f
     val customBandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
-    // Optional 4K Software Decoding Fallback (Strictly disabled by default to protect CPU/thermal/battery)
+    // Hardware Decoder Preference (Simple ON/OFF switch, enabled by default)
+    val hardwareDecoderPreferenceEnabled: Boolean = true,
+    // Software Decoder Fallback (Simple ON/OFF switch, disabled by default)
     val allowExperimental4kSoftwareFallback: Boolean = false,
     // Phase 14: Optional Advertising Module (Strictly disabled by default for privacy)
     val optionalAdsModuleEnabled: Boolean = false,
@@ -113,6 +115,7 @@ class UserPreferencesRepository(private val context: Context) {
         val BASS_STRENGTH = intPreferencesKey("bass_boost_strength")
         val PREAMP_GAIN_DB = floatPreferencesKey("preamp_gain_db")
         val EQ_BANDS_CSV = stringPreferencesKey("equalizer_bands_csv")
+        val HARDWARE_DECODER_PREFERENCE = booleanPreferencesKey("hardware_decoder_preference_enabled")
         val ALLOW_4K_SW_FALLBACK = booleanPreferencesKey("allow_experimental_4k_software_fallback")
         val OPTIONAL_ADS_ENABLED = booleanPreferencesKey("optional_ads_module_enabled")
         val OPTIONAL_ADS_CONSENT = booleanPreferencesKey("optional_ads_consent_granted")
@@ -135,6 +138,7 @@ class UserPreferencesRepository(private val context: Context) {
         } ?: VideoOrientationPreference.AUTO
 
         val allowSwFallback = prefs[Keys.ALLOW_4K_SW_FALLBACK] ?: false
+        val hwDecoderPref = prefs[Keys.HARDWARE_DECODER_PREFERENCE] ?: true
         val highResMode = prefs[Keys.HIGH_RES_VIDEO_MODE]?.let {
             runCatching { HighResVideoPlaybackMode.valueOf(it) }.getOrNull()
         } ?: if (allowSwFallback) HighResVideoPlaybackMode.SOFTWARE_FALLBACK else HighResVideoPlaybackMode.AUTO
@@ -169,6 +173,7 @@ class UserPreferencesRepository(private val context: Context) {
             bassBoostStrength = (prefs[Keys.BASS_STRENGTH] ?: 0).coerceIn(0, 1000),
             preampGainDb = (prefs[Keys.PREAMP_GAIN_DB] ?: 0.0f).coerceIn(-12.0f, 12.0f),
             customBandLevelsMb = parsedBands,
+            hardwareDecoderPreferenceEnabled = hwDecoderPref,
             allowExperimental4kSoftwareFallback = allowSwFallback || highResMode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK,
             optionalAdsModuleEnabled = prefs[Keys.OPTIONAL_ADS_ENABLED] ?: false,
             optionalAdsConsentGranted = prefs[Keys.OPTIONAL_ADS_CONSENT] ?: false,
@@ -249,6 +254,12 @@ class UserPreferencesRepository(private val context: Context) {
             prefs[Keys.EQ_PRESET] = presetIndex
             prefs[Keys.BASS_STRENGTH] = bassBoostStrength.coerceIn(0, 1000)
             prefs[Keys.EQ_BANDS_CSV] = bandLevelsMb.joinToString(",")
+        }
+    }
+
+    suspend fun setHardwareDecoderPreference(enabled: Boolean) {
+        context.pulseDataStore.edit { prefs ->
+            prefs[Keys.HARDWARE_DECODER_PREFERENCE] = enabled
         }
     }
 

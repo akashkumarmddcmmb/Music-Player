@@ -41,6 +41,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -81,6 +82,14 @@ import com.example.update.UpdateCheckState
 import com.example.update.UpdateDistributionChannel
 import com.example.update.UpdateSettingsScreen
 import com.example.update.UpdateSourceEvaluation
+import com.example.media.CodecCapabilityDetails
+import com.example.media.PersistedDeviceCapabilities
+import com.example.media.ResolutionCategoryCapability
+import com.example.media.ResolutionStatus
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.ui.graphics.Color
 import kotlin.math.abs
 
 @Composable
@@ -100,9 +109,13 @@ fun ProfileAndSettingsScreen(
     onSetKeepScreenOnDuringVideo: (Boolean) -> Unit = {},
     onSetVideoGestureControls: (Boolean) -> Unit = {},
     onSetVideoOrientationPref: (VideoOrientationPreference) -> Unit = {},
+    onSetHardwareDecoderPreference: (Boolean) -> Unit = {},
     onSetAllowExperimental4kSoftwareFallback: (Boolean) -> Unit = {},
     playbackModeAvailabilities: List<PlaybackModeAvailabilityReport> = emptyList(),
     onSetHighResVideoPlaybackMode: (HighResVideoPlaybackMode) -> Unit = {},
+    deviceCapabilities: PersistedDeviceCapabilities = PersistedDeviceCapabilities(),
+    isScanningCapabilities: Boolean = false,
+    onRecheckDeviceCapabilities: () -> Unit = {},
     onSetAudioBalance: (Float) -> Unit = {},
     onSetPreampGainDb: (Float) -> Unit = {},
     onSetSleepTimerMinutes: (Int) -> Unit = {},
@@ -382,27 +395,6 @@ fun ProfileAndSettingsScreen(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Optional 4K Software Decoder Fallback", style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            "Resource-intensive CPU fallback when no hardware decoder supports 4K. Guarded by CPU core count, memory, thermal status & battery saver",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = userPreferences.allowExperimental4kSoftwareFallback,
-                        onCheckedChange = onSetAllowExperimental4kSoftwareFallback,
-                        modifier = Modifier.testTag("settings_4k_sw_fallback_switch")
-                    )
-                }
-
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
                     text = "Default Video Orientation Mode",
@@ -433,24 +425,24 @@ fun ProfileAndSettingsScreen(
             }
         }
 
-        // High-Resolution Video Playback (4K / 8K Adaptive Engine)
+        // High-Resolution Video Playback
         item {
-            val context = LocalContext.current
-            val resolvedAvailabilities = remember(playbackModeAvailabilities, context) {
-                playbackModeAvailabilities.ifEmpty {
-                    Resilient4KCodecEngine.evaluateAllPlaybackModesAvailability(context)
-                }
-            }
             SettingsSectionCard(
                 title = "High-Resolution Video Playback",
                 icon = Icons.Default.Movie
             ) {
                 Text(
-                    text = "Adaptive 4K/8K playback engine for older & modern Android devices. Normal 720p/1080p videos always use the standard hardware path; high-resolution compatibility adjustments apply temporarily only while a 4K/8K video is playing.",
+                    text = "Configure video playback behavior for standard and high-resolution videos.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                val simpleModes = listOf(
+                    HighResVideoPlaybackMode.AUTO,
+                    HighResVideoPlaybackMode.COMPATIBILITY,
+                    HighResVideoPlaybackMode.HIGH_RESOLUTION
+                )
 
                 Column(
                     modifier = Modifier
@@ -458,29 +450,20 @@ fun ProfileAndSettingsScreen(
                         .testTag("high_res_video_playback_modes_column"),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    HighResVideoPlaybackMode.entries.forEach { mode ->
-                        val availability = resolvedAvailabilities.find { it.mode == mode }
-                        val isAvailable = availability?.isAvailable ?: true
-                        val unavailableReason = availability?.unavailableReason
+                    simpleModes.forEach { mode ->
                         val isSelected = userPreferences.highResVideoPlaybackMode == mode
 
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = when {
-                                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
-                                !isAvailable -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-                                else -> MaterialTheme.colorScheme.surfaceVariant
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .testTag("settings_high_res_mode_${mode.name.lowercase()}")
-                                .then(
-                                    if (isAvailable) {
-                                        Modifier.clickable { onSetHighResVideoPlaybackMode(mode) }
-                                    } else {
-                                        Modifier
-                                    }
-                                )
+                                .clickable { onSetHighResVideoPlaybackMode(mode) }
                         ) {
                             Row(
                                 modifier = Modifier
@@ -490,63 +473,99 @@ fun ProfileAndSettingsScreen(
                             ) {
                                 RadioButton(
                                     selected = isSelected,
-                                    onClick = if (isAvailable) {
-                                        { onSetHighResVideoPlaybackMode(mode) }
-                                    } else null,
-                                    enabled = isAvailable,
+                                    onClick = { onSetHighResVideoPlaybackMode(mode) },
                                     modifier = Modifier.testTag("settings_high_res_radio_${mode.name.lowercase()}")
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = mode.label,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = if (isAvailable) {
-                                                MaterialTheme.colorScheme.onSurface
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
-                                            }
-                                        )
-                                        if (!isAvailable) {
-                                            Surface(
-                                                color = MaterialTheme.colorScheme.errorContainer,
-                                                shape = RoundedCornerShape(6.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Unavailable",
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onErrorContainer,
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                                )
-                                            }
-                                        }
-                                    }
+                                    Text(
+                                        text = mode.label,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
                                     Spacer(modifier = Modifier.height(2.dp))
                                     Text(
                                         text = mode.description,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                    if (!isAvailable && !unavailableReason.isNullOrBlank()) {
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = "Reason: $unavailableReason",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.testTag("settings_high_res_reason_${mode.name.lowercase()}")
-                                        )
-                                    }
                                 }
                             }
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // 4. Hardware Decoder Preference (Switch)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_hardware_decoder_row"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Hardware Decoder Preference",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Prefer hardware-accelerated playback when available.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.hardwareDecoderPreferenceEnabled,
+                        onCheckedChange = onSetHardwareDecoderPreference,
+                        modifier = Modifier.testTag("settings_hardware_decoder_switch")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // 5. Software Decoder Fallback (Switch)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("settings_software_fallback_row"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Software Decoder Fallback",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Attempt software decoding only when hardware decoding fails and the device can safely handle it.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = userPreferences.allowExperimental4kSoftwareFallback,
+                        onCheckedChange = onSetAllowExperimental4kSoftwareFallback,
+                        modifier = Modifier.testTag("settings_4k_sw_fallback_switch")
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(18.dp))
+                HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Device Video Playback Capability Subsection
+                DeviceVideoPlaybackCapabilitySection(
+                    deviceCapabilities = deviceCapabilities,
+                    isScanningCapabilities = isScanningCapabilities,
+                    onRecheckDeviceCapabilities = onRecheckDeviceCapabilities
+                )
             }
         }
 
@@ -955,6 +974,442 @@ private fun LicenseEntryCard(
                 text = "License: $license",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeviceVideoPlaybackCapabilitySection(
+    deviceCapabilities: PersistedDeviceCapabilities,
+    isScanningCapabilities: Boolean,
+    onRecheckDeviceCapabilities: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("device_video_capability_section"),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // Section Header with Title
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Memory,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Device Video Playback Capability",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "Hardware-aware decoder detection & display classification",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+
+        // Recheck Button & Last Scan Info Row
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Last Capability Scan",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = deviceCapabilities.formattedScanTime,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.testTag("device_cap_last_scan")
+                    )
+                }
+                OutlinedButton(
+                    onClick = onRecheckDeviceCapabilities,
+                    enabled = !isScanningCapabilities,
+                    modifier = Modifier.testTag("recheck_device_capability_button"),
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    if (isScanningCapabilities) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Scanning...", style = MaterialTheme.typography.labelMedium)
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Recheck Device Capability", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+
+        // Overview Key Metrics Grid (Max Normal, Max High-Res, Display Res)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CapabilityMetricCard(
+                title = "Max Normal",
+                value = deviceCapabilities.maxNormalResolution,
+                testTag = "device_cap_max_normal",
+                modifier = Modifier.weight(1f)
+            )
+            CapabilityMetricCard(
+                title = "Max High-Res",
+                value = deviceCapabilities.maxHighResResolution,
+                testTag = "device_cap_max_high_res",
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        CapabilityMetricCard(
+            title = "Device Display Resolution",
+            value = "${deviceCapabilities.displayResolutionString} • ${deviceCapabilities.displayRefreshRateFps.toInt()} Hz",
+            testTag = "device_cap_display_res",
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        // Resolution Classification
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "Resolution Classification",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Classification based on verified MediaCodec hardware & software profiles.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            deviceCapabilities.resolutionCategories.forEach { category ->
+                ResolutionCategoryRow(category = category)
+            }
+        }
+
+        // Supported Video Codecs Breakdown
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Supported Video Codecs",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "MediaCodec decoder availability for H.264, H.265, VP9, and AV1 formats.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            deviceCapabilities.codecCapabilities.forEach { codec ->
+                CodecCapabilityCard(codec = codec)
+            }
+        }
+
+        // Decoder & Pipeline Details
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Decoders & Display Pipeline",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            PipelineDetailCard(
+                title = "Hardware Video Decoders (${deviceCapabilities.hardwareDecoders.size})",
+                description = if (deviceCapabilities.hardwareDecoders.isNotEmpty()) {
+                    deviceCapabilities.hardwareDecoders.joinToString(", ")
+                } else {
+                    "No hardware decoders registered"
+                },
+                testTag = "device_cap_hw_decoders"
+            )
+
+            PipelineDetailCard(
+                title = "Software Video Decoders (${deviceCapabilities.softwareDecoders.size})",
+                description = if (deviceCapabilities.softwareDecoders.isNotEmpty()) {
+                    deviceCapabilities.softwareDecoders.joinToString(", ")
+                } else {
+                    "No software decoders registered"
+                },
+                testTag = "device_cap_sw_decoders"
+            )
+
+            PipelineDetailCard(
+                title = "Supported Frame Rates",
+                description = deviceCapabilities.supportedFrameRatesSummary,
+                testTag = "device_cap_frame_rates"
+            )
+
+            PipelineDetailCard(
+                title = "HDR & Bit-Depth",
+                description = deviceCapabilities.hdrAndBitDepthSummary,
+                testTag = "device_cap_hdr_bitdepth"
+            )
+        }
+    }
+}
+
+@Composable
+private fun CapabilityMetricCard(
+    title: String,
+    value: String,
+    testTag: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        modifier = modifier.testTag(testTag)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
+private fun ResolutionCategoryRow(
+    category: ResolutionCategoryCapability
+) {
+    val rawName = category.categoryName.lowercase().substringBefore(" ").replace("—", "").trim()
+    val rowTag = "device_cap_res_$rawName"
+    val statusTag = "device_cap_status_$rawName"
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(rowTag)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = category.categoryName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = "${category.standardWidth} × ${category.standardHeight} • ${category.details}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            ResolutionStatusBadge(
+                status = category.status,
+                testTag = statusTag
+            )
+        }
+    }
+}
+
+@Composable
+private fun ResolutionStatusBadge(
+    status: ResolutionStatus,
+    testTag: String
+) {
+    val (bgColor, textColor) = when (status) {
+        ResolutionStatus.SUPPORTED -> Color(0xFF1B5E20).copy(alpha = 0.22f) to Color(0xFF81C784)
+        ResolutionStatus.LIMITED_SUPPORT -> Color(0xFFE65100).copy(alpha = 0.22f) to Color(0xFFFFB74D)
+        ResolutionStatus.UNSUPPORTED -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f) to MaterialTheme.colorScheme.error
+        ResolutionStatus.NOT_VERIFIED -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = bgColor,
+        modifier = Modifier.testTag(testTag)
+    ) {
+        Text(
+            text = status.label,
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.Bold,
+            color = textColor,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun CodecCapabilityCard(
+    codec: CodecCapabilityDetails
+) {
+    val sanitizedName = codec.codecDisplayName.lowercase().replace("/", "_").replace(" ", "_")
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("device_cap_codec_$sanitizedName")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = codec.codecDisplayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                val (badgeColor, badgeTextColor, badgeLabel) = when {
+                    codec.hasHardwareDecoder -> Triple(
+                        Color(0xFF1B5E20).copy(alpha = 0.22f),
+                        Color(0xFF81C784),
+                        "Hardware"
+                    )
+                    codec.hasSoftwareDecoder -> Triple(
+                        Color(0xFFE65100).copy(alpha = 0.22f),
+                        Color(0xFFFFB74D),
+                        "Software"
+                    )
+                    else -> Triple(
+                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
+                        MaterialTheme.colorScheme.error,
+                        "Unsupported"
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = badgeColor
+                ) {
+                    Text(
+                        text = badgeLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = badgeTextColor,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+            }
+
+            Text(
+                text = "Max: ${codec.maxResolution} (${codec.maxFrameRate} fps) • ${if (codec.supports10BitHdr) "10-bit HDR" else "8-bit SDR"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            if (codec.hardwareDecoderNames.isNotEmpty()) {
+                Text(
+                    text = "HW: ${codec.hardwareDecoderNames.joinToString(", ")}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            } else if (codec.softwareDecoderNames.isNotEmpty()) {
+                Text(
+                    text = "SW: ${codec.softwareDecoderNames.joinToString(", ")}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PipelineDetailCard(
+    title: String,
+    description: String,
+    testTag: String
+) {
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag(testTag)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = description,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

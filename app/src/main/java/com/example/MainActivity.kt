@@ -309,6 +309,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     val updateSourceEvaluation by viewModel.updateSourceEvaluation.collectAsStateWithLifecycle()
     val activeUpdateChannel by viewModel.activeUpdateChannel.collectAsStateWithLifecycle()
     val updatePolicyBlockMessage by viewModel.updatePolicyBlockMessage.collectAsStateWithLifecycle()
+    val deviceCapabilities by viewModel.deviceCapabilities.collectAsStateWithLifecycle()
+    val isScanningCapabilities by viewModel.isScanningCapabilities.collectAsStateWithLifecycle()
 
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val hasMediaPermission by viewModel.hasMediaPermission.collectAsStateWithLifecycle()
@@ -1314,6 +1316,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onSetKeepScreenOnDuringVideo = { viewModel.setKeepScreenOnDuringVideo(it) },
                                     onSetVideoGestureControls = { viewModel.setVideoGestureControlsEnabled(it) },
                                     onSetVideoOrientationPref = { viewModel.setVideoOrientationPreference(it) },
+                                    onSetHardwareDecoderPreference = { viewModel.setHardwareDecoderPreference(it) },
                                     onSetAllowExperimental4kSoftwareFallback = {
                                         viewModel.setAllowExperimental4kSoftwareFallback(it)
                                     },
@@ -1321,6 +1324,9 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     onSetHighResVideoPlaybackMode = {
                                         viewModel.setHighResVideoPlaybackMode(it)
                                     },
+                                    deviceCapabilities = deviceCapabilities,
+                                    isScanningCapabilities = isScanningCapabilities,
+                                    onRecheckDeviceCapabilities = { viewModel.recheckDeviceCapabilities() },
                                     onSetAudioBalance = { viewModel.setAudioBalance(it) },
                                     onSetPreampGainDb = { viewModel.setPreampGainDb(it) },
                                     onSetSleepTimerMinutes = { viewModel.setSleepTimerMinutes(it) },

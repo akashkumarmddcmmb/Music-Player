@@ -38,8 +38,10 @@ import com.example.data.repository.MediaLibraryRepository
 import com.example.media.AdaptiveVideoEngineStrategy
 import com.example.media.ConversionCapabilityRegistry
 import com.example.media.ConversionProfile
+import com.example.media.DeviceCapabilityDetector
 import com.example.media.EqualizerController
 import com.example.media.HardwareEqualizerState
+import com.example.media.PersistedDeviceCapabilities
 import com.example.media.MediaArtworkLoader
 import com.example.media.MediaFileActionsHelper
 import com.example.media.MediaProcessorEngine
@@ -252,6 +254,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private val _isScanningLibrary = MutableStateFlow(false)
     val isScanningLibrary: StateFlow<Boolean> = _isScanningLibrary.asStateFlow()
     private var pendingRescanAfterCurrent: Boolean = false
+
+    // Device Video Playback Capabilities
+    private val _deviceCapabilities = MutableStateFlow(
+        DeviceCapabilityDetector.getCachedCapabilities(application)
+    )
+    val deviceCapabilities: StateFlow<PersistedDeviceCapabilities> = _deviceCapabilities.asStateFlow()
+
+    private val _isScanningCapabilities = MutableStateFlow(false)
+    val isScanningCapabilities: StateFlow<Boolean> = _isScanningCapabilities.asStateFlow()
 
     val notificationManager = InAppNotificationManager(viewModelScope)
     val statusBannerNotification: StateFlow<InAppNotification?> = notificationManager.currentNotification
@@ -715,34 +726,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         error: PlaybackException,
         recoveryAttempts: Int
     ): String {
-        val state = _playbackState.value
-        val media = state.currentMedia
-        val telemetry = Resilient4KCodecEngine.latestTelemetry.value
-        val scheme = media?.uriString?.let { runCatching { Uri.parse(it).scheme }.getOrNull() } ?: "unknown"
-        val mime = media?.mimeType ?: telemetry.sourceMimeType.ifBlank { "unknown" }
-        val w = state.decodedVideoWidth.takeIf { it > 0 } ?: media?.width ?: 0
-        val h = state.decodedVideoHeight.takeIf { it > 0 } ?: media?.height ?: 0
-        val dimText = if (w > 0 && h > 0) "${w}x${h}" else "unknown-dim"
-        val fpsText = if (telemetry.sourceFrameRate > 0f) "${telemetry.sourceFrameRate.toInt()}fps" else "unknown-fps"
-        val decoderName = telemetry.selectedDecoderName ?: state.verifiedDecoderName ?: "none"
-        val hwSw = when {
-            telemetry.selectedDecoderName == null && state.verifiedDecoderName == null -> "uninitialized"
-            telemetry.isSoftwareFallbackActive -> "SW-fallback"
-            telemetry.isHardwareAccelerated -> "HW"
-            else -> "SW"
-        }
-        val surfaceInfo = "surface=${if (state.hasVideoSurface) "attached" else "detached"}, firstFrame=${state.hasRenderedFirstFrame}"
-        val telemetryFailure = telemetry.failureReason?.takeIf { it.isNotBlank() }
-
-        return buildString {
-            append("Playback error (${error.errorCodeName}): ")
-            if (telemetryFailure != null) {
-                append(telemetryFailure).append(" ")
-            } else {
-                append("The file may be corrupt, moved, or use an unsupported codec. ")
-            }
-            append("[URI=$scheme, MIME=$mime, res=$dimText@$fpsText, decoder=$decoderName ($hwSw), $surfaceInfo, retries=$recoveryAttempts]")
-        }
+        return "Unable to play this video on your device. Try another video format or resolution."
     }
 
     fun onVideoSurfaceAttached(attached: Boolean) {
@@ -756,6 +740,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     init {
+        viewModelScope.launch(Dispatchers.IO) {
+            val detected = DeviceCapabilityDetector.detectAndCacheDeviceCapabilities(getApplication())
+            _deviceCapabilities.value = detected
+        }
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 processorEngine.cleanupOrphanedTempFiles()
@@ -784,7 +772,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
             Resilient4KCodecEngine.updateConfiguredPlaybackMode(
                 mode = initialPrefs.highResVideoPlaybackMode,
-                legacyAllowSoftwareFallback = initialPrefs.allowExperimental4kSoftwareFallback
+                legacyAllowSoftwareFallback = initialPrefs.allowExperimental4kSoftwareFallback,
+                hardwareDecoderPreference = initialPrefs.hardwareDecoderPreferenceEnabled
             )
             equalizerController.setStereoBalance(initialPrefs.audioBalance)
             equalizerController.setPreampGainDb(initialPrefs.preampGainDb)
@@ -801,7 +790,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 val prefs = preferencesRepository.preferencesFlow.first()
                 Resilient4KCodecEngine.updateConfiguredPlaybackMode(
                     mode = prefs.highResVideoPlaybackMode,
-                    legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback
+                    legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback,
+                    hardwareDecoderPreference = prefs.hardwareDecoderPreferenceEnabled
                 )
                 equalizerController.setStereoBalance(prefs.audioBalance)
                 equalizerController.setPreampGainDb(prefs.preampGainDb)
@@ -2975,15 +2965,24 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch { preferencesRepository.setDefaultSortOption(option) }
     }
 
-    fun setAllowExperimental4kSoftwareFallback(enabled: Boolean) {
-        val targetMode = if (enabled) {
-            HighResVideoPlaybackMode.SOFTWARE_FALLBACK
-        } else {
-            HighResVideoPlaybackMode.AUTO
-        }
+    fun setHardwareDecoderPreference(enabled: Boolean) {
+        val prefs = userPreferences.value
         Resilient4KCodecEngine.updateConfiguredPlaybackMode(
-            mode = targetMode,
-            legacyAllowSoftwareFallback = enabled
+            mode = prefs.highResVideoPlaybackMode,
+            legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback,
+            hardwareDecoderPreference = enabled
+        )
+        viewModelScope.launch {
+            preferencesRepository.setHardwareDecoderPreference(enabled)
+        }
+    }
+
+    fun setAllowExperimental4kSoftwareFallback(enabled: Boolean) {
+        val prefs = userPreferences.value
+        Resilient4KCodecEngine.updateConfiguredPlaybackMode(
+            mode = prefs.highResVideoPlaybackMode,
+            legacyAllowSoftwareFallback = enabled,
+            hardwareDecoderPreference = prefs.hardwareDecoderPreferenceEnabled
         )
         viewModelScope.launch {
             preferencesRepository.setAllowExperimental4kSoftwareFallback(enabled)
@@ -2992,19 +2991,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setHighResVideoPlaybackMode(mode: HighResVideoPlaybackMode) {
         val app = getApplication<Application>()
-        val availabilities = Resilient4KCodecEngine.evaluateAllPlaybackModesAvailability(app)
-        val targetAvailability = availabilities.find { it.mode == mode }
-        if (targetAvailability != null && !targetAvailability.isAvailable) {
-            postStatusBannerMessage(
-                targetAvailability.unavailableReason
-                    ?: "${mode.label} is not supported on this device.",
-                InAppNotificationType.TEMPORARY_WARNING
-            )
-            return
-        }
+        val prefs = userPreferences.value
         Resilient4KCodecEngine.updateConfiguredPlaybackMode(
             mode = mode,
-            legacyAllowSoftwareFallback = (mode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK)
+            legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback,
+            hardwareDecoderPreference = prefs.hardwareDecoderPreferenceEnabled
         )
         viewModelScope.launch {
             preferencesRepository.setHighResVideoPlaybackMode(mode)
@@ -3020,13 +3011,28 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             _playbackState.value.videoCapabilityEvaluation
         }
         _playbackState.value = _playbackState.value.copy(
-            playbackModeAvailabilities = availabilities,
             videoCapabilityEvaluation = updatedEval
         )
         postStatusBannerMessage(
-            "High-Resolution Video Playback mode set to: ${mode.label}",
+            "Video playback mode: ${mode.label}",
             InAppNotificationType.TEMPORARY_INFO
         )
+    }
+
+    fun recheckDeviceCapabilities() {
+        if (_isScanningCapabilities.value) return
+        _isScanningCapabilities.value = true
+        viewModelScope.launch {
+            val updated = withContext(Dispatchers.Default) {
+                DeviceCapabilityDetector.forceRedetectCapabilities(getApplication())
+            }
+            _deviceCapabilities.value = updated
+            _isScanningCapabilities.value = false
+            postStatusBannerMessage(
+                "Device video playback capabilities rechecked.",
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
+        }
     }
 
     fun setOptionalAdsConfig(enabled: Boolean, consentGranted: Boolean) {

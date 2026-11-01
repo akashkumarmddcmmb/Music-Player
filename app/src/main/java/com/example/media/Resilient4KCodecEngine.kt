@@ -77,27 +77,27 @@ enum class VideoCompatibilityAction(
 ) {
     AUTO_PLAYBACK(
         title = "Auto playback",
-        subtitle = "Automatically select the safest compatible hardware or fallback decoder for this video."
+        subtitle = "Automatically select the safest compatible playback method for this video."
     ),
     TRY_COMPATIBLE_DECODER(
-        title = "Compatible decoder आज़माएँ",
-        subtitle = "Try an alternate compatible MediaCodec decoder with capability-validated operating rate and buffer bounds."
+        title = "Try compatible decoder",
+        subtitle = "Try an alternate compatible decoder for this video format."
     ),
     SOFTWARE_FALLBACK(
         title = "Software fallback",
-        subtitle = "Use CPU software decoding only if device memory, CPU cores, and thermal status are within safe limits."
+        subtitle = "Attempt software decoding only when hardware decoding fails and the device can safely handle it."
     ),
     LOWER_RESOLUTION_PLAYBACK(
         title = "Supported lower-resolution playback",
-        subtitle = "Constrain video track selection to the highest hardware-supported resolution (e.g. 1080p) without claiming native 4K/8K."
+        subtitle = "Play using standard resolution compatibility mode."
     ),
     VIDEO_INFORMATION(
         title = "Video information",
-        subtitle = "Inspect detailed codec, resolution, bitrate, frame rate, and device decoder capability diagnostics."
+        subtitle = "View video resolution, format, and stream information."
     ),
     CANCEL(
         title = "Cancel",
-        subtitle = "Stop attempting high-resolution fallback and return to the player."
+        subtitle = "Stop attempting playback and return to the player."
     );
 
     val label: String
@@ -227,8 +227,7 @@ data class VideoStreamCapabilityEvaluation(
         get() = if (isHardwareSupported) {
             null
         } else {
-            rejectedHardwareDecoders.firstOrNull()?.diagnosticNote
-                ?: "No registered hardware decoder supports ${width}x${height} ($mimeType, ${bitDepth}-bit)."
+            "Hardware decoding is not supported for this video format."
         }
 
     val isSoftwareFallbackSafe: Boolean
@@ -237,11 +236,9 @@ data class VideoStreamCapabilityEvaluation(
     val softwareUnavailableReason: String?
         get() = when {
             isSoftwareFallbackSafe -> null
-            isSoftwareFallbackTooHeavy && resolutionTier == VideoResolutionTier.UHD_8K ->
-                "8K UHD software decoding exceeds mobile CPU/RAM limits."
-            isSoftwareFallbackTooHeavy ->
-                "High-bitrate 4K software decoding exceeds safe device CPU/RAM limits."
-            else -> softwareFallbackGuard.rejectionReason ?: "No compatible software decoder available."
+            resolutionTier == VideoResolutionTier.UHD_8K ->
+                "Software decoding is not supported for 8K video."
+            else -> "Software decoding is not available for this video format."
         }
 
     val isLowerResolutionOptionAvailable: Boolean
@@ -253,9 +250,9 @@ data class VideoStreamCapabilityEvaluation(
     val warningMessage: String?
         get() = when {
             recommendedStrategy == AdaptiveVideoEngineStrategy.UNSUPPORTED_ON_DEVICE ->
-                honestCapabilitySummary
+                "Unable to play this video on your device. Try another video format or resolution."
             isSoftwareFallbackTooHeavy && !isHardwareSupported ->
-                softwareUnavailableReason ?: honestCapabilitySummary
+                "Unable to play this video on your device. Try another video format or resolution."
             else -> null
         }
 }
@@ -328,6 +325,9 @@ object Resilient4KCodecEngine {
     var forceTryAlternativeDecoderOnNextInit: Boolean = false
 
     @Volatile
+    var hardwareDecoderPreferenceEnabled: Boolean = true
+
+    @Volatile
     var activeSessionTrackUri: String = ""
         private set
 
@@ -347,6 +347,14 @@ object Resilient4KCodecEngine {
     var isLowerResolutionConstraintActive: Boolean = false
         private set
 
+    @Volatile
+    var persistedDeviceCapabilities: PersistedDeviceCapabilities? = null
+        private set
+
+    fun setPersistedDeviceCapabilities(capabilities: PersistedDeviceCapabilities) {
+        persistedDeviceCapabilities = capabilities
+    }
+
     private val _latestTelemetry = MutableStateFlow(VideoDecoderTelemetrySnapshot())
     val latestTelemetry: StateFlow<VideoDecoderTelemetrySnapshot> = _latestTelemetry.asStateFlow()
 
@@ -357,13 +365,15 @@ object Resilient4KCodecEngine {
     fun updateConfiguredPlaybackMode(
         mode: HighResVideoPlaybackMode,
         allowExperimentalSwFallback: Boolean = (mode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK),
-        legacyAllowSoftwareFallback: Boolean = false
+        legacyAllowSoftwareFallback: Boolean = false,
+        hardwareDecoderPreference: Boolean = true
     ) {
         activePlaybackMode = mode
         allowExperimental4kSoftwareFallback =
             allowExperimentalSwFallback ||
                 legacyAllowSoftwareFallback ||
                 (mode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK)
+        hardwareDecoderPreferenceEnabled = hardwareDecoderPreference
         val prev = _latestTelemetry.value
         if (prev.activePlaybackMode != mode) {
             _latestTelemetry.value = prev.copy(activePlaybackMode = mode)
@@ -396,16 +406,10 @@ object Resilient4KCodecEngine {
         isLowerResolutionConstraintActive = false
 
         val tier = classifyResolutionTier(width, height)
-        val isHighRes = tier == VideoResolutionTier.UHD_4K ||
-            tier == VideoResolutionTier.UHD_8K ||
-            tier == VideoResolutionTier.QHD_2K
-        isTemporaryHighResSessionActive = isHighRes
-
-        val initialStrategy = if (isHighRes) {
-            AdaptiveVideoEngineStrategy.HIGH_RES_HARDWARE_PRIMARY
-        } else {
-            AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH
-        }
+        // Resolution alone must never determine engine selection or activate compatibility overrides.
+        // Every track begins with the Normal Hardware Engine.
+        isTemporaryHighResSessionActive = false
+        val initialStrategy = AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH
 
         _latestTelemetry.value = VideoDecoderTelemetrySnapshot(
             sourceMimeType = mimeType,
@@ -416,16 +420,12 @@ object Resilient4KCodecEngine {
             sourceBitDepth = if (isHdrOr10Bit) 10 else 8,
             activeTrackUri = trackUri,
             sessionGeneration = nextGen,
-            isTemporaryHighResSessionActive = isHighRes,
+            isTemporaryHighResSessionActive = false,
             isDownscaledPlayback = false,
             activeEngineStrategy = initialStrategy,
             activePlaybackMode = activePlaybackMode,
             activeCompatibilityAction = null,
-            diagnosticSummary = if (isHighRes) {
-                "Preparing High-Res Decoder (${tier.displayLabel})"
-            } else {
-                "Preparing Video Decoder"
-            }
+            diagnosticSummary = "Preparing Standard Hardware Engine"
         )
         return nextGen
     }
@@ -1033,15 +1033,18 @@ object Resilient4KCodecEngine {
                     statusBadge = "Safe for Older Devices",
                     explanation = mode.description
                 )
-                HighResVideoPlaybackMode.HIGH_RESOLUTION -> PlaybackModeAvailabilityReport(
-                    mode = mode,
-                    isAvailable = has4kCapableDecoder,
-                    statusBadge = if (has4kCapableDecoder) "4K Decoder Detected" else "Limited by Hardware",
-                    explanation = mode.description,
-                    unavailableReason = if (!has4kCapableDecoder) {
-                        "No registered MediaCodec on this device reports 3840x2160 UHD support."
-                    } else null
-                )
+                HighResVideoPlaybackMode.HIGH_RESOLUTION -> {
+                    val isHighResAvailable = has4kCapableDecoder || hasAnyHardwareDecoder
+                    PlaybackModeAvailabilityReport(
+                        mode = mode,
+                        isAvailable = isHighResAvailable,
+                        statusBadge = if (isHighResAvailable) "Hardware Engine Ready" else "No Hardware Codec",
+                        explanation = mode.description,
+                        unavailableReason = if (!isHighResAvailable) {
+                            "No hardware-accelerated video decoders are registered on this device."
+                        } else null
+                    )
+                }
                 HighResVideoPlaybackMode.HARDWARE_PREFERENCE -> PlaybackModeAvailabilityReport(
                     mode = mode,
                     isAvailable = hasAnyHardwareDecoder,
@@ -1055,12 +1058,12 @@ object Resilient4KCodecEngine {
                     mode = mode,
                     isAvailable = swGuard.canAttemptSoftware4KFallback,
                     statusBadge = if (swGuard.canAttemptSoftware4KFallback) {
-                        "CPU/RAM Guard OK (${swGuard.cpuCoreCount} cores)"
+                        "Available"
                     } else {
-                        "Blocked by Device Guard"
+                        "Not Recommended"
                     },
                     explanation = mode.description,
-                    unavailableReason = swGuard.rejectionReason
+                    unavailableReason = null
                 )
             }
         }
@@ -1085,6 +1088,8 @@ object Resilient4KCodecEngine {
         lowMemoryOverride: Boolean? = null,
         thermalStatusOverride: Int? = null
     ): VideoStreamCapabilityEvaluation {
+        val deviceCaps = persistedDeviceCapabilities
+            ?: DeviceCapabilityDetector.getCachedCapabilities(context)
         val effectiveMode = selectedMode
         val resolvedMime = formatOverride?.sampleMimeType?.takeIf { it.isNotBlank() }
             ?: inferVideoCodecMimeType(media)
@@ -1252,23 +1257,17 @@ object Resilient4KCodecEngine {
 
         val honestSummary = when (recommendedStrategy) {
             AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH ->
-                "Standard HD/FHD stream (${width}x${height}, $resolvedMime, $bitrateMbpsText): Directly supported via normal hardware playback path."
+                "Standard video (${width}x${height}): Directly supported via normal hardware playback path."
             AdaptiveVideoEngineStrategy.HIGH_RES_HARDWARE_PRIMARY ->
-                "High-resolution stream (${tier.displayLabel}, $resolvedMime, ${bitDepth}-bit, $bitrateMbpsText): Verified hardware decoder (${compatibleHw.first().codecName}) available."
+                "High-resolution video (${width}x${height}): Supported via hardware-accelerated playback on this device."
             AdaptiveVideoEngineStrategy.COMPATIBLE_ALTERNATE_DECODER ->
-                "High-resolution stream (${tier.displayLabel}, $resolvedMime, $bitrateMbpsText): Primary profile/rate requires capability-adjusted alternate decoder (${distinctAlt.first().codecName})."
+                "High-resolution video (${width}x${height}): Compatible playback path available for this video."
             AdaptiveVideoEngineStrategy.GUARDED_SOFTWARE_FALLBACK ->
-                "No hardware decoder supports ${width}x${height} ($resolvedMime, $bitrateMbpsText). Guarded software decoding (${compatibleSw.first().codecName}) is available within CPU/RAM limits."
+                "High-resolution video (${width}x${height}): Software decoding fallback available."
             AdaptiveVideoEngineStrategy.LOWER_RESOLUTION_PLAYBACK ->
-                "Device hardware decoders max out below ${width}x${height} ($bitrateMbpsText). Native ${tier.displayLabel} decoding is not supported on this chipset; lower-resolution (≤1080p) compatibility mode is available."
-            AdaptiveVideoEngineStrategy.UNSUPPORTED_ON_DEVICE -> buildString {
-                append("Device hardware and software decoders do not support ${width}x${height} ($resolvedMime, ${bitDepth}-bit, $bitrateMbpsText). ")
-                if (isSwTooHeavy) {
-                    append("Software decoding is unsafe/too heavy for this stream on this device (${swGuard.cpuCoreCount} cores, ${swGuard.availableMemoryMb}MB free RAM). ")
-                } else if (!swGuard.canAttemptSoftware4KFallback && swGuard.rejectionReason != null) {
-                    append(swGuard.rejectionReason)
-                }
-            }
+                "High-resolution video (${width}x${height}): Standard resolution compatibility mode available."
+            AdaptiveVideoEngineStrategy.UNSUPPORTED_ON_DEVICE ->
+                "Unable to play this video (${width}x${height}) on your device. Try another video format or resolution."
         }
 
         val surfaceNote =
@@ -1875,22 +1874,38 @@ class Resilient4KMediaCodecAdapterFactory(
             !r.isHardwareAccelerated && r.isCompatibleWithOperatingRateAdjustment
         }.sortedByDescending { codec -> reports.getValue(codec).isFullyCompatible }
 
-        // Requirement 3 & 5: Standard <=1080p stream ALWAYS uses the normal hardware playback path first
-        if (!is4kOrHigher && !Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit) {
+        var primaryFailedOnNormalEngine: String? = null
+        var fallbackAttempts = 0
+        var lastException: Throwable? = null
+        val failureNotes = mutableListOf<String>()
+
+        val isUserForcedAlt = Resilient4KCodecEngine.forceTryAlternativeDecoderOnNextInit ||
+            tempAction == VideoCompatibilityAction.TRY_COMPATIBLE_DECODER ||
+            tempAction == VideoCompatibilityAction.SOFTWARE_FALLBACK ||
+            currentMode == HighResVideoPlaybackMode.COMPATIBILITY
+
+        // Requirement 1 & 3: Normal Engine Has Priority.
+        // Always attempt playback using the standard Android hardware-accelerated playback engine first for EVERY video (including 4K or 8K).
+        // If the standard engine can smoothly and reliably decode the video on this device, continue using it even for 4K/8K.
+        if (!isUserForcedAlt) {
             try {
                 val adapter = delegateFactory.createAdapter(configuration)
                 val primaryReport = reports[configuration.codecInfo]
+                val isHw = primaryReport?.isHardwareAccelerated ?: true
                 Resilient4KCodecEngine.recordDecoderInitialized(
                     decoderName = configuration.codecInfo.name,
-                    isHardware = primaryReport?.isHardwareAccelerated ?: true,
+                    isHardware = isHw,
                     isSoftwareFallback = false,
                     format = format,
                     fallbackCount = 0,
                     thermalStatus = thermalStatus
                 )
                 return adapter
-            } catch (_: Throwable) {
-                // Fall through to capability-verified candidate evaluation
+            } catch (e: Throwable) {
+                primaryFailedOnNormalEngine = configuration.codecInfo.name
+                lastException = e
+                fallbackAttempts++
+                failureNotes.add("${configuration.codecInfo.name} (normal engine): ${e.javaClass.simpleName}")
             }
         }
 
@@ -1905,10 +1920,6 @@ class Resilient4KMediaCodecAdapterFactory(
         } else {
             compatibleHardware
         }
-
-        var fallbackAttempts = 0
-        var lastException: Throwable? = null
-        val failureNotes = mutableListOf<String>()
 
         val skipHardwareForExplicitSwAction =
             tempAction == VideoCompatibilityAction.SOFTWARE_FALLBACK && compatibleHardware.isEmpty()
@@ -1956,32 +1967,35 @@ class Resilient4KMediaCodecAdapterFactory(
                     }
                 }
 
-                try {
-                    val unmodifiedConfig = if (hwCodec.name == configuration.codecInfo.name) {
-                        configuration
-                    } else {
-                        MediaCodecAdapter.Configuration.createForVideoDecoding(
-                            hwCodec,
-                            configuration.mediaFormat,
-                            format,
-                            configuration.surface,
-                            configuration.crypto
+                // If this hwCodec already failed on the normal engine attempt with unmodified config, skip redundant attempt
+                if (hwCodec.name != primaryFailedOnNormalEngine) {
+                    try {
+                        val unmodifiedConfig = if (hwCodec.name == configuration.codecInfo.name) {
+                            configuration
+                        } else {
+                            MediaCodecAdapter.Configuration.createForVideoDecoding(
+                                hwCodec,
+                                configuration.mediaFormat,
+                                format,
+                                configuration.surface,
+                                configuration.crypto
+                            )
+                        }
+                        val adapter = delegateFactory.createAdapter(unmodifiedConfig)
+                        Resilient4KCodecEngine.recordDecoderInitialized(
+                            decoderName = hwCodec.name,
+                            isHardware = true,
+                            isSoftwareFallback = false,
+                            format = format,
+                            fallbackCount = fallbackAttempts,
+                            thermalStatus = thermalStatus
                         )
+                        return adapter
+                    } catch (e: Throwable) {
+                        lastException = e
+                        fallbackAttempts++
+                        failureNotes.add("${hwCodec.name} (unmodified): ${e.javaClass.simpleName}")
                     }
-                    val adapter = delegateFactory.createAdapter(unmodifiedConfig)
-                    Resilient4KCodecEngine.recordDecoderInitialized(
-                        decoderName = hwCodec.name,
-                        isHardware = true,
-                        isSoftwareFallback = false,
-                        format = format,
-                        fallbackCount = fallbackAttempts,
-                        thermalStatus = thermalStatus
-                    )
-                    return adapter
-                } catch (e: Throwable) {
-                    lastException = e
-                    fallbackAttempts++
-                    failureNotes.add("${hwCodec.name} (unmodified): ${e.javaClass.simpleName}")
                 }
 
                 // Requirement 4: Only retry with adjusted MediaFormat if justified by CodecCapabilityReport

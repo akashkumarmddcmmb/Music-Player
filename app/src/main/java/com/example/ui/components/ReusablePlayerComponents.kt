@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.ViewSidebar
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AudioFile
@@ -137,6 +138,8 @@ fun MediaItemCard(
     onAddToPlaylistClick: () -> Unit,
     onOpenInStudioClick: () -> Unit,
     modifier: Modifier = Modifier,
+    onPlayNextClick: () -> Unit = {},
+    onAddToQueueClick: () -> Unit = {},
     onShareClick: () -> Unit = {},
     onSetRingtoneClick: () -> Unit = {},
     onFileInfoClick: () -> Unit = {}
@@ -326,6 +329,36 @@ fun MediaItemCard(
                             modifier = Modifier
                                 .heightIn(min = 40.dp)
                                 .testTag("overflow_play_action")
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Play Next", maxLines = 1) },
+                            leadingIcon = {
+                                Icon(Icons.Default.SkipNext, contentDescription = null)
+                            },
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                            onClick = {
+                                overflowExpanded = false
+                                onPlayNextClick()
+                            },
+                            modifier = Modifier
+                                .heightIn(min = 40.dp)
+                                .testTag("overflow_play_next_action")
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text("Add to Queue", maxLines = 1) },
+                            leadingIcon = {
+                                Icon(Icons.AutoMirrored.Filled.QueueMusic, contentDescription = null)
+                            },
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                            onClick = {
+                                overflowExpanded = false
+                                onAddToQueueClick()
+                            },
+                            modifier = Modifier
+                                .heightIn(min = 40.dp)
+                                .testTag("overflow_add_to_queue_action")
                         )
 
                         DropdownMenuItem(

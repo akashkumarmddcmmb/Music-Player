@@ -35,9 +35,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -54,6 +56,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bedtime
@@ -167,7 +170,10 @@ import com.example.media.Resilient4KCodecEngine
 import com.example.media.VideoCompatibilityAction
 import com.example.media.rememberMediaArtworkBitmap
 import com.example.ui.components.AddToPlaylistDialog
+import com.example.ui.components.CollapsedPlaylistDockBar
+import com.example.ui.components.ExpandablePlaylistBottomSheetOverlay
 import com.example.ui.components.PlaybackSpeedDialog
+import com.example.ui.components.PlaylistSheetState
 import com.example.ui.components.SleepTimerDialog
 import com.example.ui.components.SubtitleSettingsDialog
 import com.example.ui.components.VideoAudioTrackDialog
@@ -223,6 +229,10 @@ fun NowPlayingOverlayScreen(
     onRemoveQueueItem: (Int) -> Unit,
     onMoveQueueItem: (Int, Int) -> Unit = { _, _ -> },
     onSaveQueueAsPlaylist: (String) -> Unit = {},
+    onSelectQueueItemAt: (Int, MediaEntity) -> Unit = { _, item -> onSelectQueueItem(item) },
+    onPlayNextItem: (MediaEntity) -> Unit = {},
+    onClearQueue: () -> Unit = {},
+    initialPlaylistSheetState: PlaylistSheetState = PlaylistSheetState.COLLAPSED,
     onSelectAudioTrack: (AudioTrackOption) -> Unit = {},
     onVideoSurfaceAttached: (Boolean) -> Unit = {},
     onShareCurrentMedia: () -> Unit = {},
@@ -244,6 +254,8 @@ fun NowPlayingOverlayScreen(
     var showVideoSettingsSheet by rememberSaveable { mutableStateOf(false) }
     var showSleepTimerPanel by rememberSaveable { mutableStateOf(false) }
     var showSpeedPanel by rememberSaveable { mutableStateOf(false) }
+    var playlistSheetState by rememberSaveable { mutableStateOf(initialPlaylistSheetState) }
+    val playlistLazyListState = rememberLazyListState()
     var fullscreenControlsVisible by rememberSaveable { mutableStateOf(true) }
     var controlsInteractionTick by rememberSaveable { mutableIntStateOf(0) }
     var lastObservedMediaUri by rememberSaveable { mutableStateOf<String?>(null) }
@@ -263,6 +275,12 @@ fun NowPlayingOverlayScreen(
             showVideoSettingsSheet -> showVideoSettingsSheet = false
             showSleepTimerPanel -> showSleepTimerPanel = false
             showSpeedPanel -> showSpeedPanel = false
+            playlistSheetState == PlaylistSheetState.FULLY_EXPANDED -> {
+                playlistSheetState = PlaylistSheetState.PARTIALLY_EXPANDED
+            }
+            playlistSheetState == PlaylistSheetState.PARTIALLY_EXPANDED -> {
+                playlistSheetState = PlaylistSheetState.COLLAPSED
+            }
             playbackState.isVideoControlsLocked -> {
                 onToggleControlsLock(false)
                 fullscreenControlsVisible = true
@@ -387,25 +405,38 @@ fun NowPlayingOverlayScreen(
                 orientationPreference = userPreferences.videoOrientationPreference
             )
 
+            val isSystemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val isDarkOverlayBackground = isImmersiveVideoCanvas || when (userPreferences.themeMode) {
+                com.example.ui.theme.AppThemeMode.DARK -> true
+                com.example.ui.theme.AppThemeMode.LIGHT -> false
+                com.example.ui.theme.AppThemeMode.SYSTEM -> isSystemDark
+            }
+
             DisposableEffect(
                 hostActivity,
                 shouldHideSystemBars,
                 isImmersiveVideoCanvas,
                 isLandscapeViewport,
                 playbackState.isFullscreenVideo,
-                userPreferences.videoOrientationPreference
+                userPreferences.videoOrientationPreference,
+                isDarkOverlayBackground
             ) {
                 PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
                     window = hostActivity?.window,
-                    hideSystemBars = shouldHideSystemBars
+                    hideSystemBars = shouldHideSystemBars,
+                    isDarkBackground = isDarkOverlayBackground
                 )
                 onDispose {
-                    if (shouldHideSystemBars) {
-                        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
-                            window = hostActivity?.window,
-                            hideSystemBars = false
-                        )
+                    val restoreDarkBg = when (userPreferences.themeMode) {
+                        com.example.ui.theme.AppThemeMode.DARK -> true
+                        com.example.ui.theme.AppThemeMode.LIGHT -> false
+                        com.example.ui.theme.AppThemeMode.SYSTEM -> isSystemDark
                     }
+                    PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
+                        window = hostActivity?.window,
+                        hideSystemBars = false,
+                        isDarkBackground = restoreDarkBg
+                    )
                 }
             }
 
@@ -487,109 +518,149 @@ fun NowPlayingOverlayScreen(
                     onRetryPlayback = onRetryPlayback
                 )
             } else if (isLandscapeViewport) {
-                LandscapeAudioNowPlayingDeck(
-                    currentMedia = currentMedia,
-                    playbackState = playbackState,
-                    userPreferences = userPreferences,
-                    isFavorite = isFavorite,
-                    showSubtitleSettings = showSubtitleSettings,
-                    showSleepTimerPanel = showSleepTimerPanel,
-                    showSpeedPanel = showSpeedPanel,
-                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
-                    onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
-                    onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
-                    onCollapse = onCollapse,
-                    onPlayPause = onPlayPause,
-                    onSeekTo = onSeekTo,
-                    onPrevious = onPrevious,
-                    onNext = onNext,
-                    onToggleShuffle = onToggleShuffle,
-                    onCycleRepeat = onCycleRepeat,
-                    onSetPlaybackSpeed = onSetPlaybackSpeed,
-                    onPickSubtitleFileClick = onPickSubtitleFileClick,
-                    onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                    onSetSubtitleFontScale = onSetSubtitleFontScale,
-                    onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                    onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-                    onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
-                    onToggleFavorite = onToggleFavorite,
-                    onOpenEqualizer = onOpenEqualizer,
-                    onOpenStudio = onOpenStudio,
-                    onShareCurrentMedia = onShareCurrentMedia,
-                    onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
-                    onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
-                    onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia,
-                    onSelectQueueItem = onSelectQueueItem,
-                    onRemoveQueueItem = onRemoveQueueItem,
-                    onMoveQueueItem = onMoveQueueItem,
-                    onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
-                    onRetryPlayback = onRetryPlayback
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    LandscapeAudioNowPlayingDeck(
+                        currentMedia = currentMedia,
+                        playbackState = playbackState,
+                        userPreferences = userPreferences,
+                        isFavorite = isFavorite,
+                        playlistSheetState = playlistSheetState,
+                        onPlaylistSheetStateChange = { playlistSheetState = it },
+                        showSubtitleSettings = showSubtitleSettings,
+                        showSleepTimerPanel = showSleepTimerPanel,
+                        showSpeedPanel = showSpeedPanel,
+                        onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                        onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
+                        onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
+                        onCollapse = onCollapse,
+                        onPlayPause = onPlayPause,
+                        onSeekTo = onSeekTo,
+                        onPrevious = onPrevious,
+                        onNext = onNext,
+                        onToggleShuffle = onToggleShuffle,
+                        onCycleRepeat = onCycleRepeat,
+                        onSetPlaybackSpeed = onSetPlaybackSpeed,
+                        onPickSubtitleFileClick = onPickSubtitleFileClick,
+                        onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                        onSetSubtitleFontScale = onSetSubtitleFontScale,
+                        onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                        onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+                        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+                        onToggleFavorite = onToggleFavorite,
+                        onOpenEqualizer = onOpenEqualizer,
+                        onOpenStudio = onOpenStudio,
+                        onShareCurrentMedia = onShareCurrentMedia,
+                        onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                        onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                        onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia,
+                        onSelectQueueItem = onSelectQueueItem,
+                        onRemoveQueueItem = onRemoveQueueItem,
+                        onMoveQueueItem = onMoveQueueItem,
+                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
+                        onRetryPlayback = onRetryPlayback
+                    )
+
+                    ExpandablePlaylistBottomSheetOverlay(
+                        playbackState = playbackState,
+                        sheetState = playlistSheetState,
+                        listState = playlistLazyListState,
+                        onSheetStateChange = { playlistSheetState = it },
+                        onPlayPause = onPlayPause,
+                        onNext = onNext,
+                        onToggleShuffle = onToggleShuffle,
+                        onCycleRepeat = onCycleRepeat,
+                        onSelectQueueItemAt = onSelectQueueItemAt,
+                        onRemoveQueueItemAt = onRemoveQueueItem,
+                        onMoveQueueItem = onMoveQueueItem,
+                        onPlayNextItem = onPlayNextItem,
+                        onClearQueue = onClearQueue,
+                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist
+                    )
+                }
             } else {
-                // Standard Portrait Studio Deck (Music & Portrait Video)
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.safeDrawing),
-                    contentPadding = PaddingValues(bottom = 48.dp, start = 16.dp, end = 16.dp, top = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    // Top Bar: Collapse button on left, NOW PLAYING title in center, 3-dot More Options menu on right corner
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(
-                                onClick = onCollapse,
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("collapse_now_playing_button")
+                // Standard Portrait Studio Deck (Music & Portrait Video) with 3-State Expandable Playlist Sheet
+                Box(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .windowInsetsPadding(WindowInsets.safeDrawing),
+                        contentPadding = PaddingValues(bottom = 112.dp, start = 16.dp, end = 16.dp, top = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        // Top Bar: Collapse button on left, NOW PLAYING title in center, Playlist Queue button + 3-dot More Options menu on right
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Collapse player"
+                                IconButton(
+                                    onClick = onCollapse,
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("collapse_now_playing_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Collapse player"
+                                    )
+                                }
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        text = if (currentMedia.mediaType == MediaType.VIDEO) "VIDEO CINEMA ENGINE" else "NOW PLAYING",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = currentMedia.folderName,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        playlistSheetState = playlistSheetState.nextExpandedState()
+                                    },
+                                    modifier = Modifier
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("now_playing_playlist_button")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                        contentDescription = "Open Playlist Queue (${playbackState.queue.size} songs)",
+                                        tint = if (playlistSheetState != PlaylistSheetState.COLLAPSED) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurface
+                                        }
+                                    )
+                                }
+                                NowPlayingOverflowMenuButton(
+                                    currentMedia = currentMedia,
+                                    playbackState = playbackState,
+                                    isFavorite = isFavorite,
+                                    showSpeedPanel = showSpeedPanel,
+                                    showSleepTimerPanel = showSleepTimerPanel,
+                                    showSubtitleSettings = showSubtitleSettings,
+                                    onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
+                                    onOpenEqualizer = onOpenEqualizer,
+                                    onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
+                                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                                    onOpenStudio = onOpenStudio,
+                                    onToggleFavorite = onToggleFavorite,
+                                    onShareCurrentMedia = onShareCurrentMedia,
+                                    onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                                    onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                                    onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia
                                 )
                             }
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = if (currentMedia.mediaType == MediaType.VIDEO) "VIDEO CINEMA ENGINE" else "NOW PLAYING",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = currentMedia.folderName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            NowPlayingOverflowMenuButton(
-                                currentMedia = currentMedia,
-                                playbackState = playbackState,
-                                isFavorite = isFavorite,
-                                showSpeedPanel = showSpeedPanel,
-                                showSleepTimerPanel = showSleepTimerPanel,
-                                showSubtitleSettings = showSubtitleSettings,
-                                onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
-                                onOpenEqualizer = onOpenEqualizer,
-                                onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
-                                onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
-                                onOpenStudio = onOpenStudio,
-                                onToggleFavorite = onToggleFavorite,
-                                onShareCurrentMedia = onShareCurrentMedia,
-                                onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
-                                onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
-                                onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia
-                            )
                         }
-                    }
 
                     // Playback Error Banner with Retry
                     if (playbackState.playbackError != null) {
@@ -828,125 +899,34 @@ fun NowPlayingOverlayScreen(
                             }
                         }
                     }
-
-                    // Active Playback Queue Management (Reorder Up/Down, Remove, Save as Playlist)
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Up Next • Active Queue (${playbackState.queue.size})",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                            if (playbackState.queue.isNotEmpty()) {
-                                OutlinedButton(
-                                    onClick = {
-                                        onSaveQueueAsPlaylist("Queue Mix (${playbackState.queue.size} tracks)")
-                                    },
-                                    modifier = Modifier.testTag("save_queue_as_playlist_button")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Save as Playlist", style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                                }
-                            }
-                        }
                     }
 
-                    itemsIndexed(
-                        playbackState.queue,
-                        key = { idx, item -> "${idx}_${item.uriString}" }
-                    ) { idx, item ->
-                        val isCurrent = idx == playbackState.currentQueueIndex
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSelectQueueItem(item) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isCurrent) {
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                                } else {
-                                    MaterialTheme.colorScheme.surface
-                                }
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "${idx + 1}.",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = item.title,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        text = "${item.artist} • ${formatDurationMillis(item.durationMs)}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                if (playbackState.queue.size > 1) {
-                                    IconButton(
-                                        onClick = { onMoveQueueItem(idx, idx - 1) },
-                                        enabled = idx > 0,
-                                        modifier = Modifier
-                                            .size(36.dp)
-                                            .testTag("queue_move_up_$idx")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.KeyboardArrowUp,
-                                            contentDescription = "Move track up"
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { onMoveQueueItem(idx, idx + 1) },
-                                        enabled = idx < playbackState.queue.lastIndex,
-                                        modifier = Modifier
-                                            .size(36.dp)
-                                            .testTag("queue_move_down_$idx")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.KeyboardArrowDown,
-                                            contentDescription = "Move track down"
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { onRemoveQueueItem(idx) },
-                                        modifier = Modifier
-                                            .minimumInteractiveComponentSize()
-                                            .testTag("queue_remove_$idx")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.DeleteOutline,
-                                            contentDescription = "Remove from queue"
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                    // State A (Collapsed): Bottom Docked Playlist Sheet Handle & Expandable Overlay
+                    if (playlistSheetState == PlaylistSheetState.COLLAPSED) {
+                        CollapsedPlaylistDockBar(
+                            playbackState = playbackState,
+                            sheetState = playlistSheetState,
+                            onSheetStateChange = { playlistSheetState = it },
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                        )
                     }
+
+                    ExpandablePlaylistBottomSheetOverlay(
+                        playbackState = playbackState,
+                        sheetState = playlistSheetState,
+                        listState = playlistLazyListState,
+                        onSheetStateChange = { playlistSheetState = it },
+                        onPlayPause = onPlayPause,
+                        onNext = onNext,
+                        onToggleShuffle = onToggleShuffle,
+                        onCycleRepeat = onCycleRepeat,
+                        onSelectQueueItemAt = onSelectQueueItemAt,
+                        onRemoveQueueItemAt = onRemoveQueueItem,
+                        onMoveQueueItem = onMoveQueueItem,
+                        onPlayNextItem = onPlayNextItem,
+                        onClearQueue = onClearQueue,
+                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist
+                    )
                 }
             }
         }
@@ -1593,7 +1573,14 @@ private fun ImmersiveVideoCinemaLayout(
             visible = gestureFeedbackBanner != null,
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 78.dp)
+                .then(
+                    if (isSystemBarsHidden) {
+                        Modifier
+                    } else {
+                        Modifier.windowInsetsPadding(WindowInsets.statusBars)
+                    }
+                )
+                .padding(top = 72.dp)
         ) {
             Surface(
                 color = CinemaPillBackground,
@@ -3531,6 +3518,7 @@ fun EqualizerBottomSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
+                .navigationBarsPadding()
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -3759,6 +3747,8 @@ private fun LandscapeAudioNowPlayingDeck(
     playbackState: PlaybackUiState,
     userPreferences: UserPreferencesState,
     isFavorite: Boolean,
+    playlistSheetState: PlaylistSheetState = PlaylistSheetState.COLLAPSED,
+    onPlaylistSheetStateChange: (PlaylistSheetState) -> Unit = {},
     showSubtitleSettings: Boolean,
     showSleepTimerPanel: Boolean,
     showSpeedPanel: Boolean,
@@ -3927,13 +3917,31 @@ private fun LandscapeAudioNowPlayingDeck(
             contentPadding = PaddingValues(bottom = 28.dp, top = 4.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Top Utility Row: Single 3-Dot More Options Menu in the top-right corner
+            // Top Utility Row: Playlist Queue Toggle + 3-Dot More Options Menu in the top-right corner
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    IconButton(
+                        onClick = {
+                            onPlaylistSheetStateChange(playlistSheetState.nextExpandedState())
+                        },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("now_playing_playlist_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                            contentDescription = "Open Playlist Queue (${playbackState.queue.size} songs)",
+                            tint = if (playlistSheetState != PlaylistSheetState.COLLAPSED) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
                     NowPlayingOverflowMenuButton(
                         currentMedia = currentMedia,
                         playbackState = playbackState,
@@ -4103,124 +4111,14 @@ private fun LandscapeAudioNowPlayingDeck(
 
 
 
-            // Active Queue Management
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Up Next • Active Queue (${playbackState.queue.size})",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+            // State A (Collapsed) Dock Bar in Landscape Right Column
+            if (playlistSheetState == PlaylistSheetState.COLLAPSED) {
+                item {
+                    CollapsedPlaylistDockBar(
+                        playbackState = playbackState,
+                        sheetState = playlistSheetState,
+                        onSheetStateChange = onPlaylistSheetStateChange
                     )
-                    if (playbackState.queue.isNotEmpty()) {
-                        OutlinedButton(
-                            onClick = {
-                                onSaveQueueAsPlaylist("Queue Mix (${playbackState.queue.size} tracks)")
-                            },
-                            modifier = Modifier.testTag("save_queue_as_playlist_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Save as Playlist", style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        }
-                    }
-                }
-            }
-
-            itemsIndexed(
-                playbackState.queue,
-                key = { idx, item -> "${idx}_${item.uriString}" }
-            ) { idx, item ->
-                val isCurrent = idx == playbackState.currentQueueIndex
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectQueueItem(item) },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isCurrent) {
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                        } else {
-                            MaterialTheme.colorScheme.surface
-                        }
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${idx + 1}.",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = item.title,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "${item.artist} • ${formatDurationMillis(item.durationMs)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        if (playbackState.queue.size > 1) {
-                            IconButton(
-                                onClick = { onMoveQueueItem(idx, idx - 1) },
-                                enabled = idx > 0,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .testTag("queue_move_up_$idx")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowUp,
-                                    contentDescription = "Move track up"
-                                )
-                            }
-                            IconButton(
-                                onClick = { onMoveQueueItem(idx, idx + 1) },
-                                enabled = idx < playbackState.queue.lastIndex,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .testTag("queue_move_down_$idx")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.KeyboardArrowDown,
-                                    contentDescription = "Move track down"
-                                )
-                            }
-                            IconButton(
-                                onClick = { onRemoveQueueItem(idx) },
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("queue_remove_$idx")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.DeleteOutline,
-                                    contentDescription = "Remove from queue"
-                                )
-                            }
-                        }
-                    }
                 }
             }
         }

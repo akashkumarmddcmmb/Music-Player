@@ -309,7 +309,9 @@ fun HomeDashboardScreen(
     onOpenEqualizer: () -> Unit,
     onShareMedia: (MediaEntity) -> Unit = {},
     onSetRingtoneRequest: (MediaEntity) -> Unit = {},
-    onShowFileInfoRequest: (MediaEntity) -> Unit = {}
+    onShowFileInfoRequest: (MediaEntity) -> Unit = {},
+    onPlayNextMedia: (MediaEntity) -> Unit = {},
+    onAddToQueueMedia: (MediaEntity) -> Unit = {}
 ) {
     val homeListState = rememberLazyListState()
 
@@ -618,6 +620,8 @@ fun HomeDashboardScreen(
                     isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                     isFavorite = favoriteUris.contains(media.uriString),
                     onPlayClick = { onPlayMedia(media, allMedia) },
+                    onPlayNextClick = { onPlayNextMedia(media) },
+                    onAddToQueueClick = { onAddToQueueMedia(media) },
                     onFavoriteToggle = { onToggleFavorite(media) },
                     onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                     onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -723,7 +727,9 @@ fun MediaCatalogScreen(
     onClearSearch: () -> Unit = {},
     onShareMedia: (MediaEntity) -> Unit = {},
     onSetRingtoneRequest: (MediaEntity) -> Unit = {},
-    onShowFileInfoRequest: (MediaEntity) -> Unit = {}
+    onShowFileInfoRequest: (MediaEntity) -> Unit = {},
+    onPlayNextMedia: (MediaEntity) -> Unit = {},
+    onAddToQueueMedia: (MediaEntity) -> Unit = {}
 ) {
     var viewMode by rememberSaveable { mutableStateOf(CatalogViewMode.ALL) }
     var selectedFolderInCatalog by rememberSaveable { mutableStateOf<String?>(null) }
@@ -984,6 +990,8 @@ fun MediaCatalogScreen(
                         isCurrentlyPlaying = currentlyPlayingUri == item.uriString,
                         isFavorite = favoriteUris.contains(item.uriString),
                         onPlayClick = { onPlayMedia(item, displayedMedia) },
+                        onPlayNextClick = { onPlayNextMedia(item) },
+                        onAddToQueueClick = { onAddToQueueMedia(item) },
                         onFavoriteToggle = { onToggleFavorite(item) },
                         onAddToPlaylistClick = { onAddToPlaylistRequest(item) },
                         onOpenInStudioClick = { onOpenStudioForMedia(item) },
@@ -1051,7 +1059,9 @@ fun LibraryAndFoldersScreen(
     onClearSearch: () -> Unit = {},
     onShareMedia: (MediaEntity) -> Unit = {},
     onSetRingtoneRequest: (MediaEntity) -> Unit = {},
-    onShowFileInfoRequest: (MediaEntity) -> Unit = {}
+    onShowFileInfoRequest: (MediaEntity) -> Unit = {},
+    onPlayNextMedia: (MediaEntity) -> Unit = {},
+    onAddToQueueMedia: (MediaEntity) -> Unit = {}
 ) {
     var showCreatePlaylistDialog by remember { mutableStateOf(false) }
     var newPlaylistName by remember { mutableStateOf("") }
@@ -1201,6 +1211,8 @@ fun LibraryAndFoldersScreen(
                             isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                             isFavorite = favoriteUris.contains(media.uriString),
                             onPlayClick = { onPlayMedia(media, allMedia) },
+                            onPlayNextClick = { onPlayNextMedia(media) },
+                            onAddToQueueClick = { onAddToQueueMedia(media) },
                             onFavoriteToggle = { onToggleFavorite(media) },
                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                             onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1284,6 +1296,8 @@ fun LibraryAndFoldersScreen(
                                 isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                 isFavorite = favoriteUris.contains(media.uriString),
                                 onPlayClick = { onPlayMedia(media, albumTracks) },
+                                onPlayNextClick = { onPlayNextMedia(media) },
+                                onAddToQueueClick = { onAddToQueueMedia(media) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                 onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1368,6 +1382,8 @@ fun LibraryAndFoldersScreen(
                                 isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                 isFavorite = favoriteUris.contains(media.uriString),
                                 onPlayClick = { onPlayMedia(media, artistTracks) },
+                                onPlayNextClick = { onPlayNextMedia(media) },
+                                onAddToQueueClick = { onAddToQueueMedia(media) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                 onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1573,6 +1589,8 @@ fun LibraryAndFoldersScreen(
                                 isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                 isFavorite = favoriteUris.contains(media.uriString),
                                 onPlayClick = { onPlayMedia(media, folderItems) },
+                                onPlayNextClick = { onPlayNextMedia(media) },
+                                onAddToQueueClick = { onAddToQueueMedia(media) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                 onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1692,6 +1710,8 @@ fun LibraryAndFoldersScreen(
                                 isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                 isFavorite = favoriteUris.contains(media.uriString),
                                 onPlayClick = { onPlayMedia(media, playlistItems) },
+                                onPlayNextClick = { onPlayNextMedia(media) },
+                                onAddToQueueClick = { onAddToQueueMedia(media) },
                                 onFavoriteToggle = { onToggleFavorite(media) },
                                 onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                 onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1803,6 +1823,8 @@ fun LibraryAndFoldersScreen(
                                             isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                             isFavorite = true,
                                             onPlayClick = { onPlayMedia(media, favoriteAudio) },
+                                            onPlayNextClick = { onPlayNextMedia(media) },
+                                            onAddToQueueClick = { onAddToQueueMedia(media) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                             onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1839,6 +1861,8 @@ fun LibraryAndFoldersScreen(
                                             isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                             isFavorite = true,
                                             onPlayClick = { onPlayMedia(media, favoriteVideos) },
+                                            onPlayNextClick = { onPlayNextMedia(media) },
+                                            onAddToQueueClick = { onAddToQueueMedia(media) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                             onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1867,6 +1891,8 @@ fun LibraryAndFoldersScreen(
                                             isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                             isFavorite = true,
                                             onPlayClick = { onPlayMedia(media, favoriteAudio) },
+                                            onPlayNextClick = { onPlayNextMedia(media) },
+                                            onAddToQueueClick = { onAddToQueueMedia(media) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                             onOpenInStudioClick = { onOpenStudioForMedia(media) },
@@ -1895,6 +1921,8 @@ fun LibraryAndFoldersScreen(
                                             isCurrentlyPlaying = currentlyPlayingUri == media.uriString,
                                             isFavorite = true,
                                             onPlayClick = { onPlayMedia(media, favoriteVideos) },
+                                            onPlayNextClick = { onPlayNextMedia(media) },
+                                            onAddToQueueClick = { onAddToQueueMedia(media) },
                                             onFavoriteToggle = { onToggleFavorite(media) },
                                             onAddToPlaylistClick = { onAddToPlaylistRequest(media) },
                                             onOpenInStudioClick = { onOpenStudioForMedia(media) },

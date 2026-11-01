@@ -174,10 +174,12 @@ fun FastScrollbar(
         val effectiveTrackHeightPx = (trackHeightPx - topPaddingPx - bottomPaddingPx).coerceAtLeast(1f)
 
         // Calculate proportional thumb height with minimum accessibility threshold
-        val minThumbHeightPx = with(density) { 48.dp.toPx() }
+        val rawMinThumbHeightPx = with(density) { 48.dp.toPx() }
+        val maxThumbHeightPx = (effectiveTrackHeightPx * 0.9f).coerceAtLeast(1f)
+        val minThumbHeightPx = rawMinThumbHeightPx.coerceAtMost(maxThumbHeightPx)
         val visibleRatio = (visibleItems.size.toFloat() / totalItems.toFloat()).coerceIn(0.08f, 1f)
         val thumbHeightPx = (effectiveTrackHeightPx * visibleRatio)
-            .coerceIn(minThumbHeightPx, effectiveTrackHeightPx * 0.9f)
+            .coerceIn(minThumbHeightPx, maxThumbHeightPx)
         val thumbHeightDp = with(density) { thumbHeightPx.toDp() }
 
         val maxThumbOffsetPx = (effectiveTrackHeightPx - thumbHeightPx).coerceAtLeast(0f)
@@ -215,11 +217,11 @@ fun FastScrollbar(
 
             // Floating Section Bubble Indicator (Appears next to user's thumb during drag)
             if (isDragging && !bubbleText.isNullOrBlank()) {
+                val minBubbleY = with(density) { topPaddingPx.toDp() }
+                val maxBubbleY = with(density) { (trackHeightPx - bottomPaddingPx).toDp() - 52.dp }
+                    .coerceAtLeast(minBubbleY)
                 val bubbleYOffset = (thumbOffsetDp - 10.dp)
-                    .coerceIn(
-                        with(density) { topPaddingPx.toDp() },
-                        with(density) { (trackHeightPx - bottomPaddingPx).toDp() - 52.dp }
-                    )
+                    .coerceIn(minBubbleY, maxBubbleY)
 
                 Surface(
                     shape = RoundedCornerShape(20.dp),

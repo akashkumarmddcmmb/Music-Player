@@ -249,21 +249,81 @@ object PlayerHandoffAndVideoPolicy {
     }
 
     /**
-     * Applies or restores immersive fullscreen system bars (`WindowInsetsCompat.Type.systemBars()`)
-     * using AndroidX [WindowInsetsControllerCompat] with `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`.
-     * Also synchronizes display cutout mode (API 28+) and legacy system UI visibility flags so
-     * status/navigation bars hide and restore reliably across all supported Android versions.
+     * Configures edge-to-edge transparent Android System Status Bar and Navigation Bar with
+     * appropriate icon contrast (`isAppearanceLightStatusBars` / `isAppearanceLightNavigationBars`).
+     *
+     * When [isDarkBackground] is `true` (default across PulsePlay's Dark Theme, Audio Player,
+     * and Video Cinema Canvas):
+     * - `isAppearanceLightStatusBars = false` -> Status Bar renders a crisp WHITE clock,
+     *   WHITE notification icons, and native system-colored VoLTE/Vo5G/5G/4G, dual-SIM signals,
+     *   and battery icon + percentage.
+     * - `isAppearanceLightNavigationBars = false` -> Navigation Bar renders a crisp WHITE/light
+     *   Gesture Navigation bar pill or 3-button navigation icons with high contrast.
      */
     @Suppress("DEPRECATION")
-    fun applyImmersiveSystemBars(window: Window?, hideSystemBars: Boolean) {
+    fun configureSystemBarAppearance(
+        window: Window?,
+        isDarkBackground: Boolean = true
+    ) {
         if (window == null) return
         val decorView = window.decorView ?: return
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val targetCutoutMode = if (hideSystemBars) {
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        window.statusBarColor = android.graphics.Color.TRANSPARENT
+        window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
+
+        // Sync legacy systemUiVisibility light-bar bits BEFORE WindowInsetsControllerCompat
+        // so both legacy OEM status bar hooks and modern InsetsController remain in sync.
+        var vis = decorView.systemUiVisibility
+        vis = if (isDarkBackground) {
+            vis and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        } else {
+            vis or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vis = if (isDarkBackground) {
+                vis and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
             } else {
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT
+                vis or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+        }
+        decorView.systemUiVisibility = vis
+
+        val controller = WindowCompat.getInsetsController(window, decorView)
+        controller.isAppearanceLightStatusBars = !isDarkBackground
+        controller.isAppearanceLightNavigationBars = !isDarkBackground
+    }
+
+    /**
+     * Applies or restores immersive fullscreen system bars (`WindowInsetsCompat.Type.systemBars()`)
+     * using AndroidX [WindowInsetsControllerCompat].
+     *
+     * - When [hideSystemBars] is `true` (ONLY during active Fullscreen / Landscape Video playback):
+     *   Hides status and navigation bars with `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`.
+     * - When [hideSystemBars] is `false` (on all normal screens: Audio Player, Home, Music,
+     *   Portrait Video Player, Folder Browser, Settings, Equalizer, Playlist, Queue, Dialogs):
+     *   Clears any fullscreen window flags, shows both Status Bar and Navigation Bar permanently,
+     *   and enforces white/light status & navigation bar icons on dark backgrounds.
+     */
+    @Suppress("DEPRECATION")
+    fun applyImmersiveSystemBars(
+        window: Window?,
+        hideSystemBars: Boolean,
+        isDarkBackground: Boolean = true
+    ) {
+        if (window == null) return
+        val decorView = window.decorView ?: return
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val targetCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !hideSystemBars) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
             val lp = window.attributes
             if (lp != null && lp.layoutInDisplayCutoutMode != targetCutoutMode) {
@@ -272,8 +332,6 @@ object PlayerHandoffAndVideoPolicy {
             }
         }
         val controller = WindowCompat.getInsetsController(window, decorView)
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         val immersiveFlags = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
             View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -281,15 +339,27 @@ object PlayerHandoffAndVideoPolicy {
             View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
             View.SYSTEM_UI_FLAG_LAYOUT_STABLE
         if (hideSystemBars) {
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller.hide(WindowInsetsCompat.Type.systemBars())
             decorView.systemUiVisibility = decorView.systemUiVisibility or immersiveFlags
+            configureSystemBarAppearance(window, isDarkBackground = true)
         } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
             controller.show(WindowInsetsCompat.Type.systemBars())
+            controller.show(WindowInsetsCompat.Type.statusBars())
+            controller.show(WindowInsetsCompat.Type.navigationBars())
             val clearMask = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
                 View.SYSTEM_UI_FLAG_IMMERSIVE or
                 View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                 View.SYSTEM_UI_FLAG_FULLSCREEN).inv()
-            decorView.systemUiVisibility = decorView.systemUiVisibility and clearMask
+            val edgeToEdgeLayoutFlags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+            decorView.systemUiVisibility =
+                (decorView.systemUiVisibility and clearMask) or edgeToEdgeLayoutFlags
+            configureSystemBarAppearance(window, isDarkBackground = isDarkBackground)
         }
     }
 
@@ -308,6 +378,23 @@ object PlayerHandoffAndVideoPolicy {
                 !rootInsets.isVisible(WindowInsetsCompat.Type.navigationBars())
         }
         return hasHiddenFlags
+    }
+
+    /**
+     * Returns `true` when [window] is configured for white/light status bar and navigation bar
+     * icons suitable for a dark background (`isAppearanceLightStatusBars == false` and
+     * `SYSTEM_UI_FLAG_LIGHT_STATUS_BAR` cleared).
+     */
+    @Suppress("DEPRECATION")
+    fun areSystemBarIconsWhiteForDarkBackground(window: Window?): Boolean {
+        if (window == null) return false
+        val decorView = window.decorView ?: return false
+        val controller = WindowCompat.getInsetsController(window, decorView)
+        val hasLightStatusFlag =
+            (decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR) != 0
+        return !controller.isAppearanceLightStatusBars &&
+            !controller.isAppearanceLightNavigationBars &&
+            !hasLightStatusFlag
     }
 
     /**

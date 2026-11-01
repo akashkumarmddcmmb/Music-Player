@@ -16,6 +16,7 @@ import android.os.Environment
 import android.provider.Settings
 import android.util.Rational
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -24,6 +25,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -39,8 +41,10 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -118,6 +122,7 @@ import com.example.ui.screens.NowPlayingSidePanel
 import com.example.ui.screens.ProfileAndSettingsScreen
 import com.example.ui.screens.SearchAndActionHeader
 import com.example.ui.screens.StudioEditorOverlayScreen
+import com.example.ui.theme.AppThemeMode
 import com.example.ui.theme.PulsePlayTheme
 import com.example.viewmodel.LibrarySubTab
 import com.example.viewmodel.PrimaryTab
@@ -129,7 +134,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
+        PlayerHandoffAndVideoPolicy.configureSystemBarAppearance(
+            window = window,
+            isDarkBackground = true
+        )
 
         // Handle external VIEW intents for audio/* or video/* content URIs
         handleIncomingMediaIntent(intent)
@@ -160,6 +172,13 @@ class MainActivity : ComponentActivity() {
             val config = resources.configuration
             val isLandscape = config.orientation == Configuration.ORIENTATION_LANDSCAPE ||
                 config.screenWidthDp > config.screenHeightDp
+            val isSystemDark = (config.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+            val isDarkBg = when (prefs.themeMode) {
+                AppThemeMode.DARK -> true
+                AppThemeMode.LIGHT -> false
+                AppThemeMode.SYSTEM -> isSystemDark
+            } || (isExpanded && !isStudioOpen && playback.currentMedia?.mediaType == MediaType.VIDEO)
             val shouldHide = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
                 isActivityResumed = true,
                 isNowPlayingOverlayVisible = isExpanded && !isStudioOpen,
@@ -169,7 +188,11 @@ class MainActivity : ComponentActivity() {
                 isLandscapeViewport = isLandscape,
                 orientationPreference = prefs.videoOrientationPreference
             )
-            PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, shouldHide)
+            PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
+                window = window,
+                hideSystemBars = shouldHide,
+                isDarkBackground = isDarkBg
+            )
         }
     }
 
@@ -419,6 +442,13 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         orientationPreference = userPreferences.videoOrientationPreference
     )
 
+    val systemInDarkTheme = isSystemInDarkTheme()
+    val isDarkAppBackground = when (userPreferences.themeMode) {
+        AppThemeMode.DARK -> true
+        AppThemeMode.LIGHT -> false
+        AppThemeMode.SYSTEM -> systemInDarkTheme
+    } || (isNowPlayingExpanded && !isStudioSheetOpen && playbackState.currentMedia?.mediaType == MediaType.VIDEO)
+
     DisposableEffect(
         activity,
         targetOrientation,
@@ -426,7 +456,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         isConfigurationLandscape,
         isNowPlayingExpanded,
         isStudioSheetOpen,
-        playbackState.currentMedia?.mediaType
+        playbackState.currentMedia?.mediaType,
+        isDarkAppBackground
     ) {
         if (activity != null) {
             if (activity.requestedOrientation != targetOrientation) {
@@ -434,7 +465,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             }
             PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
                 window = activity.window,
-                hideSystemBars = shouldHideSystemBars
+                hideSystemBars = shouldHideSystemBars,
+                isDarkBackground = isDarkAppBackground
             )
         }
         onDispose {
@@ -442,7 +474,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
                     window = activity.window,
-                    hideSystemBars = false
+                    hideSystemBars = false,
+                    isDarkBackground = isDarkAppBackground
                 )
             }
         }
@@ -695,6 +728,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 onDismiss = { viewModel.dismissStatusBanner() },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(top = 8.dp)
             )
         }
@@ -775,7 +809,17 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                     }
                 },
                 onSelectQueueItem = { item ->
-                    viewModel.playMedia(item, playbackState.queue)
+                    val idx = playbackState.queue.indexOfFirst { it.uriString == item.uriString }
+                    viewModel.selectQueueItemAt(idx, item)
+                },
+                onSelectQueueItemAt = { idx, item ->
+                    viewModel.selectQueueItemAt(idx, item)
+                },
+                onPlayNextItem = { item ->
+                    viewModel.playNext(item)
+                },
+                onClearQueue = {
+                    viewModel.clearQueue()
                 },
                 onRemoveQueueItem = { idx ->
                     viewModel.removeQueueItemAt(idx)
@@ -823,6 +867,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 onDismiss = { viewModel.dismissStatusBanner() },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(top = 8.dp)
             )
         }
@@ -879,9 +924,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
             bottomBar = {
                 if (!useNavigationRail) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .navigationBarsPadding()
+                        modifier = Modifier.fillMaxWidth()
                     ) {
                         // In Portrait mode, Persistent Mini-Player sits directly above Bottom NavigationBar
                         AnimatedVisibility(visible = playbackState.currentMedia != null) {
@@ -1092,6 +1135,12 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                     val onOpenEqualizerCallback: () -> Unit = remember(viewModel) {
                         { viewModel.setEqualizerSheetOpen(true) }
                     }
+                    val onPlayNextMediaCallback: (MediaEntity) -> Unit = remember(viewModel) {
+                        { viewModel.playNext(it) }
+                    }
+                    val onAddToQueueMediaCallback: (MediaEntity) -> Unit = remember(viewModel) {
+                        { viewModel.addToQueue(it) }
+                    }
 
                     Box(modifier = Modifier.weight(1f)) {
                         when (selectedTab) {
@@ -1134,6 +1183,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                         viewModel.selectFolderFilter(folderName)
                                     },
                                     onPlayMedia = onPlayMediaCallback,
+                                    onPlayNextMedia = onPlayNextMediaCallback,
+                                    onAddToQueueMedia = onAddToQueueMediaCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
@@ -1154,6 +1205,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     emptyTitle = "No Videos Found",
                                     emptySubtitle = "Tap 'Scan' to index all device video folders or open any MP4/MKV/WebM file via SAF.",
                                     onPlayMedia = onPlayVideoCallback,
+                                    onPlayNextMedia = onPlayNextMediaCallback,
+                                    onAddToQueueMedia = onAddToQueueMediaCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
@@ -1181,6 +1234,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     emptyTitle = "No Audio Tracks Found",
                                     emptySubtitle = "Tap 'Scan' to index all device audio folders or open any local audio file via SAF.",
                                     onPlayMedia = onPlayMediaCallback,
+                                    onPlayNextMedia = onPlayNextMediaCallback,
+                                    onAddToQueueMedia = onAddToQueueMediaCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,
@@ -1222,6 +1277,8 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                                     historyItems = history,
                                     currentlyPlayingUri = currentlyPlayingUri,
                                     onPlayMedia = onPlayMediaCallback,
+                                    onPlayNextMedia = onPlayNextMediaCallback,
+                                    onAddToQueueMedia = onAddToQueueMediaCallback,
                                     onToggleFavorite = onToggleFavoriteCallback,
                                     onAddToPlaylistRequest = onAddToPlaylistRequestCallback,
                                     onOpenStudioForMedia = onOpenStudioForMediaCallback,

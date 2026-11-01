@@ -79,6 +79,7 @@ import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
@@ -89,6 +90,7 @@ import com.example.ui.screens.NowPlayingOverlayScreen
 import com.example.ui.screens.NowPlayingSidePanel
 import com.example.ui.screens.SearchAndActionHeader
 import com.example.ui.theme.PulsePlayTheme
+import com.example.viewmodel.RepeatModeState
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -2250,6 +2252,31 @@ class ExampleRobolectricTest {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val window = activity.window
 
+        // 0. Audio Player Screen (Portrait & Landscape) -> MUST show Status Bar and Navigation Bar with white icons on dark background
+        val hideOnPortraitAudio = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
+            isActivityResumed = true,
+            isNowPlayingOverlayVisible = true,
+            isStudioSheetOpen = false,
+            mediaType = MediaType.AUDIO,
+            isFullscreenVideo = false,
+            isLandscapeViewport = false,
+            orientationPreference = VideoOrientationPreference.AUTO
+        )
+        assertFalse("System bars must never be hidden on Audio Player screen", hideOnPortraitAudio)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(
+            window = window,
+            hideSystemBars = hideOnPortraitAudio,
+            isDarkBackground = true
+        )
+        assertFalse(
+            "Audio Player screen must keep Status Bar and Navigation Bar visible",
+            PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window)
+        )
+        assertTrue(
+            "Audio Player screen on dark background must use light/white Status Bar and Navigation Bar icons",
+            PlayerHandoffAndVideoPolicy.areSystemBarIconsWhiteForDarkBackground(window)
+        )
+
         // 1. Landscape video playback (even before pressing explicit fullscreen toggle) -> MUST hide system bars
         val hideInLandscapeVideo = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
             isActivityResumed = true,
@@ -2261,13 +2288,13 @@ class ExampleRobolectricTest {
             orientationPreference = VideoOrientationPreference.AUTO
         )
         assertTrue("System bars must hide in Landscape video playback", hideInLandscapeVideo)
-        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInLandscapeVideo)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInLandscapeVideo, isDarkBackground = true)
         assertTrue(
             "Window must have system bars hidden in Landscape video playback",
             PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window)
         )
 
-        // 2. Exiting fullscreen / rotating to Portrait non-fullscreen -> MUST restore system bars
+        // 2. Exiting fullscreen / rotating to Portrait non-fullscreen -> MUST restore system bars with white icons
         val hideInPortraitNonFullscreen = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
             isActivityResumed = true,
             isNowPlayingOverlayVisible = true,
@@ -2278,10 +2305,14 @@ class ExampleRobolectricTest {
             orientationPreference = VideoOrientationPreference.AUTO
         )
         assertFalse("System bars must be visible in Portrait non-fullscreen video", hideInPortraitNonFullscreen)
-        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInPortraitNonFullscreen)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInPortraitNonFullscreen, isDarkBackground = true)
         assertFalse(
             "Window must restore system bars when exiting fullscreen to Portrait",
             PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window)
+        )
+        assertTrue(
+            "Restored system bars on dark background must have white icons",
+            PlayerHandoffAndVideoPolicy.areSystemBarIconsWhiteForDarkBackground(window)
         )
 
         // 3. Explicit Fullscreen video started -> MUST hide system bars
@@ -2295,10 +2326,10 @@ class ExampleRobolectricTest {
             orientationPreference = VideoOrientationPreference.AUTO
         )
         assertTrue("System bars must hide when fullscreen video is active", hideInExplicitFullscreen)
-        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInExplicitFullscreen)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideInExplicitFullscreen, isDarkBackground = true)
         assertTrue(PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window))
 
-        // 4. Leaving video player back to Music/Video Library -> MUST restore system bars
+        // 4. Leaving video player back to Music/Video Library -> MUST restore system bars and white icons
         val hideOnLibraryScreen = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
             isActivityResumed = true,
             isNowPlayingOverlayVisible = false,
@@ -2309,8 +2340,9 @@ class ExampleRobolectricTest {
             orientationPreference = VideoOrientationPreference.LANDSCAPE
         )
         assertFalse("System bars must never be hidden on Library screens", hideOnLibraryScreen)
-        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideOnLibraryScreen)
+        PlayerHandoffAndVideoPolicy.applyImmersiveSystemBars(window, hideOnLibraryScreen, isDarkBackground = true)
         assertFalse(PlayerHandoffAndVideoPolicy.areSystemBarsHiddenOnWindow(window))
+        assertTrue(PlayerHandoffAndVideoPolicy.areSystemBarIconsWhiteForDarkBackground(window))
 
         // 5. Audio Now Playing in Landscape -> MUST NOT hide system bars
         val hideOnLandscapeAudio = PlayerHandoffAndVideoPolicy.shouldHideSystemBarsForVideo(
@@ -4961,5 +4993,274 @@ class ExampleRobolectricTest {
         // Verify all 5 modes are evaluated in availability report
         assertEquals(5, availabilities.size)
     }
+
+    @Test
+    fun `smart playback queue handles play next, add to queue, remove, reorder, shuffle restore, repeat modes, and clear queue`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+
+        val tracks = (1..10).map { i ->
+            MediaEntity(
+                uriString = "content://media/external/audio/media/${9000 + i}",
+                mediaStoreId = (9000 + i).toLong(),
+                title = "Queue Track $i",
+                artist = "Artist $i",
+                album = "Album $i",
+                folderName = "Music",
+                durationMs = (180_000L + i * 1_000L),
+                sizeBytes = 5_000_000L,
+                mimeType = "audio/mpeg",
+                mediaType = MediaType.AUDIO,
+                width = 0,
+                height = 0,
+                dateAddedEpochSec = 1700010000L + i,
+                isAvailable = i != 9 // Track 9 tests missing/unavailable file handling
+            )
+        }
+
+        val initialQueue = tracks.take(5)
+        vm.setQueue(initialQueue, initialIndex = 1, queueTitle = "Favorites Queue")
+        vm.selectQueueItemAt(1, initialQueue[1])
+
+        assertEquals("Favorites Queue", vm.playbackState.value.queueTitle)
+        assertEquals(5, vm.playbackState.value.queue.size)
+        assertEquals(1, vm.playbackState.value.currentQueueIndex)
+        assertEquals("Queue Track 2", vm.playbackState.value.currentMedia?.title)
+        assertTrue(vm.playbackState.value.isPlaying)
+
+        // 1. Play Next inserts immediately after the currently playing song (index 2) without interrupting playback
+        val playNextSong = tracks[5] // Queue Track 6
+        vm.playNext(playNextSong)
+        assertEquals(6, vm.playbackState.value.queue.size)
+        assertEquals(1, vm.playbackState.value.currentQueueIndex)
+        assertEquals("Queue Track 2", vm.playbackState.value.currentMedia?.title)
+        assertEquals("Queue Track 6", vm.playbackState.value.queue[2].title)
+        assertTrue(vm.playbackState.value.isPlaying)
+
+        // 2. Add to Queue appends to the end of the queue
+        val addEndSong = tracks[6] // Queue Track 7
+        vm.addToQueue(addEndSong)
+        assertEquals(7, vm.playbackState.value.queue.size)
+        assertEquals("Queue Track 7", vm.playbackState.value.queue.last().title)
+        assertEquals("Queue Track 2", vm.playbackState.value.currentMedia?.title)
+
+        // 3. Remove a song BEFORE the active song: active song must NOT be interrupted and currentQueueIndex shifts down by 1
+        vm.removeQueueItemAt(0) // Removes Queue Track 1
+        assertEquals(6, vm.playbackState.value.queue.size)
+        assertEquals(0, vm.playbackState.value.currentQueueIndex)
+        assertEquals("Queue Track 2", vm.playbackState.value.currentMedia?.title)
+        assertTrue(vm.playbackState.value.isPlaying)
+
+        // 4. Move / reorder songs in the queue while active song continues playing
+        // Move Queue Track 6 (at index 1) to index 3
+        vm.moveQueueItem(fromIndex = 1, toIndex = 3)
+        assertEquals("Queue Track 6", vm.playbackState.value.queue[3].title)
+        assertEquals(0, vm.playbackState.value.currentQueueIndex)
+        assertEquals("Queue Track 2", vm.playbackState.value.currentMedia?.title)
+
+        // 5. Select a song from the middle of the queue
+        vm.selectQueueItemAt(2, vm.playbackState.value.queue[2])
+        assertEquals(2, vm.playbackState.value.currentQueueIndex)
+        assertEquals(vm.playbackState.value.queue[2].title, vm.playbackState.value.currentMedia?.title)
+        assertTrue(vm.playbackState.value.isPlaying)
+
+        // 6. Toggle Shuffle ON and then OFF: active song stays playing, and disabling shuffle restores originalQueue order
+        val orderBeforeShuffle = vm.playbackState.value.queue.map { it.uriString }
+        val activeBeforeShuffle = vm.playbackState.value.currentMedia?.uriString
+        vm.toggleShuffle()
+        assertTrue(vm.playbackState.value.shuffleEnabled)
+        assertEquals(activeBeforeShuffle, vm.playbackState.value.currentMedia?.uriString)
+        assertEquals(0, vm.playbackState.value.currentQueueIndex)
+
+        vm.toggleShuffle()
+        assertFalse(vm.playbackState.value.shuffleEnabled)
+        assertEquals(activeBeforeShuffle, vm.playbackState.value.currentMedia?.uriString)
+        assertEquals(orderBeforeShuffle, vm.playbackState.value.queue.map { it.uriString })
+
+        // 7. Repeat modes cycle OFF -> ALL -> ONE -> OFF
+        assertEquals(RepeatModeState.OFF, vm.playbackState.value.repeatMode)
+        vm.cycleRepeatMode()
+        assertEquals(RepeatModeState.ALL, vm.playbackState.value.repeatMode)
+        vm.cycleRepeatMode()
+        assertEquals(RepeatModeState.ONE, vm.playbackState.value.repeatMode)
+        vm.cycleRepeatMode()
+        assertEquals(RepeatModeState.OFF, vm.playbackState.value.repeatMode)
+
+        // 8. Clear Queue resets the queue cleanly
+        vm.clearQueue()
+        assertTrue(vm.playbackState.value.queue.isEmpty())
+        assertNull(vm.playbackState.value.currentMedia)
+        assertFalse(vm.playbackState.value.isPlaying)
+    }
+
+    @Test
+    fun `expandable playlist sheet transitions across collapsed, partially expanded, and fully expanded states with 1000 plus songs`() {
+        val largeQueue = (1..1050).map { i ->
+            MediaEntity(
+                uriString = "content://media/external/audio/media/${20000 + i}",
+                mediaStoreId = (20000 + i).toLong(),
+                title = "Symphony Track $i",
+                artist = "Composer $i",
+                album = "Opus $i",
+                folderName = "Classical",
+                durationMs = 210_000L,
+                sizeBytes = 6_400_000L,
+                mimeType = "audio/flac",
+                mediaType = MediaType.AUDIO,
+                width = 0,
+                height = 0,
+                dateAddedEpochSec = 1700050000L + i,
+                isAvailable = i != 3
+            )
+        }
+
+        var currentIndex by mutableStateOf(0)
+        var queueState by mutableStateOf(largeQueue)
+        var isPlaying by mutableStateOf(true)
+        var shuffleEnabled by mutableStateOf(false)
+        var repeatMode by mutableStateOf(RepeatModeState.OFF)
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                NowPlayingOverlayScreen(
+                    playbackState = com.example.viewmodel.PlaybackUiState(
+                        currentMedia = queueState.getOrNull(currentIndex),
+                        isPlaying = isPlaying,
+                        currentPositionMs = 45_000L,
+                        durationMs = 210_000L,
+                        queue = queueState,
+                        originalQueue = queueState,
+                        currentQueueIndex = currentIndex,
+                        queueTitle = "Mega 1050 Queue",
+                        shuffleEnabled = shuffleEnabled,
+                        repeatMode = repeatMode
+                    ),
+                    userPreferences = UserPreferencesState(),
+                    isFavorite = false,
+                    playerInstance = null,
+                    onCollapse = {},
+                    onPlayPause = { isPlaying = !isPlaying },
+                    onSeekTo = {},
+                    onPrevious = {
+                        if (currentIndex > 0) currentIndex -= 1
+                    },
+                    onNext = {
+                        if (currentIndex + 1 < queueState.size) currentIndex += 1
+                    },
+                    onToggleShuffle = { shuffleEnabled = !shuffleEnabled },
+                    onCycleRepeat = {
+                        repeatMode = when (repeatMode) {
+                            RepeatModeState.OFF -> RepeatModeState.ALL
+                            RepeatModeState.ALL -> RepeatModeState.ONE
+                            RepeatModeState.ONE -> RepeatModeState.OFF
+                        }
+                    },
+                    onSetPlaybackSpeed = {},
+                    onCycleAspectMode = {},
+                    onRotateVideo90 = {},
+                    onToggleFullscreen = {},
+                    onBrightnessGestureDelta = {},
+                    onVolumeGestureDelta = {},
+                    onPickSubtitleFileClick = {},
+                    onToggleSubtitlesEnabled = {},
+                    onSetSubtitleFontScale = {},
+                    onSetSubtitleOffsetMs = {},
+                    onToggleFavorite = {},
+                    onOpenEqualizer = {},
+                    onOpenStudio = {},
+                    onSelectQueueItem = { media ->
+                        val found = queueState.indexOfFirst { it.uriString == media.uriString }
+                        if (found >= 0) currentIndex = found
+                    },
+                    onSelectQueueItemAt = { idx, _ -> currentIndex = idx },
+                    onRemoveQueueItem = { idx ->
+                        val mutable = queueState.toMutableList()
+                        mutable.removeAt(idx)
+                        queueState = mutable
+                    },
+                    onMoveQueueItem = { from, to ->
+                        val mutable = queueState.toMutableList()
+                        val item = mutable.removeAt(from)
+                        mutable.add(to, item)
+                        queueState = mutable
+                    },
+                    onPlayNextItem = {},
+                    onClearQueue = {
+                        queueState = emptyList()
+                        isPlaying = false
+                    },
+                    onSaveQueueAsPlaylist = {},
+                    onRetryPlayback = {}
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // State A (COLLAPSED): Now Playing controls & bottom docked playlist bar are visible
+        composeTestRule.onNodeWithTag("now_playing_full_overlay").assertExists()
+        composeTestRule.onNodeWithTag("playlist_sheet_dock_bar").assertExists()
+        composeTestRule.onNodeWithTag("toggle_playlist_sheet_button").assertExists()
+        assertTrue("Music must be playing in State A", isPlaying)
+
+        // Transition State A -> State B (PARTIALLY_EXPANDED) via docked playlist button
+        composeTestRule.onNodeWithTag("toggle_playlist_sheet_button").performClick()
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("expandable_playlist_sheet").assertExists()
+        composeTestRule.onNodeWithTag("playlist_sheet_header").assertExists()
+        composeTestRule.onNodeWithTag("expandable_playlist_lazy_column").assertExists()
+        assertTrue("Music must continue playing uninterrupted in State B", isPlaying)
+
+        // Transition State B -> State C (FULLY_EXPANDED)
+        composeTestRule.onNodeWithTag("playlist_sheet_expand_toggle_button").performClick()
+        composeTestRule.waitForIdle()
+
+        // In State C (FULLY_EXPANDED), mini transport bar is visible at the top of the sheet
+        composeTestRule.onNodeWithTag("playlist_sheet_mini_transport").assertExists()
+        assertTrue("Music must continue playing uninterrupted in State C", isPlaying)
+
+        // Verify virtualized scrolling through 1,050 songs to song #500 (index 499) and last song #1050 (index 1049)
+        composeTestRule.onNodeWithTag("expandable_playlist_lazy_column")
+            .performScrollToIndex(499)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("queue_song_row_499").assertExists()
+        composeTestRule.onNodeWithTag("queue_song_row_499").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(499, currentIndex)
+        assertTrue("Selecting a middle song keeps playback active", isPlaying)
+
+        // Scroll to the very last song (index 1049)
+        composeTestRule.onNodeWithTag("expandable_playlist_lazy_column")
+            .performScrollToIndex(1049)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("queue_song_row_1049").assertExists()
+
+        // Collapse sheet and reopen to verify scroll position preservation and Clear Queue confirmation dialog
+        composeTestRule.onNodeWithTag("playlist_sheet_options_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("queue_collapse_menu_item").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("playlist_sheet_dock_bar").assertExists()
+
+        composeTestRule.onNodeWithTag("toggle_playlist_sheet_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("playlist_sheet_expand_toggle_button").performClick()
+        composeTestRule.waitForIdle()
+        // Scroll position at the end of the 1,050-song queue is preserved without scrolling again!
+        composeTestRule.onNodeWithTag("queue_song_row_1049").assertExists()
+
+        // Test Clear Queue confirmation dialog
+        composeTestRule.onNodeWithTag("playlist_sheet_options_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("queue_clear_button").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("confirm_clear_queue_dialog").assertExists()
+        composeTestRule.onNodeWithTag("confirm_clear_queue_button").performClick()
+        composeTestRule.waitForIdle()
+        assertTrue(queueState.isEmpty())
+    }
 }
+
+
 

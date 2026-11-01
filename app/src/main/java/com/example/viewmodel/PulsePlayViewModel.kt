@@ -125,6 +125,8 @@ data class AudioTrackOption(
 data class PlaybackUiState(
     val currentMedia: MediaEntity? = null,
     val queue: List<MediaEntity> = emptyList(),
+    val originalQueue: List<MediaEntity> = emptyList(),
+    val queueTitle: String = "Playing Queue",
     val currentQueueIndex: Int = -1,
     val isPlaying: Boolean = false,
     val isBuffering: Boolean = false,
@@ -1152,6 +1154,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             startProgressPolling()
         } else if (!expanded) {
             val current = _playbackState.value
+            if (current.isFullscreenVideo) {
+                _playbackState.value = current.copy(isFullscreenVideo = false)
+            }
             if (current.currentMedia?.mediaType == MediaType.VIDEO &&
                 (!current.isPlaying || current.playbackError != null)
             ) {
@@ -1334,7 +1339,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // --- Playback Controls ---
-    fun playMedia(media: MediaEntity, queueContext: List<MediaEntity> = emptyList()) {
+    fun playMedia(
+        media: MediaEntity,
+        queueContext: List<MediaEntity> = emptyList(),
+        queueTitle: String? = null
+    ) {
         viewModelScope.launch {
             if (media.isGeneratedSample || media.uriString.contains("Pulse_Cinema_Test_Reel")) {
                 runCatching { sampleGenerator.ensureLegalSampleMediaGenerated() }
@@ -1369,8 +1378,26 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 return@launch
             }
 
-            val resolvedQueue = if (queueContext.isNotEmpty()) queueContext else listOf(media)
+            val baseOriginalQueue = if (queueContext.isNotEmpty()) queueContext else listOf(media)
+            val currentState = _playbackState.value
+            val resolvedQueue = if (currentState.shuffleEnabled && baseOriginalQueue.size > 1) {
+                val others = baseOriginalQueue.filter { it.uriString != media.uriString }.shuffled()
+                buildList {
+                    add(media)
+                    addAll(others)
+                }
+            } else {
+                baseOriginalQueue
+            }
             val startIndex = resolvedQueue.indexOfFirst { it.uriString == media.uriString }.coerceAtLeast(0)
+            val resolvedQueueTitle = when {
+                !queueTitle.isNullOrBlank() -> queueTitle
+                media.folderName.isNotBlank() && !media.folderName.equals("Local Storage", ignoreCase = true) ->
+                    media.folderName
+                media.album.isNotBlank() && !media.album.equals("Unknown Album", ignoreCase = true) ->
+                    media.album
+                else -> "Playing Queue"
+            }
             val prefs = userPreferences.first()
             val savedPos = if (prefs.resumePlaybackEnabled) {
                 mediaRepository.getSavedResumePosition(media.uriString)
@@ -1383,30 +1410,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             val mediaItems = resolvedQueue.map { item ->
-                val cachedArt = if (item.uriString == media.uriString) {
-                    activeResolvedArtwork
-                } else {
-                    MediaArtworkLoader.peekCachedArtworkMetadata(item.uriString)
-                }
-                val metaBuilder = MediaMetadata.Builder()
-                    .setTitle(item.title)
-                    .setArtist(item.artist)
-                    .setAlbumTitle(item.album)
-                if (cachedArt?.artworkData != null && cachedArt.artworkData.isNotEmpty()) {
-                    metaBuilder.maybeSetArtworkData(
-                        cachedArt.artworkData,
-                        MediaMetadata.PICTURE_TYPE_FRONT_COVER
-                    )
-                }
-                val resolvedArtUri = cachedArt?.artworkUri
-                if (resolvedArtUri != null) {
-                    metaBuilder.setArtworkUri(resolvedArtUri)
-                }
-                MediaItem.Builder()
-                    .setMediaId(item.uriString)
-                    .setUri(Uri.parse(item.uriString))
-                    .setMediaMetadata(metaBuilder.build())
-                    .build()
+                buildMediaItemForEntity(
+                    item = item,
+                    overrideArtwork = if (item.uriString == media.uriString) activeResolvedArtwork else null
+                )
             }
 
             runCatching {
@@ -1437,6 +1444,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 _playbackState.value = _playbackState.value.copy(
                     currentMedia = media,
                     queue = resolvedQueue,
+                    originalQueue = baseOriginalQueue,
+                    queueTitle = resolvedQueueTitle,
                     currentQueueIndex = startIndex,
                     isPlaying = true,
                     playbackError = null
@@ -1507,6 +1516,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             _playbackState.value = _playbackState.value.copy(
                 currentMedia = media,
                 queue = resolvedQueue,
+                originalQueue = baseOriginalQueue,
+                queueTitle = resolvedQueueTitle,
                 currentQueueIndex = startIndex,
                 isPlaying = true,
                 isBuffering = player.playbackState == Player.STATE_BUFFERING,
@@ -1527,7 +1538,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     ?: latestTelemetry.activeEngineStrategy,
                 isTemporaryHighResEngineActive = videoCapabilityEval?.resolutionTier?.isHighRes4kOrAbove == true ||
                     latestTelemetry.isTemporaryHighResSessionActive,
-                isDownscaledPlayback = false
+                isDownscaledPlayback = false,
+                isFullscreenVideo = if (media.mediaType == MediaType.AUDIO) false else _playbackState.value.isFullscreenVideo
             )
             resetOrLoadCompanionSubtitleForMedia(media)
             syncAndResolveArtworkForTrack(media, player.mediaMetadata)
@@ -1645,10 +1657,105 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun toggleShuffle() {
-        val player = activePlayer ?: return
-        val next = !_playbackState.value.shuffleEnabled
-        player.shuffleModeEnabled = next
-        _playbackState.value = _playbackState.value.copy(shuffleEnabled = next)
+        val state = _playbackState.value
+        val next = !state.shuffleEnabled
+        val player = activePlayer
+
+        if (state.queue.size <= 1) {
+            player?.shuffleModeEnabled = next
+            val baseOrig = if (state.originalQueue.isNotEmpty()) state.originalQueue else state.queue
+            _playbackState.value = state.copy(
+                shuffleEnabled = next,
+                originalQueue = baseOrig
+            )
+            return
+        }
+
+        if (next) {
+            // Enable Shuffle: preserve originalQueue and place active song at index 0 followed by shuffled remaining tracks
+            val baseOriginal = if (state.originalQueue.isNotEmpty()) state.originalQueue else state.queue
+            val currentIdx = state.currentQueueIndex.coerceIn(0, state.queue.lastIndex)
+            val currentTrack = state.queue[currentIdx]
+            val remaining = state.queue.filterIndexed { idx, _ -> idx != currentIdx }.shuffled()
+            // Ensure deterministic change when > 2 items and random shuffle happened to match original order
+            val adjustedRemaining = if (remaining.size > 1 && remaining == state.queue.filterIndexed { idx, _ -> idx != currentIdx }) {
+                remaining.reversed()
+            } else {
+                remaining
+            }
+            val shuffledQueue = buildList(state.queue.size) {
+                add(currentTrack)
+                addAll(adjustedRemaining)
+            }
+
+            if (player != null) {
+                player.shuffleModeEnabled = false
+                runCatching {
+                    if (player.mediaItemCount == state.queue.size) {
+                        if (currentIdx != 0) {
+                            player.moveMediaItem(currentIdx, 0)
+                        }
+                        if (adjustedRemaining.isNotEmpty()) {
+                            player.replaceMediaItems(
+                                1,
+                                player.mediaItemCount,
+                                adjustedRemaining.map { buildMediaItemForEntity(it) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            _playbackState.value = state.copy(
+                shuffleEnabled = true,
+                queue = shuffledQueue,
+                originalQueue = baseOriginal,
+                currentQueueIndex = 0
+            )
+        } else {
+            // Disable Shuffle: restore originalQueue while keeping the currently playing song uninterrupted
+            val restoredQueue = if (state.originalQueue.isNotEmpty()) state.originalQueue else state.queue
+            val activeTrack = state.currentMedia ?: state.queue.getOrNull(state.currentQueueIndex)
+            val restoredIdx = if (activeTrack != null) {
+                restoredQueue.indexOfFirst { it.uriString == activeTrack.uriString }.takeIf { it >= 0 } ?: 0
+            } else {
+                0
+            }
+
+            if (player != null) {
+                player.shuffleModeEnabled = false
+                runCatching {
+                    if (player.mediaItemCount > 0 && restoredQueue.isNotEmpty()) {
+                        val playerActiveIdx = player.currentMediaItemIndex.coerceIn(0, player.mediaItemCount - 1)
+                        if (playerActiveIdx > 0) {
+                            player.removeMediaItems(0, playerActiveIdx)
+                        }
+                        if (player.mediaItemCount > 1) {
+                            player.removeMediaItems(1, player.mediaItemCount)
+                        }
+                        if (restoredIdx > 0) {
+                            player.addMediaItems(
+                                0,
+                                restoredQueue.subList(0, restoredIdx).map { buildMediaItemForEntity(it) }
+                            )
+                        }
+                        if (restoredIdx + 1 < restoredQueue.size) {
+                            player.addMediaItems(
+                                restoredIdx + 1,
+                                restoredQueue.subList(restoredIdx + 1, restoredQueue.size).map { buildMediaItemForEntity(it) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            _playbackState.value = state.copy(
+                shuffleEnabled = false,
+                queue = restoredQueue,
+                originalQueue = restoredQueue,
+                currentQueueIndex = restoredIdx
+            )
+        }
     }
 
     fun cycleRepeatMode() {
@@ -1981,11 +2088,37 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    private fun buildMediaItemForEntity(
+        item: MediaEntity,
+        overrideArtwork: com.example.media.ResolvedMediaArtwork? = null
+    ): MediaItem {
+        val cachedArt = overrideArtwork ?: MediaArtworkLoader.peekCachedArtworkMetadata(item.uriString)
+        val metaBuilder = MediaMetadata.Builder()
+            .setTitle(item.title)
+            .setArtist(item.artist)
+            .setAlbumTitle(item.album)
+        if (cachedArt?.artworkData != null && cachedArt.artworkData.isNotEmpty()) {
+            metaBuilder.maybeSetArtworkData(
+                cachedArt.artworkData,
+                MediaMetadata.PICTURE_TYPE_FRONT_COVER
+            )
+        }
+        val resolvedArtUri = cachedArt?.artworkUri
+        if (resolvedArtUri != null) {
+            metaBuilder.setArtworkUri(resolvedArtUri)
+        }
+        return MediaItem.Builder()
+            .setMediaId(item.uriString)
+            .setUri(Uri.parse(item.uriString))
+            .setMediaMetadata(metaBuilder.build())
+            .build()
+    }
+
     // --- Queue & Playlist Management ---
-    fun setQueue(items: List<MediaEntity>, initialIndex: Int = 0) {
-        val safeIndex = if (items.isNotEmpty()) initialIndex.coerceIn(0, items.size - 1) else 0
+    fun setQueue(items: List<MediaEntity>, initialIndex: Int = 0, queueTitle: String = "Playing Queue") {
+        val safeIndex = if (items.isNotEmpty()) initialIndex.coerceIn(0, items.size - 1) else -1
         val current = _playbackState.value
-        val activeMedia = items.getOrNull(safeIndex) ?: current.currentMedia
+        val activeMedia = if (safeIndex >= 0) items.getOrNull(safeIndex) else null
         if (activeMedia != null) {
             decoderRecoveryAttemptsByUri[activeMedia.uriString] = 0
             val parsedUri = Uri.parse(activeMedia.uriString)
@@ -1995,6 +2128,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     val corruptMsg = "Corrupted or empty media file: '${activeMedia.title}' (${localFile.length()} bytes)."
                     _playbackState.value = current.copy(
                         queue = items,
+                        originalQueue = items,
+                        queueTitle = queueTitle,
                         currentQueueIndex = safeIndex,
                         currentMedia = activeMedia,
                         isPlaying = false,
@@ -2010,6 +2145,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
         _playbackState.value = current.copy(
             queue = items,
+            originalQueue = items,
+            queueTitle = queueTitle,
             currentQueueIndex = safeIndex,
             currentMedia = activeMedia,
             hasRenderedFirstFrame = false,
@@ -2022,36 +2159,291 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         syncAndResolveArtworkForTrack(activeMedia, null)
     }
 
-    fun removeQueueItemAt(index: Int) {
-        val currentQueue = _playbackState.value.queue.toMutableList()
-        if (index !in currentQueue.indices) return
-        currentQueue.removeAt(index)
-        activePlayer?.removeMediaItem(index)
-        val adjustedCurrentIdx = activePlayer?.currentMediaItemIndex
-            ?: _playbackState.value.currentQueueIndex.coerceAtMost((currentQueue.size - 1).coerceAtLeast(0))
-        _playbackState.value = _playbackState.value.copy(
+    /**
+     * Immediately plays the song at [index] inside the active playback queue without rebuilding
+     * the queue when ExoPlayer already has the queue items loaded.
+     */
+    fun selectQueueItemAt(index: Int, fallbackMedia: MediaEntity? = null) {
+        val state = _playbackState.value
+        val queue = state.queue
+        val targetMedia = queue.getOrNull(index) ?: fallbackMedia ?: return
+
+        if (index in queue.indices && targetMedia.isAvailable) {
+            val player = activePlayer
+            if (player != null) {
+                runCatching {
+                    if (player.mediaItemCount != queue.size) {
+                        val mediaItems = queue.map { buildMediaItemForEntity(it) }
+                        player.setMediaItems(mediaItems, index, 0L)
+                        player.prepare()
+                    } else if (index != state.currentQueueIndex ||
+                        player.currentMediaItem?.mediaId != targetMedia.uriString ||
+                        player.playbackState == Player.STATE_ENDED
+                    ) {
+                        player.seekTo(index, 0L)
+                        if (player.playbackState == Player.STATE_IDLE || player.playbackState == Player.STATE_ENDED) {
+                            player.prepare()
+                        }
+                    }
+                    player.playWhenReady = true
+                    player.play()
+                }
+            }
+            _playbackState.value = state.copy(
+                currentMedia = targetMedia,
+                currentQueueIndex = index,
+                isPlaying = true,
+                currentPositionMs = 0L,
+                durationMs = targetMedia.durationMs,
+                hasRenderedFirstFrame = false,
+                playbackError = null
+            )
+            resetOrLoadCompanionSubtitleForMedia(targetMedia)
+            syncAndResolveArtworkForTrack(targetMedia, player?.currentMediaItem?.mediaMetadata)
+            startProgressPolling()
+        } else {
+            playMedia(targetMedia, queue, state.queueTitle)
+        }
+    }
+
+    /**
+     * Inserts [media] immediately after the currently playing song so it plays next automatically.
+     * If no song is currently loaded, starts playing [media] immediately.
+     */
+    fun playNext(media: MediaEntity) {
+        val state = _playbackState.value
+        if (state.queue.isEmpty() || state.currentMedia == null) {
+            playMedia(media, listOf(media))
+            postStatusBannerMessage(
+                "Playing '${media.title}'",
+                InAppNotificationType.TEMPORARY_INFO
+            )
+            return
+        }
+
+        val currentQueue = state.queue.toMutableList()
+        val currentIdx = state.currentQueueIndex.coerceIn(0, currentQueue.lastIndex)
+        val existingIdx = currentQueue.indexOfFirst { it.uriString == media.uriString }
+
+        if (existingIdx == currentIdx) {
+            postStatusBannerMessage(
+                "'${media.title}' is already playing.",
+                InAppNotificationType.TEMPORARY_INFO
+            )
+            return
+        }
+
+        if (existingIdx >= 0) {
+            val targetIdx = if (existingIdx < currentIdx) {
+                currentIdx
+            } else {
+                (currentIdx + 1).coerceAtMost(currentQueue.lastIndex)
+            }
+            moveQueueItem(existingIdx, targetIdx)
+            postStatusBannerMessage(
+                "Playing next: '${media.title}'",
+                InAppNotificationType.TEMPORARY_SUCCESS
+            )
+            return
+        }
+
+        val insertIdx = (currentIdx + 1).coerceIn(0, currentQueue.size)
+        currentQueue.add(insertIdx, media)
+        val baseOriginal = (if (state.originalQueue.isNotEmpty()) state.originalQueue else state.queue).toMutableList()
+        baseOriginal.add(insertIdx.coerceIn(0, baseOriginal.size), media)
+
+        activePlayer?.let { player ->
+            runCatching {
+                val safePlayerInsertIdx = insertIdx.coerceIn(0, player.mediaItemCount)
+                player.addMediaItem(safePlayerInsertIdx, buildMediaItemForEntity(media))
+            }
+        }
+
+        _playbackState.value = state.copy(
             queue = currentQueue,
-            currentQueueIndex = adjustedCurrentIdx
+            originalQueue = baseOriginal
+        )
+        postStatusBannerMessage(
+            "Playing next: '${media.title}'",
+            InAppNotificationType.TEMPORARY_SUCCESS
         )
     }
 
+    /**
+     * Appends [media] to the end of the active playback queue without interrupting current playback.
+     * If the queue is empty, starts playing [media] immediately.
+     */
+    fun addToQueue(media: MediaEntity) {
+        val state = _playbackState.value
+        if (state.queue.isEmpty() || state.currentMedia == null) {
+            playMedia(media, listOf(media))
+            postStatusBannerMessage(
+                "Playing '${media.title}'",
+                InAppNotificationType.TEMPORARY_INFO
+            )
+            return
+        }
+
+        val currentQueue = state.queue.toMutableList()
+        currentQueue.add(media)
+        val baseOriginal = (if (state.originalQueue.isNotEmpty()) state.originalQueue else state.queue).toMutableList()
+        baseOriginal.add(media)
+
+        activePlayer?.let { player ->
+            runCatching {
+                player.addMediaItem(buildMediaItemForEntity(media))
+            }
+        }
+
+        _playbackState.value = state.copy(
+            queue = currentQueue,
+            originalQueue = baseOriginal
+        )
+        postStatusBannerMessage(
+            "Added '${media.title}' to queue (${currentQueue.size} songs)",
+            InAppNotificationType.TEMPORARY_SUCCESS
+        )
+    }
+
+    /**
+     * Removes the song at [index] from the queue without interrupting the currently playing song
+     * unless the currently playing song itself is removed.
+     */
+    fun removeQueueItemAt(index: Int) {
+        val state = _playbackState.value
+        val currentQueue = state.queue.toMutableList()
+        if (index !in currentQueue.indices) return
+        val removedItem = currentQueue.removeAt(index)
+
+        val updatedOriginal = (if (state.originalQueue.isNotEmpty()) state.originalQueue else state.queue)
+            .toMutableList()
+            .apply {
+                val origIdx = indexOfFirst { it.uriString == removedItem.uriString }
+                if (origIdx >= 0) removeAt(origIdx)
+            }
+
+        if (currentQueue.isEmpty()) {
+            stopProgressPolling()
+            activePlayer?.let { player ->
+                runCatching {
+                    player.playWhenReady = false
+                    player.stop()
+                    player.clearMediaItems()
+                }
+            }
+            _playbackState.value = state.copy(
+                currentMedia = null,
+                queue = emptyList(),
+                originalQueue = emptyList(),
+                currentQueueIndex = -1,
+                isPlaying = false,
+                isBuffering = false,
+                currentPositionMs = 0L,
+                durationMs = 0L
+            )
+            return
+        }
+
+        activePlayer?.let { player ->
+            if (index in 0 until player.mediaItemCount) {
+                player.removeMediaItem(index)
+            }
+        }
+
+        when {
+            index < state.currentQueueIndex -> {
+                // Removed a track before the currently playing track -> shift index back by 1, keep playing uninterrupted
+                val newCurrentIdx = (state.currentQueueIndex - 1).coerceAtLeast(0)
+                _playbackState.value = state.copy(
+                    queue = currentQueue,
+                    originalQueue = updatedOriginal,
+                    currentQueueIndex = newCurrentIdx
+                )
+            }
+            index > state.currentQueueIndex -> {
+                // Removed a track after the currently playing track -> current index & playback unchanged
+                _playbackState.value = state.copy(
+                    queue = currentQueue,
+                    originalQueue = updatedOriginal,
+                    currentQueueIndex = state.currentQueueIndex
+                )
+            }
+            else -> {
+                // Removed the currently playing track -> transition cleanly to the next available track in queue
+                val nextIdx = index.coerceIn(0, currentQueue.lastIndex)
+                val nextMedia = currentQueue[nextIdx]
+                _playbackState.value = state.copy(
+                    currentMedia = nextMedia,
+                    queue = currentQueue,
+                    originalQueue = updatedOriginal,
+                    currentQueueIndex = nextIdx,
+                    currentPositionMs = 0L,
+                    durationMs = nextMedia.durationMs,
+                    hasRenderedFirstFrame = false
+                )
+                resetOrLoadCompanionSubtitleForMedia(nextMedia)
+                syncAndResolveArtworkForTrack(nextMedia, activePlayer?.currentMediaItem?.mediaMetadata)
+            }
+        }
+    }
+
+    /**
+     * Moves a song from [fromIndex] to [toIndex] (via Up/Down buttons or Drag-and-Drop) while keeping
+     * the currently playing track's index and playback completely synchronized.
+     */
     fun moveQueueItem(fromIndex: Int, toIndex: Int) {
-        val currentQueue = _playbackState.value.queue.toMutableList()
+        val state = _playbackState.value
+        val currentQueue = state.queue.toMutableList()
         if (fromIndex !in currentQueue.indices || toIndex !in currentQueue.indices || fromIndex == toIndex) return
         val moved = currentQueue.removeAt(fromIndex)
         currentQueue.add(toIndex, moved)
-        activePlayer?.moveMediaItem(fromIndex, toIndex)
-        val newCurrentIdx = when (_playbackState.value.currentQueueIndex) {
+        activePlayer?.let { player ->
+            if (fromIndex in 0 until player.mediaItemCount && toIndex in 0 until player.mediaItemCount) {
+                player.moveMediaItem(fromIndex, toIndex)
+            }
+        }
+        val newCurrentIdx = when (state.currentQueueIndex) {
             fromIndex -> toIndex
             in (minOf(fromIndex, toIndex)..maxOf(fromIndex, toIndex)) -> {
-                if (fromIndex < toIndex) _playbackState.value.currentQueueIndex - 1
-                else _playbackState.value.currentQueueIndex + 1
+                if (fromIndex < toIndex) state.currentQueueIndex - 1
+                else state.currentQueueIndex + 1
             }
-            else -> _playbackState.value.currentQueueIndex
+            else -> state.currentQueueIndex
+        }
+        val updatedOriginal = if (!state.shuffleEnabled) currentQueue else state.originalQueue
+        _playbackState.value = state.copy(
+            queue = currentQueue,
+            originalQueue = updatedOriginal,
+            currentQueueIndex = newCurrentIdx
+        )
+    }
+
+    /**
+     * Clears the entire playback queue and stops playback cleanly.
+     */
+    fun clearQueue() {
+        stopProgressPolling()
+        activePlayer?.let { player ->
+            runCatching {
+                player.playWhenReady = false
+                player.stop()
+                player.clearMediaItems()
+            }
         }
         _playbackState.value = _playbackState.value.copy(
-            queue = currentQueue,
-            currentQueueIndex = newCurrentIdx
+            currentMedia = null,
+            queue = emptyList(),
+            originalQueue = emptyList(),
+            currentQueueIndex = -1,
+            isPlaying = false,
+            isBuffering = false,
+            currentPositionMs = 0L,
+            durationMs = 0L,
+            playbackError = null
+        )
+        postStatusBannerMessage(
+            "Cleared playback queue.",
+            InAppNotificationType.TEMPORARY_INFO
         )
     }
 

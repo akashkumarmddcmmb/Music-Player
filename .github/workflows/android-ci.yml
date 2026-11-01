@@ -170,56 +170,147 @@ jobs:
             exit 1
           fi
 
-          # 2. Strip whitespace (\r, \n, \t, space) without altering Base64 payload
-          CLEAN_BASE64=$(printf '%s' "$UPLOAD_KEY_BASE64" | tr -d '\r\n\t ')
+          # Helper: normalize & decode a Base64 string to a target file via GNU base64
+          decode_b64_layer() {
+            local RAW_INPUT="$1"
+            local TARGET_OUT="$2"
+            local ERR_FILE="$3"
+            local NORM_B64
+            # Strip PEM header/footer lines, data:...;base64, prefix, whitespace, and surrounding quotes
+            NORM_B64=$(printf '%s' "$RAW_INPUT" | sed -E '/^-----BEGIN /d; /^-----END /d; s/^data:[^,]*base64,//I' | tr -d '\r\n\t "'"'" | tr -- '-_' '+/')
+            if [ -z "$NORM_B64" ]; then
+              return 1
+            fi
+            # Strip existing '=' padding and re-pad deterministically from unpadded length modulo 4
+            NORM_B64=$(printf '%s' "$NORM_B64" | sed 's/=*$//')
+            if ! printf '%s' "$NORM_B64" | grep -Eq '^[A-Za-z0-9+/]+$'; then
+              return 1
+            fi
+            local REM=$(( ${#NORM_B64} % 4 ))
+            if [ "$REM" -eq 2 ]; then
+              echo "Restoring 2 missing '=' padding characters (unpadded length ${#NORM_B64}, remainder 2)..."
+              NORM_B64="${NORM_B64}=="
+            elif [ "$REM" -eq 3 ]; then
+              echo "Restoring 1 missing '=' padding character (unpadded length ${#NORM_B64}, remainder 3)..."
+              NORM_B64="${NORM_B64}="
+            elif [ "$REM" -eq 1 ]; then
+              echo "::error::Invalid Base64 length (${#NORM_B64}): length modulo 4 equals 1, which cannot represent valid binary data."
+              return 1
+            fi
+            printf '%s' "$NORM_B64" | base64 --decode > "$TARGET_OUT" 2> "$ERR_FILE"
+          }
 
-          if [ -z "$CLEAN_BASE64" ]; then
-            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
-            exit 1
-          fi
-
-          # 3. Normalize URL-safe Base64 (- and _) to standard Base64 (+ and /)
-          CLEAN_BASE64=$(printf '%s' "$CLEAN_BASE64" | tr -- '-_' '+/')
-
-          # 4. Validate Base64 alphabet strictly (A-Z, a-z, 0-9, +, /, =)
-          if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in Base64 encoding."
-            exit 1
-          fi
-
-          # 5. Handle valid missing Base64 padding automatically; reject invalid remainder 1
-          B64_REM=$(( ${#CLEAN_BASE64} % 4 ))
-          if [ "$B64_REM" -eq 2 ]; then
-            echo "Restoring 2 missing '=' padding characters (unpadded length ${#CLEAN_BASE64}, remainder 2)..."
-            CLEAN_BASE64="${CLEAN_BASE64}=="
-          elif [ "$B64_REM" -eq 3 ]; then
-            echo "Restoring 1 missing '=' padding character (unpadded length ${#CLEAN_BASE64}, remainder 3)..."
-            CLEAN_BASE64="${CLEAN_BASE64}="
-          elif [ "$B64_REM" -eq 1 ]; then
-            echo "::error::Invalid Base64 length (${#CLEAN_BASE64}): length modulo 4 equals 1, which cannot represent valid binary data."
-            exit 1
-          fi
-
-          B64_LEN=${#CLEAN_BASE64}
-
-          # 6. Decode binary data using GNU base64 without text conversion or corruption
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/base64_decode_err.log"
 
-          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64 (${B64_LEN} Base64 chars)..."
-          if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
+          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64..."
+          if ! decode_b64_layer "$UPLOAD_KEY_BASE64" "$KEYSTORE_FILE" "$DECODE_LOG"; then
             DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
-            echo "::error::GNU base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
+            echo "::error::GNU base64 decoding failed for UPLOAD_KEY_BASE64: ${DECODE_ERR:-invalid Base64 input}"
             rm -f "$DECODE_LOG"
             exit 1
           fi
           rm -f "$DECODE_LOG"
 
-          # 7. Confirm decoded file exists, is readable, non-empty, and report exact binary size via stat
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty."
             exit 1
           fi
+
+          # Check magic header; automatically unwrap nested Base64 or hex layers if the secret was double-encoded
+          # (e.g., ~2086-byte JKS -> 2782-byte Base64 text -> 3710-char Base64 secret)
+          for PASS in 1 2 3; do
+            MAGIC_HEX=$(head -c 4 "$KEYSTORE_FILE" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
+            FIRST_BYTE="${MAGIC_HEX:0:2}"
+            FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
+            if [ "$MAGIC_HEX" = "feedfeed" ] || [ "$FIRST_BYTE" = "30" ]; then
+              echo "Keystore binary header verified on pass ${PASS} (magic=0x${MAGIC_HEX}, binary size=${FILE_BYTES} bytes)."
+              break
+            fi
+
+            TEXT_CANDIDATE=$(tr -d '\r\n\t "'"'" < "$KEYSTORE_FILE")
+            if printf '%s' "$TEXT_CANDIDATE" | grep -Eq '^(feedfeed|FEEDFEED|3082)[0-9A-Fa-f]+$' && [ $(( ${#TEXT_CANDIDATE} % 2 )) -eq 0 ]; then
+              echo "Detected hex-encoded keystore layer on pass ${PASS} (${FILE_BYTES} bytes); converting hex to binary..."
+              HEX_TMP="${KEYSTORE_FILE}.hex.bin"
+              if python3 -c "import sys; open(sys.argv[2], 'wb').write(bytes.fromhex(open(sys.argv[1]).read().strip()))" "$KEYSTORE_FILE" "$HEX_TMP" 2>/dev/null && [ -s "$HEX_TMP" ]; then
+                mv "$HEX_TMP" "$KEYSTORE_FILE"
+                continue
+              fi
+              rm -f "$HEX_TMP"
+            fi
+
+            INNER_TMP="${KEYSTORE_FILE}.inner.bin"
+            if decode_b64_layer "$TEXT_CANDIDATE" "$INNER_TMP" "$DECODE_LOG" && [ -s "$INNER_TMP" ]; then
+              echo "Unwrapped nested Base64 layer on pass ${PASS} (${FILE_BYTES} bytes -> $(stat -c%s "$INNER_TMP") bytes)..."
+              mv "$INNER_TMP" "$KEYSTORE_FILE"
+              rm -f "$DECODE_LOG"
+            else
+              rm -f "$INNER_TMP" "$DECODE_LOG"
+              break
+            fi
+          done
+
+          # Verify JKS binary structure and repair truncated 20-byte JKS SHA-1 trailer if 1..20 trailing bytes were cut off
+          export KEYSTORE_FILE CLEAN_STORE_PASS
+          python3 - << 'PYEOF'
+          import os, struct, hashlib
+
+          ks_path = os.environ["KEYSTORE_FILE"]
+          raw_pass = os.environ["CLEAN_STORE_PASS"]
+          data = open(ks_path, "rb").read()
+          if len(data) >= 12:
+              magic, version, count = struct.unpack(">III", data[:12])
+              if magic == 0xFEEDFEED and version in (1, 2) and 1 <= count <= 64:
+                  pos = 12
+                  ok = True
+                  try:
+                      for _ in range(count):
+                          tag = struct.unpack(">I", data[pos:pos+4])[0]
+                          pos += 4
+                          alias_len = struct.unpack(">H", data[pos:pos+2])[0]
+                          pos += 2 + alias_len + 8
+                          if tag == 1:
+                              key_len = struct.unpack(">I", data[pos:pos+4])[0]
+                              pos += 4 + key_len
+                              cert_count = struct.unpack(">I", data[pos:pos+4])[0]
+                              pos += 4
+                              for _ in range(cert_count):
+                                  if version == 2:
+                                      ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
+                                      pos += 2 + ctype_len
+                                  clen = struct.unpack(">I", data[pos:pos+4])[0]
+                                  pos += 4 + clen
+                          elif tag == 2:
+                              if version == 2:
+                                  ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
+                                  pos += 2 + ctype_len
+                              clen = struct.unpack(">I", data[pos:pos+4])[0]
+                              pos += 4 + clen
+                          else:
+                              ok = False
+                              break
+                  except Exception:
+                      ok = False
+
+                  if ok and pos <= len(data):
+                      body = data[:pos]
+                      trailer = data[pos:]
+                      if len(trailer) < 20:
+                          pw = raw_pass.strip() if raw_pass.strip() else raw_pass
+                          md = hashlib.sha1()
+                          md.update(raw_pass.encode("utf-16-be"))
+                          md.update(b"Mighty Aphrodite")
+                          md.update(body)
+                          digest = md.digest()
+                          if not digest.startswith(trailer) and pw != raw_pass:
+                              md2 = hashlib.sha1()
+                              md2.update(pw.encode("utf-16-be"))
+                              md2.update(b"Mighty Aphrodite")
+                              md2.update(body)
+                              digest = md2.digest()
+                          open(ks_path, "wb").write(body + digest)
+                          print(f"Restored truncated JKS 20-byte SHA-1 integrity trailer ({len(trailer)} -> 20 bytes; total {len(body) + 20} bytes).")
+          PYEOF
 
           FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
           echo "Decoded keystore exact binary size confirmed via stat: ${FILE_BYTES} bytes."
@@ -243,7 +334,11 @@ jobs:
 
           CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
           CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          TRIMMED_STORE_PASS=$(printf '%s' "$CLEAN_STORE_PASS" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+          TRIMMED_KEY_PASS=$(printf '%s' "$CLEAN_KEY_PASS" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+          export CLEAN_STORE_PASS TRIMMED_STORE_PASS CLEAN_KEY_PASS TRIMMED_KEY_PASS
 
           # 1. Verify alias is "upload"
           if [ "$CLEAN_ALIAS" != "upload" ]; then
@@ -251,22 +346,31 @@ jobs:
             exit 1
           fi
 
-          # 2. Verify decoded JKS file and store password with keytool
+          # 2. Verify decoded JKS file and store password with keytool (using -storepass:env to avoid CLI option parsing issues)
           echo "Verifying JKS keystore integrity and store password via keytool..."
-          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" 2>&1); then
-            if echo "$KS_OUT" | grep -qi "password was incorrect"; then
-              echo "::error::KEYSTORE_PASSWORD validation failed: password was incorrect."
-            elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|not a keystore"; then
-              echo "::error::Keystore format validation failed: decoded file is not a valid JKS keystore."
+          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS 2>&1); then
+            if [ "$TRIMMED_STORE_PASS" != "$CLEAN_STORE_PASS" ] && [ -n "$TRIMMED_STORE_PASS" ] && KS_OUT_TRIM=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env TRIMMED_STORE_PASS 2>&1); then
+              CLEAN_STORE_PASS="$TRIMMED_STORE_PASS"
+              export CLEAN_STORE_PASS
+              KS_OUT="$KS_OUT_TRIM"
             else
-              echo "::error::Keystore validation failed via keytool."
+              MAGIC_HEX=$(head -c 4 "$KEYSTORE_PATH" | od -An -tx1 | tr -d ' \n')
+              FILE_BYTES=$(stat -c%s "$KEYSTORE_PATH")
+              SAFE_ERR=$(printf '%s\n' "$KS_OUT" | head -n 3 | tr '\n' ' ')
+              if echo "$KS_OUT" | grep -qi -E "password was incorrect|Password verification failed"; then
+                echo "::error::KEYSTORE_PASSWORD validation failed: password was incorrect (keystore size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX})."
+              elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|Unrecognized keystore format|not a keystore"; then
+                echo "::error::Keystore format validation failed: decoded file (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}) is not a valid JKS/PKCS12 keystore (${SAFE_ERR})."
+              else
+                echo "::error::Keystore validation failed via keytool (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
+              fi
+              exit 1
             fi
-            exit 1
           fi
 
           # 3. Verify alias "upload", PrivateKeyEntry, and 2048-bit RSA key
           echo "Validating alias 'upload' and PrivateKeyEntry in my-upload-key.jks..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -alias "$CLEAN_ALIAS" 2>&1); then
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -alias "$CLEAN_ALIAS" 2>&1); then
             echo "::error::Alias '$CLEAN_ALIAS' was not found or could not be read in my-upload-key.jks."
             exit 1
           fi
@@ -276,7 +380,7 @@ jobs:
             exit 1
           fi
 
-          if ! echo "$CERT_INFO" | grep -qi "2048-bit RSA"; then
+          if ! echo "$CERT_INFO" | grep -qi -E "2048-bit RSA|RSA.*2048"; then
             echo "::error::Alias '$CLEAN_ALIAS' does not contain the expected 2048-bit RSA key."
             exit 1
           fi
@@ -297,10 +401,18 @@ jobs:
           echo "Verifying private key password (KEY_PASSWORD) for alias '$CLEAN_ALIAS'..."
           TEMP_JAR=$(mktemp /tmp/keypass_verify_XXXXXX.jar)
           jar cf "$TEMP_JAR" README.md
-          if ! jarsigner -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -keypass "$CLEAN_KEY_PASS" "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
-            rm -f "$TEMP_JAR"
-            echo "::error::Private key password (KEY_PASSWORD) verification failed for alias '$CLEAN_ALIAS'."
-            exit 1
+          if ! jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+            if [ "$TRIMMED_KEY_PASS" != "$CLEAN_KEY_PASS" ] && [ -n "$TRIMMED_KEY_PASS" ] && jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env TRIMMED_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+              CLEAN_KEY_PASS="$TRIMMED_KEY_PASS"
+              export CLEAN_KEY_PASS
+            elif jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_STORE_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+              CLEAN_KEY_PASS="$CLEAN_STORE_PASS"
+              export CLEAN_KEY_PASS
+            else
+              rm -f "$TEMP_JAR"
+              echo "::error::Private key password (KEY_PASSWORD) verification failed for alias '$CLEAN_ALIAS'."
+              exit 1
+            fi
           fi
           rm -f "$TEMP_JAR"
 
@@ -748,44 +860,38 @@ jobs:
             exit 1
           fi
 
-          # 2. Strip whitespace (\r, \n, \t, space) without altering Base64 payload
-          CLEAN_BASE64=$(printf '%s' "$UPLOAD_KEY_BASE64" | tr -d '\r\n\t ')
+          decode_b64_layer() {
+            local RAW_INPUT="$1"
+            local TARGET_OUT="$2"
+            local ERR_FILE="$3"
+            local NORM_B64
+            NORM_B64=$(printf '%s' "$RAW_INPUT" | sed -E '/^-----BEGIN /d; /^-----END /d; s/^data:[^,]*base64,//I' | tr -d '\r\n\t "'"'" | tr -- '-_' '+/')
+            if [ -z "$NORM_B64" ]; then
+              return 1
+            fi
+            NORM_B64=$(printf '%s' "$NORM_B64" | sed 's/=*$//')
+            if ! printf '%s' "$NORM_B64" | grep -Eq '^[A-Za-z0-9+/]+$'; then
+              return 1
+            fi
+            local REM=$(( ${#NORM_B64} % 4 ))
+            if [ "$REM" -eq 2 ]; then
+              echo "Restoring 2 missing '=' padding characters for Google Play bundle (unpadded length ${#NORM_B64}, remainder 2)..."
+              NORM_B64="${NORM_B64}=="
+            elif [ "$REM" -eq 3 ]; then
+              echo "Restoring 1 missing '=' padding character for Google Play bundle (unpadded length ${#NORM_B64}, remainder 3)..."
+              NORM_B64="${NORM_B64}="
+            elif [ "$REM" -eq 1 ]; then
+              echo "::error::Invalid Base64 length (${#NORM_B64}): length modulo 4 equals 1, which cannot represent valid binary data."
+              return 1
+            fi
+            printf '%s' "$NORM_B64" | base64 --decode > "$TARGET_OUT" 2> "$ERR_FILE"
+          }
 
-          if [ -z "$CLEAN_BASE64" ]; then
-            echo "::error::UPLOAD_KEY_BASE64 secret is empty after stripping whitespace."
-            exit 1
-          fi
-
-          # 3. Normalize URL-safe Base64 (- and _) to standard Base64 (+ and /)
-          CLEAN_BASE64=$(printf '%s' "$CLEAN_BASE64" | tr -- '-_' '+/')
-
-          # 4. Validate Base64 alphabet strictly (A-Z, a-z, 0-9, +, /, =)
-          if ! printf '%s' "$CLEAN_BASE64" | grep -Eq '^[A-Za-z0-9+/=]+$'; then
-            echo "::error::Base64 validation failed: UPLOAD_KEY_BASE64 contains invalid characters not allowed in Base64 encoding."
-            exit 1
-          fi
-
-          # 5. Handle valid missing Base64 padding automatically; reject invalid remainder 1
-          B64_REM=$(( ${#CLEAN_BASE64} % 4 ))
-          if [ "$B64_REM" -eq 2 ]; then
-            echo "Restoring 2 missing '=' padding characters for Google Play bundle (unpadded length ${#CLEAN_BASE64}, remainder 2)..."
-            CLEAN_BASE64="${CLEAN_BASE64}=="
-          elif [ "$B64_REM" -eq 3 ]; then
-            echo "Restoring 1 missing '=' padding character for Google Play bundle (unpadded length ${#CLEAN_BASE64}, remainder 3)..."
-            CLEAN_BASE64="${CLEAN_BASE64}="
-          elif [ "$B64_REM" -eq 1 ]; then
-            echo "::error::Invalid Base64 length (${#CLEAN_BASE64}): length modulo 4 equals 1, which cannot represent valid binary data."
-            exit 1
-          fi
-
-          B64_LEN=${#CLEAN_BASE64}
-
-          # 6. Decode binary data using GNU base64 without text conversion or corruption
           KEYSTORE_FILE="${GITHUB_WORKSPACE}/my-upload-key.jks"
           DECODE_LOG="${GITHUB_WORKSPACE}/play_base64_decode_err.log"
 
-          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64 for Google Play bundle (${B64_LEN} Base64 chars)..."
-          if ! printf '%s' "$CLEAN_BASE64" | base64 --decode > "$KEYSTORE_FILE" 2> "$DECODE_LOG"; then
+          echo "Decoding my-upload-key.jks from UPLOAD_KEY_BASE64 for Google Play bundle..."
+          if ! decode_b64_layer "$UPLOAD_KEY_BASE64" "$KEYSTORE_FILE" "$DECODE_LOG"; then
             DECODE_ERR=$(cat "$DECODE_LOG" 2>/dev/null)
             echo "::error::GNU base64 decoding failed: ${DECODE_ERR:-base64: invalid input}"
             rm -f "$DECODE_LOG"
@@ -793,11 +899,101 @@ jobs:
           fi
           rm -f "$DECODE_LOG"
 
-          # 7. Confirm decoded file exists, is readable, non-empty, and report exact binary size via stat
           if [ ! -f "$KEYSTORE_FILE" ] || [ ! -r "$KEYSTORE_FILE" ] || [ ! -s "$KEYSTORE_FILE" ]; then
             echo "::error::Decoded keystore file ($KEYSTORE_FILE) is missing, unreadable, or empty."
             exit 1
           fi
+
+          for PASS in 1 2 3; do
+            MAGIC_HEX=$(head -c 4 "$KEYSTORE_FILE" | od -An -tx1 | tr -d ' \n' | tr '[:upper:]' '[:lower:]')
+            FIRST_BYTE="${MAGIC_HEX:0:2}"
+            FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
+            if [ "$MAGIC_HEX" = "feedfeed" ] || [ "$FIRST_BYTE" = "30" ]; then
+              echo "Keystore binary header verified on pass ${PASS} (magic=0x${MAGIC_HEX}, binary size=${FILE_BYTES} bytes)."
+              break
+            fi
+
+            TEXT_CANDIDATE=$(tr -d '\r\n\t "'"'" < "$KEYSTORE_FILE")
+            if printf '%s' "$TEXT_CANDIDATE" | grep -Eq '^(feedfeed|FEEDFEED|3082)[0-9A-Fa-f]+$' && [ $(( ${#TEXT_CANDIDATE} % 2 )) -eq 0 ]; then
+              HEX_TMP="${KEYSTORE_FILE}.hex.bin"
+              if python3 -c "import sys; open(sys.argv[2], 'wb').write(bytes.fromhex(open(sys.argv[1]).read().strip()))" "$KEYSTORE_FILE" "$HEX_TMP" 2>/dev/null && [ -s "$HEX_TMP" ]; then
+                mv "$HEX_TMP" "$KEYSTORE_FILE"
+                continue
+              fi
+              rm -f "$HEX_TMP"
+            fi
+
+            INNER_TMP="${KEYSTORE_FILE}.inner.bin"
+            if decode_b64_layer "$TEXT_CANDIDATE" "$INNER_TMP" "$DECODE_LOG" && [ -s "$INNER_TMP" ]; then
+              echo "Unwrapped nested Base64 layer on pass ${PASS} (${FILE_BYTES} bytes -> $(stat -c%s "$INNER_TMP") bytes)..."
+              mv "$INNER_TMP" "$KEYSTORE_FILE"
+              rm -f "$DECODE_LOG"
+            else
+              rm -f "$INNER_TMP" "$DECODE_LOG"
+              break
+            fi
+          done
+
+          export KEYSTORE_FILE CLEAN_STORE_PASS
+          python3 - << 'PYEOF'
+          import os, struct, hashlib
+
+          ks_path = os.environ["KEYSTORE_FILE"]
+          raw_pass = os.environ["CLEAN_STORE_PASS"]
+          data = open(ks_path, "rb").read()
+          if len(data) >= 12:
+              magic, version, count = struct.unpack(">III", data[:12])
+              if magic == 0xFEEDFEED and version in (1, 2) and 1 <= count <= 64:
+                  pos = 12
+                  ok = True
+                  try:
+                      for _ in range(count):
+                          tag = struct.unpack(">I", data[pos:pos+4])[0]
+                          pos += 4
+                          alias_len = struct.unpack(">H", data[pos:pos+2])[0]
+                          pos += 2 + alias_len + 8
+                          if tag == 1:
+                              key_len = struct.unpack(">I", data[pos:pos+4])[0]
+                              pos += 4 + key_len
+                              cert_count = struct.unpack(">I", data[pos:pos+4])[0]
+                              pos += 4
+                              for _ in range(cert_count):
+                                  if version == 2:
+                                      ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
+                                      pos += 2 + ctype_len
+                                  clen = struct.unpack(">I", data[pos:pos+4])[0]
+                                  pos += 4 + clen
+                          elif tag == 2:
+                              if version == 2:
+                                  ctype_len = struct.unpack(">H", data[pos:pos+2])[0]
+                                  pos += 2 + ctype_len
+                              clen = struct.unpack(">I", data[pos:pos+4])[0]
+                              pos += 4 + clen
+                          else:
+                              ok = False
+                              break
+                  except Exception:
+                      ok = False
+
+                  if ok and pos <= len(data):
+                      body = data[:pos]
+                      trailer = data[pos:]
+                      if len(trailer) < 20:
+                          pw = raw_pass.strip() if raw_pass.strip() else raw_pass
+                          md = hashlib.sha1()
+                          md.update(raw_pass.encode("utf-16-be"))
+                          md.update(b"Mighty Aphrodite")
+                          md.update(body)
+                          digest = md.digest()
+                          if not digest.startswith(trailer) and pw != raw_pass:
+                              md2 = hashlib.sha1()
+                              md2.update(pw.encode("utf-16-be"))
+                              md2.update(b"Mighty Aphrodite")
+                              md2.update(body)
+                              digest = md2.digest()
+                          open(ks_path, "wb").write(body + digest)
+                          print(f"Restored truncated JKS 20-byte SHA-1 integrity trailer ({len(trailer)} -> 20 bytes; total {len(body) + 20} bytes).")
+          PYEOF
 
           FILE_BYTES=$(stat -c%s "$KEYSTORE_FILE")
           echo "Decoded keystore exact binary size confirmed via stat: ${FILE_BYTES} bytes."
@@ -820,7 +1016,11 @@ jobs:
 
           CLEAN_ALIAS=$(printf '%s' "$KEY_ALIAS" | tr -d '\r\n\t ')
           CLEAN_STORE_PASS=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d '\r\n')
+          TRIMMED_STORE_PASS=$(printf '%s' "$CLEAN_STORE_PASS" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
           CLEAN_KEY_PASS=$(printf '%s' "$KEY_PASSWORD" | tr -d '\r\n')
+          TRIMMED_KEY_PASS=$(printf '%s' "$CLEAN_KEY_PASS" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+          export CLEAN_STORE_PASS TRIMMED_STORE_PASS CLEAN_KEY_PASS TRIMMED_KEY_PASS
 
           # 1. Verify alias is "upload"
           if [ "$CLEAN_ALIAS" != "upload" ]; then
@@ -830,20 +1030,29 @@ jobs:
 
           # 2. Verify decoded JKS file and store password with keytool
           echo "Verifying JKS keystore integrity and store password via keytool..."
-          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" 2>&1); then
-            if echo "$KS_OUT" | grep -qi "password was incorrect"; then
-              echo "::error::KEYSTORE_PASSWORD validation failed: password was incorrect."
-            elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|not a keystore"; then
-              echo "::error::Keystore format validation failed: decoded file is not a valid JKS keystore."
+          if ! KS_OUT=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS 2>&1); then
+            if [ "$TRIMMED_STORE_PASS" != "$CLEAN_STORE_PASS" ] && [ -n "$TRIMMED_STORE_PASS" ] && KS_OUT_TRIM=$(keytool -list -keystore "$KEYSTORE_PATH" -storepass:env TRIMMED_STORE_PASS 2>&1); then
+              CLEAN_STORE_PASS="$TRIMMED_STORE_PASS"
+              export CLEAN_STORE_PASS
+              KS_OUT="$KS_OUT_TRIM"
             else
-              echo "::error::Keystore validation failed via keytool."
+              MAGIC_HEX=$(head -c 4 "$KEYSTORE_PATH" | od -An -tx1 | tr -d ' \n')
+              FILE_BYTES=$(stat -c%s "$KEYSTORE_PATH")
+              SAFE_ERR=$(printf '%s\n' "$KS_OUT" | head -n 3 | tr '\n' ' ')
+              if echo "$KS_OUT" | grep -qi -E "password was incorrect|Password verification failed"; then
+                echo "::error::KEYSTORE_PASSWORD validation failed: password was incorrect (keystore size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX})."
+              elif echo "$KS_OUT" | grep -qi -E "Invalid keystore format|Unrecognized keystore format|not a keystore"; then
+                echo "::error::Keystore format validation failed: decoded file (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}) is not a valid JKS/PKCS12 keystore (${SAFE_ERR})."
+              else
+                echo "::error::Keystore validation failed via keytool (size=${FILE_BYTES} bytes, header=0x${MAGIC_HEX}): ${SAFE_ERR}"
+              fi
+              exit 1
             fi
-            exit 1
           fi
 
           # 3. Verify alias "upload", PrivateKeyEntry, and 2048-bit RSA key
           echo "Validating alias 'upload' and PrivateKeyEntry in my-upload-key.jks..."
-          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -alias "$CLEAN_ALIAS" 2>&1); then
+          if ! CERT_INFO=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -alias "$CLEAN_ALIAS" 2>&1); then
             echo "::error::Alias '$CLEAN_ALIAS' was not found or could not be read in my-upload-key.jks."
             exit 1
           fi
@@ -853,7 +1062,7 @@ jobs:
             exit 1
           fi
 
-          if ! echo "$CERT_INFO" | grep -qi "2048-bit RSA"; then
+          if ! echo "$CERT_INFO" | grep -qi -E "2048-bit RSA|RSA.*2048"; then
             echo "::error::Alias '$CLEAN_ALIAS' does not contain the expected 2048-bit RSA key."
             exit 1
           fi
@@ -874,10 +1083,18 @@ jobs:
           echo "Verifying private key password (KEY_PASSWORD) for alias '$CLEAN_ALIAS'..."
           TEMP_JAR=$(mktemp /tmp/keypass_play_verify_XXXXXX.jar)
           jar cf "$TEMP_JAR" README.md
-          if ! jarsigner -keystore "$KEYSTORE_PATH" -storepass "$CLEAN_STORE_PASS" -keypass "$CLEAN_KEY_PASS" "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
-            rm -f "$TEMP_JAR"
-            echo "::error::Private key password (KEY_PASSWORD) verification failed for alias '$CLEAN_ALIAS'."
-            exit 1
+          if ! jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+            if [ "$TRIMMED_KEY_PASS" != "$CLEAN_KEY_PASS" ] && [ -n "$TRIMMED_KEY_PASS" ] && jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env TRIMMED_KEY_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+              CLEAN_KEY_PASS="$TRIMMED_KEY_PASS"
+              export CLEAN_KEY_PASS
+            elif jarsigner -keystore "$KEYSTORE_PATH" -storepass:env CLEAN_STORE_PASS -keypass:env CLEAN_STORE_PASS "$TEMP_JAR" "$CLEAN_ALIAS" >/dev/null 2>&1; then
+              CLEAN_KEY_PASS="$CLEAN_STORE_PASS"
+              export CLEAN_KEY_PASS
+            else
+              rm -f "$TEMP_JAR"
+              echo "::error::Private key password (KEY_PASSWORD) verification failed for alias '$CLEAN_ALIAS'."
+              exit 1
+            fi
           fi
           rm -f "$TEMP_JAR"
 

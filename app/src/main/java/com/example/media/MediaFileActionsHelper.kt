@@ -92,6 +92,114 @@ object MediaFileActionsHelper {
      */
     var testCanWriteSettingsOverride: Boolean? = null
 
+    private val GENERIC_FOLDER_NAMES = setOf(
+        "0", "Local Storage", "SAF Imports", "Audio", "Music", "Videos", "Unknown", "Unknown Folder", "Playing Queue", "Queue Mix"
+    )
+
+    /**
+     * Resolves the actual physical folder/directory name for [media] using its [folderName],
+     * file URI, or MediaStore content URI metadata. Falls back to "Music Library" if undetermined.
+     */
+    fun resolveMediaFolderName(context: Context?, media: MediaEntity?): String {
+        if (media == null) return "Music Library"
+
+        val rawFolder = media.folderName.trim()
+        if (rawFolder.isNotEmpty() && !GENERIC_FOLDER_NAMES.contains(rawFolder)) {
+            return rawFolder
+        }
+
+        val uriString = media.uriString.trim()
+        if (uriString.startsWith("file://")) {
+            val path = runCatching { Uri.parse(uriString).path }.getOrNull()
+            if (!path.isNullOrBlank()) {
+                val parentName = File(path).parentFile?.name?.trim()
+                if (!parentName.isNullOrEmpty() && !GENERIC_FOLDER_NAMES.contains(parentName)) {
+                    return parentName
+                }
+            }
+        }
+
+        if (context != null && uriString.startsWith("content://")) {
+            runCatching {
+                val uri = Uri.parse(uriString)
+                val projection = arrayOf(
+                    MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
+                    MediaStore.MediaColumns.RELATIVE_PATH,
+                    MediaStore.MediaColumns.DATA
+                )
+                context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val bucketCol = cursor.getColumnIndex(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+                        val relCol = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                        val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+
+                        val bucket = if (bucketCol >= 0) cursor.getString(bucketCol)?.trim() else null
+                        if (!bucket.isNullOrEmpty() && !GENERIC_FOLDER_NAMES.contains(bucket)) {
+                            return bucket
+                        }
+
+                        val rel = if (relCol >= 0) cursor.getString(relCol)?.trim()?.trim('/')?.substringAfterLast('/') else null
+                        if (!rel.isNullOrEmpty() && !GENERIC_FOLDER_NAMES.contains(rel)) {
+                            return rel
+                        }
+
+                        val data = if (dataCol >= 0) cursor.getString(dataCol)?.trim() else null
+                        if (!data.isNullOrEmpty()) {
+                            val parentName = File(data).parentFile?.name?.trim()
+                            if (!parentName.isNullOrEmpty() && !GENERIC_FOLDER_NAMES.contains(parentName)) {
+                                return parentName
+                            }
+                        }
+                    }
+                }
+            }
+
+            val decodedPath = runCatching { Uri.decode(uriString) }.getOrNull()
+            if (!decodedPath.isNullOrBlank()) {
+                val candidateName = decodedPath.substringBeforeLast('/')
+                    .substringAfterLast('/')
+                    .substringAfterLast(':')
+                    .trim()
+                if (candidateName.isNotEmpty() && !GENERIC_FOLDER_NAMES.contains(candidateName)) {
+                    return candidateName
+                }
+            }
+        }
+
+        return "Music Library"
+    }
+
+    /**
+     * Determines the display title for the playback queue / folder context:
+     * 1. If an explicit playlist name or context title is provided (and not generic), uses [explicitQueueTitle].
+     * 2. Evaluates [resolveMediaFolderName] across all items in [queue].
+     * 3. If all queued tracks belong to 1 single physical folder, returns that folder's actual name.
+     * 4. If queued tracks originate from multiple folders, returns "Mixed Playlist".
+     * 5. Fallback if undetermined is "Music Library".
+     */
+    fun computeQueueSourceTitle(
+        context: Context?,
+        queue: List<MediaEntity>,
+        explicitQueueTitle: String? = null
+    ): String {
+        val cleanExplicit = explicitQueueTitle?.trim()
+        if (!cleanExplicit.isNullOrEmpty() && !GENERIC_FOLDER_NAMES.contains(cleanExplicit)) {
+            return cleanExplicit
+        }
+
+        if (queue.isEmpty()) return "Music Library"
+
+        val resolvedFolders = queue.map { item ->
+            resolveMediaFolderName(context, item)
+        }.filter { it.isNotBlank() && it != "Music Library" }.toSet()
+
+        return when {
+            resolvedFolders.size == 1 -> resolvedFolders.first()
+            resolvedFolders.size > 1 -> "Mixed Playlist"
+            else -> "Music Library"
+        }
+    }
+
     /**
      * Records the last ringtone URI applied via [setAudioAsRingtone] for diagnostics and verification.
      */

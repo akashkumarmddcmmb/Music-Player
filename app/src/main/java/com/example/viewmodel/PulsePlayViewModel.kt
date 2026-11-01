@@ -41,6 +41,7 @@ import com.example.media.ConversionProfile
 import com.example.media.EqualizerController
 import com.example.media.HardwareEqualizerState
 import com.example.media.MediaArtworkLoader
+import com.example.media.MediaFileActionsHelper
 import com.example.media.MediaProcessorEngine
 import com.example.media.PlaybackModeAvailabilityReport
 import com.example.media.PlayerHandoffAndVideoPolicy
@@ -1390,14 +1391,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 baseOriginalQueue
             }
             val startIndex = resolvedQueue.indexOfFirst { it.uriString == media.uriString }.coerceAtLeast(0)
-            val resolvedQueueTitle = when {
-                !queueTitle.isNullOrBlank() -> queueTitle
-                media.folderName.isNotBlank() && !media.folderName.equals("Local Storage", ignoreCase = true) ->
-                    media.folderName
-                media.album.isNotBlank() && !media.album.equals("Unknown Album", ignoreCase = true) ->
-                    media.album
-                else -> "Playing Queue"
-            }
+            val resolvedQueueTitle = MediaFileActionsHelper.computeQueueSourceTitle(
+                context = getApplication(),
+                queue = resolvedQueue,
+                explicitQueueTitle = queueTitle
+            )
             val prefs = userPreferences.first()
             val savedPos = if (prefs.resumePlaybackEnabled) {
                 mediaRepository.getSavedResumePosition(media.uriString)
@@ -2143,10 +2141,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
         }
+        val resolvedQueueTitle = MediaFileActionsHelper.computeQueueSourceTitle(
+            context = getApplication(),
+            queue = items,
+            explicitQueueTitle = queueTitle.takeIf { it != "Playing Queue" }
+        )
         _playbackState.value = current.copy(
             queue = items,
             originalQueue = items,
-            queueTitle = queueTitle,
+            queueTitle = resolvedQueueTitle,
             currentQueueIndex = safeIndex,
             currentMedia = activeMedia,
             hasRenderedFirstFrame = false,
@@ -2259,9 +2262,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
+        val resolvedQueueTitle = MediaFileActionsHelper.computeQueueSourceTitle(
+            context = getApplication(),
+            queue = currentQueue,
+            explicitQueueTitle = state.queueTitle
+        )
         _playbackState.value = state.copy(
             queue = currentQueue,
-            originalQueue = baseOriginal
+            originalQueue = baseOriginal,
+            queueTitle = resolvedQueueTitle
         )
         postStatusBannerMessage(
             "Playing next: '${media.title}'",
@@ -2295,9 +2304,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
+        val resolvedQueueTitle = MediaFileActionsHelper.computeQueueSourceTitle(
+            context = getApplication(),
+            queue = currentQueue,
+            explicitQueueTitle = state.queueTitle
+        )
         _playbackState.value = state.copy(
             queue = currentQueue,
-            originalQueue = baseOriginal
+            originalQueue = baseOriginal,
+            queueTitle = resolvedQueueTitle
         )
         postStatusBannerMessage(
             "Added '${media.title}' to queue (${currentQueue.size} songs)",
@@ -2350,6 +2365,12 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             }
         }
 
+        val resolvedQueueTitle = MediaFileActionsHelper.computeQueueSourceTitle(
+            context = getApplication(),
+            queue = currentQueue,
+            explicitQueueTitle = state.queueTitle
+        )
+
         when {
             index < state.currentQueueIndex -> {
                 // Removed a track before the currently playing track -> shift index back by 1, keep playing uninterrupted
@@ -2357,6 +2378,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 _playbackState.value = state.copy(
                     queue = currentQueue,
                     originalQueue = updatedOriginal,
+                    queueTitle = resolvedQueueTitle,
                     currentQueueIndex = newCurrentIdx
                 )
             }
@@ -2365,6 +2387,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 _playbackState.value = state.copy(
                     queue = currentQueue,
                     originalQueue = updatedOriginal,
+                    queueTitle = resolvedQueueTitle,
                     currentQueueIndex = state.currentQueueIndex
                 )
             }
@@ -2376,6 +2399,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     currentMedia = nextMedia,
                     queue = currentQueue,
                     originalQueue = updatedOriginal,
+                    queueTitle = resolvedQueueTitle,
                     currentQueueIndex = nextIdx,
                     currentPositionMs = 0L,
                     durationMs = nextMedia.durationMs,

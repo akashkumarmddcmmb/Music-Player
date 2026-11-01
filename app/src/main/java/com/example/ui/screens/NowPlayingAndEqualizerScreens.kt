@@ -60,6 +60,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.ContentCut
@@ -79,6 +80,7 @@ import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
@@ -99,6 +101,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SubtitlesOff
 import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -119,6 +122,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -128,6 +132,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -165,6 +170,7 @@ import com.example.data.preferences.HighResVideoPlaybackMode
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
 import com.example.media.HardwareEqualizerState
+import com.example.media.MediaFileActionsHelper
 import com.example.media.PlayerHandoffAndVideoPolicy
 import com.example.media.Resilient4KCodecEngine
 import com.example.media.VideoCompatibilityAction
@@ -191,6 +197,7 @@ import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -518,65 +525,47 @@ fun NowPlayingOverlayScreen(
                     onRetryPlayback = onRetryPlayback
                 )
             } else if (isLandscapeViewport) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    LandscapeAudioNowPlayingDeck(
-                        currentMedia = currentMedia,
-                        playbackState = playbackState,
-                        userPreferences = userPreferences,
-                        isFavorite = isFavorite,
-                        playlistSheetState = playlistSheetState,
-                        onPlaylistSheetStateChange = { playlistSheetState = it },
-                        showSubtitleSettings = showSubtitleSettings,
-                        showSleepTimerPanel = showSleepTimerPanel,
-                        showSpeedPanel = showSpeedPanel,
-                        onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
-                        onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
-                        onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
-                        onCollapse = onCollapse,
-                        onPlayPause = onPlayPause,
-                        onSeekTo = onSeekTo,
-                        onPrevious = onPrevious,
-                        onNext = onNext,
-                        onToggleShuffle = onToggleShuffle,
-                        onCycleRepeat = onCycleRepeat,
-                        onSetPlaybackSpeed = onSetPlaybackSpeed,
-                        onPickSubtitleFileClick = onPickSubtitleFileClick,
-                        onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
-                        onSetSubtitleFontScale = onSetSubtitleFontScale,
-                        onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
-                        onSetSleepTimerMinutes = onSetSleepTimerMinutes,
-                        onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
-                        onToggleFavorite = onToggleFavorite,
-                        onOpenEqualizer = onOpenEqualizer,
-                        onOpenStudio = onOpenStudio,
-                        onShareCurrentMedia = onShareCurrentMedia,
-                        onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
-                        onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
-                        onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia,
-                        onSelectQueueItem = onSelectQueueItem,
-                        onRemoveQueueItem = onRemoveQueueItem,
-                        onMoveQueueItem = onMoveQueueItem,
-                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
-                        onRetryPlayback = onRetryPlayback
-                    )
-
-                    ExpandablePlaylistBottomSheetOverlay(
-                        playbackState = playbackState,
-                        sheetState = playlistSheetState,
-                        listState = playlistLazyListState,
-                        onSheetStateChange = { playlistSheetState = it },
-                        onPlayPause = onPlayPause,
-                        onNext = onNext,
-                        onToggleShuffle = onToggleShuffle,
-                        onCycleRepeat = onCycleRepeat,
-                        onSelectQueueItemAt = onSelectQueueItemAt,
-                        onRemoveQueueItemAt = onRemoveQueueItem,
-                        onMoveQueueItem = onMoveQueueItem,
-                        onPlayNextItem = onPlayNextItem,
-                        onClearQueue = onClearQueue,
-                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist
-                    )
-                }
+                LandscapeAudioNowPlayingDeck(
+                    currentMedia = currentMedia,
+                    playbackState = playbackState,
+                    userPreferences = userPreferences,
+                    isFavorite = isFavorite,
+                    showSubtitleSettings = showSubtitleSettings,
+                    showSleepTimerPanel = showSleepTimerPanel,
+                    showSpeedPanel = showSpeedPanel,
+                    onToggleSubtitleSettings = { showSubtitleSettings = !showSubtitleSettings },
+                    onToggleSleepTimerPanel = { showSleepTimerPanel = !showSleepTimerPanel },
+                    onToggleSpeedPanel = { showSpeedPanel = !showSpeedPanel },
+                    onCollapse = onCollapse,
+                    onPlayPause = onPlayPause,
+                    onSeekTo = onSeekTo,
+                    onPrevious = onPrevious,
+                    onNext = onNext,
+                    onToggleShuffle = onToggleShuffle,
+                    onCycleRepeat = onCycleRepeat,
+                    onSetPlaybackSpeed = onSetPlaybackSpeed,
+                    onPickSubtitleFileClick = onPickSubtitleFileClick,
+                    onToggleSubtitlesEnabled = onToggleSubtitlesEnabled,
+                    onSetSubtitleFontScale = onSetSubtitleFontScale,
+                    onSetSubtitleOffsetMs = onSetSubtitleOffsetMs,
+                    onSetSleepTimerMinutes = onSetSleepTimerMinutes,
+                    onSetSleepTimerEndOfTrack = onSetSleepTimerEndOfTrack,
+                    onToggleFavorite = onToggleFavorite,
+                    onOpenEqualizer = onOpenEqualizer,
+                    onOpenStudio = onOpenStudio,
+                    onShareCurrentMedia = onShareCurrentMedia,
+                    onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                    onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                    onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia,
+                    onSelectQueueItem = onSelectQueueItem,
+                    onSelectQueueItemAt = onSelectQueueItemAt,
+                    onRemoveQueueItem = onRemoveQueueItem,
+                    onMoveQueueItem = onMoveQueueItem,
+                    onPlayNextItem = onPlayNextItem,
+                    onClearQueue = onClearQueue,
+                    onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
+                    onRetryPlayback = onRetryPlayback
+                )
             } else {
                 // Standard Portrait Studio Deck (Music & Portrait Video) with 3-State Expandable Playlist Sheet
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -609,6 +598,13 @@ fun NowPlayingOverlayScreen(
                                     modifier = Modifier.weight(1f),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
+                                    val displayedFolderOrSource = remember(playbackState.queueTitle, currentMedia) {
+                                        if (playbackState.queueTitle.isNotBlank() && playbackState.queueTitle != "Playing Queue") {
+                                            playbackState.queueTitle
+                                        } else {
+                                            MediaFileActionsHelper.resolveMediaFolderName(context, currentMedia)
+                                        }
+                                    }
                                     Text(
                                         text = if (currentMedia.mediaType == MediaType.VIDEO) "VIDEO CINEMA ENGINE" else "NOW PLAYING",
                                         style = MaterialTheme.typography.labelSmall,
@@ -616,7 +612,7 @@ fun NowPlayingOverlayScreen(
                                         fontWeight = FontWeight.Bold
                                     )
                                     Text(
-                                        text = currentMedia.folderName,
+                                        text = displayedFolderOrSource,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -713,7 +709,7 @@ fun NowPlayingOverlayScreen(
                                 onVolumeGestureDelta = onVolumeGestureDelta
                             )
                         } else {
-                            StudioCircularAudioArtworkAndWaveform(
+                            StudioSquareAudioArtworkAndWaveform(
                                 currentMedia = currentMedia,
                                 playbackState = playbackState,
                                 subtitlesEnabled = userPreferences.subtitlesEnabledByDefault
@@ -2520,21 +2516,21 @@ private fun CinemaActionPill(
 }
 
 /**
- * Original PulsePlay Circular Studio Artwork, Live Acoustic Waveform & Synchronized Lyrics centerpiece.
+ * Original PulsePlay Square Studio Artwork, Live Acoustic Waveform & Synchronized Lyrics centerpiece.
  */
 @Composable
-private fun StudioCircularAudioArtworkAndWaveform(
+private fun StudioSquareAudioArtworkAndWaveform(
     currentMedia: MediaEntity,
     playbackState: PlaybackUiState,
     subtitlesEnabled: Boolean = true,
     compactMode: Boolean = false
 ) {
-    val centerCircleSize = if (compactMode) 136.dp else 200.dp
+    val centerSquareSize = if (compactMode) 180.dp else 230.dp
     val iconSize = if (compactMode) 36.dp else 50.dp
     val mintGreenAccent = Color(0xFF00E676)
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
-    val tertiaryColor = MaterialTheme.colorScheme.tertiary
+    val artworkCornerShape = RoundedCornerShape(22.dp)
 
     val artworkBitmap by rememberMediaArtworkBitmap(
         media = currentMedia,
@@ -2563,16 +2559,16 @@ private fun StudioCircularAudioArtworkAndWaveform(
         ) {
             val resolvedCover = artworkBitmap
             if (resolvedCover != null) {
-                // Real Album Artwork: Clean circular crop with subtle static mint-green border & glow
+                // Real Album Artwork: Square layout with moderately rounded corners & subtle green/teal outline
                 Box(
                     modifier = Modifier
-                        .size(centerCircleSize)
+                        .size(centerSquareSize)
                         .aspectRatio(1f)
-                        .clip(CircleShape)
+                        .clip(artworkCornerShape)
                         .background(
                             Brush.radialGradient(
                                 colors = listOf(
-                                    mintGreenAccent.copy(alpha = 0.22f),
+                                    mintGreenAccent.copy(alpha = 0.20f),
                                     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                                     Color.Black
                                 )
@@ -2580,8 +2576,8 @@ private fun StudioCircularAudioArtworkAndWaveform(
                         )
                         .border(
                             width = 2.dp,
-                            color = mintGreenAccent.copy(alpha = 0.45f),
-                            shape = CircleShape
+                            color = mintGreenAccent.copy(alpha = 0.65f),
+                            shape = artworkCornerShape
                         ),
                     contentAlignment = Alignment.Center
                 ) {
@@ -2591,16 +2587,16 @@ private fun StudioCircularAudioArtworkAndWaveform(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
-                            .clip(CircleShape)
+                            .clip(artworkCornerShape)
                             .testTag("now_playing_album_artwork_image")
                     )
                 }
             } else {
-                // Fallback: Simple audio icon with subtle static mint-green decorative ring & glow (no duplicate rotating arc)
+                // Fallback: Audio icon in square card with moderately rounded corners & subtle green/teal outline
                 Box(
                     modifier = Modifier
-                        .size(centerCircleSize)
-                        .clip(CircleShape)
+                        .size(centerSquareSize)
+                        .clip(artworkCornerShape)
                         .background(
                             Brush.radialGradient(
                                 colors = listOf(
@@ -2612,8 +2608,8 @@ private fun StudioCircularAudioArtworkAndWaveform(
                         )
                         .border(
                             width = 2.dp,
-                            color = mintGreenAccent.copy(alpha = 0.45f),
-                            shape = CircleShape
+                            color = mintGreenAccent.copy(alpha = 0.65f),
+                            shape = artworkCornerShape
                         )
                         .testTag("now_playing_default_artwork_placeholder"),
                     contentAlignment = Alignment.Center
@@ -3747,8 +3743,6 @@ private fun LandscapeAudioNowPlayingDeck(
     playbackState: PlaybackUiState,
     userPreferences: UserPreferencesState,
     isFavorite: Boolean,
-    playlistSheetState: PlaylistSheetState = PlaylistSheetState.COLLAPSED,
-    onPlaylistSheetStateChange: (PlaylistSheetState) -> Unit = {},
     showSubtitleSettings: Boolean,
     showSleepTimerPanel: Boolean,
     showSpeedPanel: Boolean,
@@ -3777,8 +3771,11 @@ private fun LandscapeAudioNowPlayingDeck(
     onAddToPlaylistCurrentMedia: () -> Unit,
     onShowFileInfoCurrentMedia: () -> Unit,
     onSelectQueueItem: (MediaEntity) -> Unit,
+    onSelectQueueItemAt: (Int, MediaEntity) -> Unit = { _, item -> onSelectQueueItem(item) },
     onRemoveQueueItem: (Int) -> Unit,
     onMoveQueueItem: (Int, Int) -> Unit,
+    onPlayNextItem: (MediaEntity) -> Unit = {},
+    onClearQueue: () -> Unit = {},
     onSaveQueueAsPlaylist: (String) -> Unit,
     onRetryPlayback: () -> Unit
 ) {
@@ -3812,6 +3809,8 @@ private fun LandscapeAudioNowPlayingDeck(
         )
     }
 
+    val context = LocalContext.current
+
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -3820,7 +3819,7 @@ private fun LandscapeAudioNowPlayingDeck(
             .testTag("landscape_audio_now_playing_split"),
         horizontalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Left Column: Header + Compact Visualizer + Track Metadata
+        // Left Column: Header + Square Album Artwork & Audio Waveform + Track Metadata
         Column(
             modifier = Modifier
                 .weight(0.42f)
@@ -3848,6 +3847,13 @@ private fun LandscapeAudioNowPlayingDeck(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    val displayedFolderOrSource = remember(playbackState.queueTitle, currentMedia) {
+                        if (playbackState.queueTitle.isNotBlank() && playbackState.queueTitle != "Playing Queue") {
+                            playbackState.queueTitle
+                        } else {
+                            MediaFileActionsHelper.resolveMediaFolderName(context, currentMedia)
+                        }
+                    }
                     Text(
                         text = "NOW PLAYING",
                         style = MaterialTheme.typography.labelSmall,
@@ -3856,7 +3862,7 @@ private fun LandscapeAudioNowPlayingDeck(
                         maxLines = 1
                     )
                     Text(
-                        text = currentMedia.folderName,
+                        text = displayedFolderOrSource,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -3877,7 +3883,7 @@ private fun LandscapeAudioNowPlayingDeck(
                 }
             }
 
-            StudioCircularAudioArtworkAndWaveform(
+            StudioSquareAudioArtworkAndWaveform(
                 currentMedia = currentMedia,
                 playbackState = playbackState,
                 subtitlesEnabled = userPreferences.subtitlesEnabledByDefault,
@@ -3909,215 +3915,518 @@ private fun LandscapeAudioNowPlayingDeck(
             }
         }
 
-        // Right Column: Top-Right 3-Dot Menu, Seekbar, Transport Controls, Optional Opened Panels, and Active Queue
-        LazyColumn(
+        // Right Column: Top Utility Row, Playback Controls, and Compact Inline Queue
+        Column(
             modifier = Modifier
                 .weight(0.58f)
                 .fillMaxHeight(),
-            contentPadding = PaddingValues(bottom = 28.dp, top = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Top Utility Row: Playlist Queue Toggle + 3-Dot More Options Menu in the top-right corner
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(
-                        onClick = {
-                            onPlaylistSheetStateChange(playlistSheetState.nextExpandedState())
-                        },
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("now_playing_playlist_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                            contentDescription = "Open Playlist Queue (${playbackState.queue.size} songs)",
-                            tint = if (playlistSheetState != PlaylistSheetState.COLLAPSED) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
-                        )
-                    }
-                    NowPlayingOverflowMenuButton(
-                        currentMedia = currentMedia,
-                        playbackState = playbackState,
-                        isFavorite = isFavorite,
-                        showSpeedPanel = showSpeedPanel,
-                        showSleepTimerPanel = showSleepTimerPanel,
-                        showSubtitleSettings = showSubtitleSettings,
-                        onToggleSpeedPanel = onToggleSpeedPanel,
-                        onOpenEqualizer = onOpenEqualizer,
-                        onToggleSleepTimerPanel = onToggleSleepTimerPanel,
-                        onToggleSubtitleSettings = onToggleSubtitleSettings,
-                        onOpenStudio = onOpenStudio,
-                        onToggleFavorite = onToggleFavorite,
-                        onShareCurrentMedia = onShareCurrentMedia,
-                        onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
-                        onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
-                        onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia
-                    )
-                }
+            // Top Utility Row: 3-Dot More Options Menu on Right
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                NowPlayingOverflowMenuButton(
+                    currentMedia = currentMedia,
+                    playbackState = playbackState,
+                    isFavorite = isFavorite,
+                    showSpeedPanel = showSpeedPanel,
+                    showSleepTimerPanel = showSleepTimerPanel,
+                    showSubtitleSettings = showSubtitleSettings,
+                    onToggleSpeedPanel = onToggleSpeedPanel,
+                    onOpenEqualizer = onOpenEqualizer,
+                    onToggleSleepTimerPanel = onToggleSleepTimerPanel,
+                    onToggleSubtitleSettings = onToggleSubtitleSettings,
+                    onOpenStudio = onOpenStudio,
+                    onToggleFavorite = onToggleFavorite,
+                    onShareCurrentMedia = onShareCurrentMedia,
+                    onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+                    onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+                    onShowFileInfoCurrentMedia = onShowFileInfoCurrentMedia
+                )
             }
 
             if (playbackState.playbackError != null) {
-                item {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        ),
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("playback_error_card")
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Text(
-                                text = playbackState.playbackError,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Button(
-                                onClick = onRetryPlayback,
-                                modifier = Modifier.testTag("retry_playback_button")
-                            ) {
-                                Text("Retry Playback")
-                            }
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("playback_error_card")
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = playbackState.playbackError,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Button(
+                            onClick = onRetryPlayback,
+                            modifier = Modifier.testTag("retry_playback_button")
+                        ) {
+                            Text("Retry Playback")
                         }
                     }
                 }
             }
 
             // Seek Bar & Timestamps
-            item {
-                val duration = playbackState.durationMs.coerceAtLeast(1L)
-                val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Slider(
-                        value = pos.toFloat(),
-                        onValueChange = { onSeekTo(it.toLong()) },
-                        valueRange = 0f..duration.toFloat(),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("now_playing_seek_slider")
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = formatDurationMillis(pos),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = formatDurationMillis(duration),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-
-            // Primary Transport Controls: Shuffle, Previous, Play/Pause, Next, Repeat
-            item {
+            val duration = playbackState.durationMs.coerceAtLeast(1L)
+            val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Slider(
+                    value = pos.toFloat(),
+                    onValueChange = { onSeekTo(it.toLong()) },
+                    valueRange = 0f..duration.toFloat(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("now_playing_seek_slider")
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    IconButton(
-                        onClick = onToggleShuffle,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("transport_shuffle_button")
+                    Text(
+                        text = formatDurationMillis(pos),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = formatDurationMillis(duration),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Transport Controls Row: Shuffle, Previous, Play/Pause, Next, Repeat
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = onToggleShuffle,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("transport_shuffle_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Shuffle,
+                        contentDescription = "Shuffle",
+                        tint = if (playbackState.shuffleEnabled) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+
+                IconButton(
+                    onClick = onPrevious,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .testTag("transport_previous_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipPrevious,
+                        contentDescription = "Previous",
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                FilledIconButton(
+                    onClick = onPlayPause,
+                    modifier = Modifier
+                        .size(54.dp)
+                        .testTag("transport_play_pause_button"),
+                    shape = CircleShape
+                ) {
+                    Icon(
+                        imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
+                        modifier = Modifier.size(30.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onNext,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .testTag("transport_next_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SkipNext,
+                        contentDescription = "Next",
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onCycleRepeat,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("transport_repeat_button")
+                ) {
+                    Icon(
+                        imageVector = when (playbackState.repeatMode) {
+                            RepeatModeState.ONE -> Icons.Default.RepeatOne
+                            else -> Icons.Default.Repeat
+                        },
+                        contentDescription = "Repeat mode: ${playbackState.repeatMode}",
+                        tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
+            }
+
+            // Compact Up Next Queue Panel directly BELOW playback controls in RIGHT column
+            LandscapeInlineQueuePanel(
+                playbackState = playbackState,
+                onSelectQueueItemAt = onSelectQueueItemAt,
+                onRemoveQueueItem = onRemoveQueueItem,
+                onMoveQueueItem = onMoveQueueItem,
+                onPlayNextItem = onPlayNextItem,
+                onClearQueue = onClearQueue,
+                onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            )
+        }
+    }
+}
+
+/**
+ * Compact inline Up Next queue section positioned inside the right-hand player column for landscape mode.
+ * Features internal vertical scrolling, queue header with quick actions, and clean track items.
+ */
+@Composable
+private fun LandscapeInlineQueuePanel(
+    playbackState: PlaybackUiState,
+    onSelectQueueItemAt: (Int, MediaEntity) -> Unit,
+    onRemoveQueueItem: (Int) -> Unit,
+    onMoveQueueItem: (Int, Int) -> Unit,
+    onPlayNextItem: (MediaEntity) -> Unit,
+    onClearQueue: () -> Unit,
+    onSaveQueueAsPlaylist: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
+    var showClearConfirmationDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showClearConfirmationDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirmationDialog = false },
+            title = { Text("Clear Playback Queue") },
+            text = { Text("Are you sure you want to clear all ${playbackState.queue.size} songs from the active queue?") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirmationDialog = false
+                        onClearQueue()
+                    }
+                ) {
+                    Text("Clear Queue", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirmationDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    Card(
+        modifier = modifier.testTag("landscape_inline_queue_panel"),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.50f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 10.dp, vertical = 8.dp)
+        ) {
+            // Compact Header Row: Queue Title, Count, Jump to song, Save Playlist, Clear Queue
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = playbackState.queueTitle.ifBlank { "Up Next" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Shuffle,
-                            contentDescription = "Shuffle",
-                            tint = if (playbackState.shuffleEnabled) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
+                        Text(
+                            text = "${playbackState.queue.size}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    // Scroll to currently playing track
+                    IconButton(
+                        onClick = {
+                            val targetIdx = playbackState.currentQueueIndex
+                            if (targetIdx in playbackState.queue.indices) {
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(targetIdx)
+                                }
                             }
+                        },
+                        modifier = Modifier
+                            .size(30.dp)
+                            .testTag("landscape_queue_scroll_to_current")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.MyLocation,
+                            contentDescription = "Scroll to current song",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
+                    // Save Queue as Playlist
                     IconButton(
-                        onClick = onPrevious,
+                        onClick = {
+                            onSaveQueueAsPlaylist(
+                                "${playbackState.queueTitle.ifBlank { "Queue Mix" }} (${playbackState.queue.size} tracks)"
+                            )
+                        },
                         modifier = Modifier
-                            .size(50.dp)
-                            .testTag("transport_previous_button")
+                            .size(30.dp)
+                            .testTag("landscape_queue_save_playlist")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.SkipPrevious,
-                            contentDescription = "Previous",
-                            modifier = Modifier.size(30.dp)
+                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                            contentDescription = "Save queue as playlist",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
-                    FilledIconButton(
-                        onClick = onPlayPause,
-                        modifier = Modifier
-                            .size(60.dp)
-                            .testTag("transport_play_pause_button"),
-                        shape = CircleShape
-                    ) {
-                        Icon(
-                            imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                            contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
-                            modifier = Modifier.size(32.dp)
-                        )
-                    }
-
+                    // Clear Queue
                     IconButton(
-                        onClick = onNext,
-                        modifier = Modifier
-                            .size(50.dp)
-                            .testTag("transport_next_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SkipNext,
-                            contentDescription = "Next",
-                            modifier = Modifier.size(30.dp)
-                        )
-                    }
-
-                    IconButton(
-                        onClick = onCycleRepeat,
-                        modifier = Modifier
-                            .minimumInteractiveComponentSize()
-                            .testTag("transport_repeat_button")
-                    ) {
-                        Icon(
-                            imageVector = when (playbackState.repeatMode) {
-                                RepeatModeState.ONE -> Icons.Default.RepeatOne
-                                else -> Icons.Default.Repeat
-                            },
-                            contentDescription = "Repeat mode: ${playbackState.repeatMode}",
-                            tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
+                        onClick = {
+                            if (playbackState.queue.isNotEmpty()) {
+                                showClearConfirmationDialog = true
                             }
+                        },
+                        modifier = Modifier
+                            .size(30.dp)
+                            .testTag("landscape_queue_clear_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ClearAll,
+                            contentDescription = "Clear queue",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
             }
 
+            Spacer(modifier = Modifier.height(4.dp))
 
+            // Internally vertically scrollable list of tracks
+            if (playbackState.queue.isEmpty()) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Queue is empty",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    contentPadding = PaddingValues(bottom = 4.dp)
+                ) {
+                    itemsIndexed(
+                        items = playbackState.queue,
+                        key = { idx, item -> "${item.uriString}_${idx}" }
+                    ) { index, item ->
+                        val isCurrent = index == playbackState.currentQueueIndex
+                        LandscapeInlineQueueItemRow(
+                            item = item,
+                            index = index,
+                            isCurrent = isCurrent,
+                            isPlaying = isCurrent && playbackState.isPlaying,
+                            queueSize = playbackState.queue.size,
+                            onSelect = { onSelectQueueItemAt(index, item) },
+                            onRemove = { onRemoveQueueItem(index) },
+                            onMoveUp = { if (index > 0) onMoveQueueItem(index, index - 1) },
+                            onMoveDown = { if (index < playbackState.queue.lastIndex) onMoveQueueItem(index, index + 1) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
 
-            // State A (Collapsed) Dock Bar in Landscape Right Column
-            if (playlistSheetState == PlaylistSheetState.COLLAPSED) {
-                item {
-                    CollapsedPlaylistDockBar(
-                        playbackState = playbackState,
-                        sheetState = playlistSheetState,
-                        onSheetStateChange = onPlaylistSheetStateChange
+@Composable
+private fun LandscapeInlineQueueItemRow(
+    item: MediaEntity,
+    index: Int,
+    isCurrent: Boolean,
+    isPlaying: Boolean,
+    queueSize: Int,
+    onSelect: () -> Unit,
+    onRemove: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit
+) {
+    Surface(
+        onClick = onSelect,
+        shape = RoundedCornerShape(10.dp),
+        color = if (isCurrent) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        } else {
+            MaterialTheme.colorScheme.surface.copy(alpha = 0.50f)
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("landscape_queue_item_$index")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(
+                modifier = Modifier.width(22.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                if (isCurrent && isPlaying) {
+                    Icon(
+                        imageVector = Icons.Default.GraphicEq,
+                        contentDescription = "Playing",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                } else {
+                    Text(
+                        text = "${index + 1}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                    color = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                val artistText = item.artist.takeIf {
+                    it.isNotBlank() && !it.startsWith("PulsePlay", ignoreCase = true) && it != "<unknown>"
+                } ?: item.folderName
+                if (artistText.isNotBlank()) {
+                    Text(
+                        text = artistText,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                if (index > 0) {
+                    IconButton(
+                        onClick = onMoveUp,
+                        modifier = Modifier
+                            .size(26.dp)
+                            .testTag("landscape_queue_move_up_$index")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowUp,
+                            contentDescription = "Move Up",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+                if (index < queueSize - 1) {
+                    IconButton(
+                        onClick = onMoveDown,
+                        modifier = Modifier
+                            .size(26.dp)
+                            .testTag("landscape_queue_move_down_$index")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = "Move Down",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.70f),
+                            modifier = Modifier.size(15.dp)
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = onRemove,
+                    modifier = Modifier
+                        .size(26.dp)
+                        .testTag("landscape_queue_remove_$index")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.DeleteOutline,
+                        contentDescription = "Remove from queue",
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.80f),
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }

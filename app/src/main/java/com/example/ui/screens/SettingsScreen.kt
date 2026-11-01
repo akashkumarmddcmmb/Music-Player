@@ -82,14 +82,10 @@ import com.example.update.UpdateCheckState
 import com.example.update.UpdateDistributionChannel
 import com.example.update.UpdateSettingsScreen
 import com.example.update.UpdateSourceEvaluation
-import com.example.media.CodecCapabilityDetails
 import com.example.media.PersistedDeviceCapabilities
-import com.example.media.ResolutionCategoryCapability
-import com.example.media.ResolutionStatus
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.ui.graphics.Color
 import kotlin.math.abs
 
 @Composable
@@ -560,8 +556,8 @@ fun ProfileAndSettingsScreen(
                 HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // Device Video Playback Capability Subsection
-                DeviceVideoPlaybackCapabilitySection(
+                // Device Video Playback Capability Summary Section (matches requested screenshots)
+                DeviceVideoPlaybackCapabilitySummarySection(
                     deviceCapabilities = deviceCapabilities,
                     isScanningCapabilities = isScanningCapabilities,
                     onRecheckDeviceCapabilities = onRecheckDeviceCapabilities
@@ -980,7 +976,7 @@ private fun LicenseEntryCard(
 }
 
 @Composable
-private fun DeviceVideoPlaybackCapabilitySection(
+private fun DeviceVideoPlaybackCapabilitySummarySection(
     deviceCapabilities: PersistedDeviceCapabilities,
     isScanningCapabilities: Boolean,
     onRecheckDeviceCapabilities: () -> Unit
@@ -989,9 +985,9 @@ private fun DeviceVideoPlaybackCapabilitySection(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("device_video_capability_section"),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Section Header with Title
+        // Section Header with Title and Subtitle
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1031,7 +1027,7 @@ private fun DeviceVideoPlaybackCapabilitySection(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1041,6 +1037,7 @@ private fun DeviceVideoPlaybackCapabilitySection(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = deviceCapabilities.formattedScanTime,
                         style = MaterialTheme.typography.bodyMedium,
@@ -1068,6 +1065,7 @@ private fun DeviceVideoPlaybackCapabilitySection(
                         Icon(
                             imageVector = Icons.Default.Refresh,
                             contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -1077,7 +1075,7 @@ private fun DeviceVideoPlaybackCapabilitySection(
             }
         }
 
-        // Overview Key Metrics Grid (Max Normal, Max High-Res, Display Res)
+        // Overview Key Metrics Grid (Max Normal & Max High-Res)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1096,6 +1094,7 @@ private fun DeviceVideoPlaybackCapabilitySection(
             )
         }
 
+        // Device Display Resolution
         CapabilityMetricCard(
             title = "Device Display Resolution",
             value = "${deviceCapabilities.displayResolutionString} • ${deviceCapabilities.displayRefreshRateFps.toInt()} Hz",
@@ -1103,96 +1102,21 @@ private fun DeviceVideoPlaybackCapabilitySection(
             modifier = Modifier.fillMaxWidth()
         )
 
-        // Resolution Classification
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(
-                text = "Resolution Classification",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "Classification based on verified MediaCodec hardware & software profiles.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        // Supported Frame Rates
+        CapabilityMetricCard(
+            title = "Supported Frame Rates",
+            value = deviceCapabilities.supportedFrameRatesSummary,
+            testTag = "device_cap_frame_rates",
+            modifier = Modifier.fillMaxWidth()
+        )
 
-            Spacer(modifier = Modifier.height(4.dp))
-
-            deviceCapabilities.resolutionCategories.forEach { category ->
-                ResolutionCategoryRow(category = category)
-            }
-        }
-
-        // Supported Video Codecs Breakdown
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "Supported Video Codecs",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = "MediaCodec decoder availability for H.264, H.265, VP9, and AV1 formats.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            deviceCapabilities.codecCapabilities.forEach { codec ->
-                CodecCapabilityCard(codec = codec)
-            }
-        }
-
-        // Decoder & Pipeline Details
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(
-                text = "Decoders & Display Pipeline",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            PipelineDetailCard(
-                title = "Hardware Video Decoders (${deviceCapabilities.hardwareDecoders.size})",
-                description = if (deviceCapabilities.hardwareDecoders.isNotEmpty()) {
-                    deviceCapabilities.hardwareDecoders.joinToString(", ")
-                } else {
-                    "No hardware decoders registered"
-                },
-                testTag = "device_cap_hw_decoders"
-            )
-
-            PipelineDetailCard(
-                title = "Software Video Decoders (${deviceCapabilities.softwareDecoders.size})",
-                description = if (deviceCapabilities.softwareDecoders.isNotEmpty()) {
-                    deviceCapabilities.softwareDecoders.joinToString(", ")
-                } else {
-                    "No software decoders registered"
-                },
-                testTag = "device_cap_sw_decoders"
-            )
-
-            PipelineDetailCard(
-                title = "Supported Frame Rates",
-                description = deviceCapabilities.supportedFrameRatesSummary,
-                testTag = "device_cap_frame_rates"
-            )
-
-            PipelineDetailCard(
-                title = "HDR & Bit-Depth",
-                description = deviceCapabilities.hdrAndBitDepthSummary,
-                testTag = "device_cap_hdr_bitdepth"
-            )
-        }
+        // HDR & Bit-Depth
+        CapabilityMetricCard(
+            title = "HDR & Bit-Depth",
+            value = deviceCapabilities.hdrAndBitDepthSummary,
+            testTag = "device_cap_hdr_bitdepth",
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -1209,7 +1133,9 @@ private fun CapabilityMetricCard(
         modifier = modifier.testTag(testTag)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Text(
@@ -1222,194 +1148,6 @@ private fun CapabilityMetricCard(
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-@Composable
-private fun ResolutionCategoryRow(
-    category: ResolutionCategoryCapability
-) {
-    val rawName = category.categoryName.lowercase().substringBefore(" ").replace("—", "").trim()
-    val rowTag = "device_cap_res_$rawName"
-    val statusTag = "device_cap_status_$rawName"
-
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag(rowTag)
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = category.categoryName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Text(
-                    text = "${category.standardWidth} × ${category.standardHeight} • ${category.details}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Spacer(modifier = Modifier.width(8.dp))
-            ResolutionStatusBadge(
-                status = category.status,
-                testTag = statusTag
-            )
-        }
-    }
-}
-
-@Composable
-private fun ResolutionStatusBadge(
-    status: ResolutionStatus,
-    testTag: String
-) {
-    val (bgColor, textColor) = when (status) {
-        ResolutionStatus.SUPPORTED -> Color(0xFF1B5E20).copy(alpha = 0.22f) to Color(0xFF81C784)
-        ResolutionStatus.LIMITED_SUPPORT -> Color(0xFFE65100).copy(alpha = 0.22f) to Color(0xFFFFB74D)
-        ResolutionStatus.UNSUPPORTED -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f) to MaterialTheme.colorScheme.error
-        ResolutionStatus.NOT_VERIFIED -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant
-    }
-
-    Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = bgColor,
-        modifier = Modifier.testTag(testTag)
-    ) {
-        Text(
-            text = status.label,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = textColor,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-        )
-    }
-}
-
-@Composable
-private fun CodecCapabilityCard(
-    codec: CodecCapabilityDetails
-) {
-    val sanitizedName = codec.codecDisplayName.lowercase().replace("/", "_").replace(" ", "_")
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag("device_cap_codec_$sanitizedName")
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = codec.codecDisplayName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                val (badgeColor, badgeTextColor, badgeLabel) = when {
-                    codec.hasHardwareDecoder -> Triple(
-                        Color(0xFF1B5E20).copy(alpha = 0.22f),
-                        Color(0xFF81C784),
-                        "Hardware"
-                    )
-                    codec.hasSoftwareDecoder -> Triple(
-                        Color(0xFFE65100).copy(alpha = 0.22f),
-                        Color(0xFFFFB74D),
-                        "Software"
-                    )
-                    else -> Triple(
-                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.5f),
-                        MaterialTheme.colorScheme.error,
-                        "Unsupported"
-                    )
-                }
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = badgeColor
-                ) {
-                    Text(
-                        text = badgeLabel,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = badgeTextColor,
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                    )
-                }
-            }
-
-            Text(
-                text = "Max: ${codec.maxResolution} (${codec.maxFrameRate} fps) • ${if (codec.supports10BitHdr) "10-bit HDR" else "8-bit SDR"}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (codec.hardwareDecoderNames.isNotEmpty()) {
-                Text(
-                    text = "HW: ${codec.hardwareDecoderNames.joinToString(", ")}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            } else if (codec.softwareDecoderNames.isNotEmpty()) {
-                Text(
-                    text = "SW: ${codec.softwareDecoderNames.joinToString(", ")}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PipelineDetailCard(
-    title: String,
-    description: String,
-    testTag: String
-) {
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
-        modifier = Modifier
-            .fillMaxWidth()
-            .testTag(testTag)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-            Text(
-                text = description,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }

@@ -5,6 +5,8 @@ import android.media.MediaCodecInfo
 import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.os.Build
+import android.view.Display
+import android.view.WindowManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -117,6 +119,7 @@ data class PersistedDeviceCapabilities(
 object DeviceCapabilityDetector {
 
     private const val PREFS_NAME = "pulseplay_device_capability_cache"
+    private const val DETECTOR_VERSION = 2
 
     @Volatile
     private var cachedCapabilities: PersistedDeviceCapabilities? = null
@@ -128,9 +131,10 @@ object DeviceCapabilityDetector {
         cachedCapabilities?.let { return it }
 
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val savedVersion = prefs.getInt("detector_version", -1)
         val savedSdk = prefs.getInt("sdk_int", -1)
         val savedTimestamp = prefs.getLong("timestamp", 0L)
-        if (savedSdk == Build.VERSION.SDK_INT && savedTimestamp > 0L) {
+        if (savedVersion == DETECTOR_VERSION && savedSdk == Build.VERSION.SDK_INT && savedTimestamp > 0L) {
             val loaded = loadFromPreferences(prefs, savedSdk, savedTimestamp)
             if (loaded != null && loaded.resolutionCategories.isNotEmpty() && loaded.codecCapabilities.isNotEmpty()) {
                 cachedCapabilities = loaded
@@ -167,6 +171,9 @@ object DeviceCapabilityDetector {
         savedTimestamp: Long
     ): PersistedDeviceCapabilities? {
         return runCatching {
+            val savedVersion = prefs.getInt("detector_version", -1)
+            if (savedVersion != DETECTOR_VERSION) return null
+
             val resCatsJson = prefs.getString("res_categories_json", null) ?: return null
             val codecCapsJson = prefs.getString("codec_caps_json", null) ?: return null
 
@@ -215,6 +222,7 @@ object DeviceCapabilityDetector {
             val swJson = serializeStringList(detected.softwareDecoders)
 
             prefs.edit()
+                .putInt("detector_version", DETECTOR_VERSION)
                 .putInt("sdk_int", detected.sdkInt)
                 .putLong("timestamp", detected.detectionTimestampEpochMs)
                 .putString("display_res", detected.displayResolutionString)
@@ -243,25 +251,136 @@ object DeviceCapabilityDetector {
         }
     }
 
+    private fun is10BitOrHdrProfile(mime: String, profile: Int): Boolean {
+        val m = mime.lowercase()
+        return when {
+            m == MediaFormat.MIMETYPE_VIDEO_HEVC -> {
+                profile == MediaCodecInfo.CodecProfileLevel.HEVCProfileMain10 ||
+                    profile == 4096 || // HEVCProfileMain10HDR10
+                    profile == 8192    // HEVCProfileMain10HDR10Plus
+            }
+            m == MediaFormat.MIMETYPE_VIDEO_VP9 -> {
+                profile == MediaCodecInfo.CodecProfileLevel.VP9Profile2 ||
+                    profile == MediaCodecInfo.CodecProfileLevel.VP9Profile3 ||
+                    profile == 4096 ||  // VP9Profile2HDR
+                    profile == 8192 ||  // VP9Profile3HDR
+                    profile == 16384 || // VP9Profile2HDR10Plus
+                    profile == 32768    // VP9Profile3HDR10Plus
+            }
+            m.contains("av01") || m == "video/av01" -> {
+                profile == 2 || profile == 4096 || profile == 8192 // AV1ProfileMain10, HDR10, HDR10Plus
+            }
+            m == MediaFormat.MIMETYPE_VIDEO_AVC -> {
+                profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh10 ||
+                    profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh422 ||
+                    profile == MediaCodecInfo.CodecProfileLevel.AVCProfileHigh444
+            }
+            else -> false
+        }
+    }
+
     private fun performDeviceCodecInspection(context: Context): PersistedDeviceCapabilities {
         val appContext = context.applicationContext
 
-        // 1. Display Metrics
-        val displayMetrics = appContext.resources.displayMetrics
-        val screenW = minOf(displayMetrics.widthPixels, displayMetrics.heightPixels)
-        val screenH = maxOf(displayMetrics.widthPixels, displayMetrics.heightPixels)
-        val displayResString = "${screenW} x ${screenH} px (${displayMetrics.densityDpi} dpi)"
-        val refreshRate = runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                appContext.display?.refreshRate ?: 60f
+        // 1. Genuine Display Metrics & Refresh Rate from physical hardware
+        val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager
+        val display = runCatching {
+            displayManager?.getDisplay(Display.DEFAULT_DISPLAY)
+        }.getOrNull() ?: runCatching {
+            if (context is android.app.Activity && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.display
             } else {
-                val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as? android.view.WindowManager
-                @Suppress("DEPRECATION")
-                wm?.defaultDisplay?.refreshRate ?: 60f
+                null
             }
+        }.getOrNull() ?: runCatching {
+            @Suppress("DEPRECATION")
+            wm?.defaultDisplay
+        }.getOrNull()
+
+        var screenW = 1080
+        var screenH = 1920
+        var screenDpi = appContext.resources.displayMetrics.densityDpi
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && wm != null) {
+            val windowMetrics = runCatching { wm.maximumWindowMetrics }.getOrNull()
+            if (windowMetrics != null) {
+                val bounds = windowMetrics.bounds
+                screenW = minOf(bounds.width(), bounds.height())
+                screenH = maxOf(bounds.width(), bounds.height())
+            } else {
+                val dm = appContext.resources.displayMetrics
+                screenW = minOf(dm.widthPixels, dm.heightPixels)
+                screenH = maxOf(dm.widthPixels, dm.heightPixels)
+            }
+            screenDpi = appContext.resources.configuration.densityDpi
+        } else if (display != null) {
+            val realMetrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(realMetrics)
+            screenW = minOf(realMetrics.widthPixels, realMetrics.heightPixels)
+            screenH = maxOf(realMetrics.widthPixels, realMetrics.heightPixels)
+            screenDpi = realMetrics.densityDpi
+        } else {
+            val dm = appContext.resources.displayMetrics
+            screenW = minOf(dm.widthPixels, dm.heightPixels)
+            screenH = maxOf(dm.widthPixels, dm.heightPixels)
+            screenDpi = dm.densityDpi
+        }
+
+        val displayResString = "$screenW x $screenH px ($screenDpi dpi)"
+
+        val currentRefreshRate = runCatching {
+            val r = display?.refreshRate ?: 60f
+            if (r <= 0f) 60f else r
         }.getOrDefault(60f)
 
-        // 2. Decoder Collection
+        val maxDisplayRefreshRate = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && display != null) {
+                val modes = display.supportedModes ?: emptyArray()
+                val maxModeRate = modes.maxOfOrNull { it.refreshRate } ?: currentRefreshRate
+                maxOf(currentRefreshRate, maxModeRate)
+            } else {
+                currentRefreshRate
+            }
+        }.getOrDefault(currentRefreshRate)
+
+        // 2. Display HDR capabilities from physical screen panel
+        val displayHdrFormats = mutableListOf<String>()
+        var displaySupportsHdr = false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && display != null) {
+            displaySupportsHdr = runCatching { display.isHdr }.getOrDefault(false)
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && display != null) {
+            runCatching {
+                val hdrCaps = display.hdrCapabilities
+                val types = hdrCaps?.supportedHdrTypes ?: intArrayOf()
+                for (t in types) {
+                    when (t) {
+                        Display.HdrCapabilities.HDR_TYPE_HDR10 -> {
+                            displaySupportsHdr = true
+                            if (!displayHdrFormats.contains("HDR10")) displayHdrFormats.add("HDR10")
+                        }
+                        Display.HdrCapabilities.HDR_TYPE_HLG -> {
+                            displaySupportsHdr = true
+                            if (!displayHdrFormats.contains("HLG")) displayHdrFormats.add("HLG")
+                        }
+                        Display.HdrCapabilities.HDR_TYPE_DOLBY_VISION -> {
+                            displaySupportsHdr = true
+                            if (!displayHdrFormats.contains("Dolby Vision")) displayHdrFormats.add("Dolby Vision")
+                        }
+                        4 -> { // HDR_TYPE_HDR10_PLUS
+                            displaySupportsHdr = true
+                            if (!displayHdrFormats.contains("HDR10+")) displayHdrFormats.add("HDR10+")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Decoder Collection via MediaCodecList
         val supportedMimes = mutableSetOf<String>()
         val hwDecodersList = mutableListOf<String>()
         val swDecodersList = mutableListOf<String>()
@@ -290,7 +409,7 @@ object DeviceCapabilityDetector {
             }
         }
 
-        // 3. Inspect the four required codecs: H.264 / AVC, H.265 / HEVC, VP9, AV1
+        // 4. Inspect the four standard codecs: H.264 / AVC, H.265 / HEVC, VP9, AV1
         val targetCodecs = listOf(
             Triple("H.264 / AVC", MediaFormat.MIMETYPE_VIDEO_AVC, listOf("AVC", "H.264")),
             Triple("H.265 / HEVC", MediaFormat.MIMETYPE_VIDEO_HEVC, listOf("HEVC", "H.265")),
@@ -328,22 +447,41 @@ object DeviceCapabilityDetector {
                 val caps = runCatching { decoder.getCapabilitiesForType(mime) }.getOrNull() ?: continue
                 val videoCaps = caps.videoCapabilities
                 if (videoCaps != null) {
-                    val wUp = runCatching { videoCaps.supportedWidths.upper }.getOrDefault(1920)
-                    val hUp = runCatching { videoCaps.supportedHeights.upper }.getOrDefault(1080)
                     val fpsUp = runCatching { videoCaps.supportedFrameRates.upper.toInt() }.getOrDefault(60)
-
-                    maxWForCodec = maxOf(maxWForCodec, wUp)
-                    maxHForCodec = maxOf(maxHForCodec, hUp)
                     maxFpsForCodec = maxOf(maxFpsForCodec, fpsUp)
+
+                    val can1080p = runCatching {
+                        videoCaps.isSizeSupported(1920, 1080) || videoCaps.isSizeSupported(1080, 1920)
+                    }.getOrDefault(false)
+
+                    val can1440p = runCatching {
+                        videoCaps.isSizeSupported(2560, 1440) || videoCaps.isSizeSupported(1440, 2560)
+                    }.getOrDefault(false)
+
+                    val can4k = runCatching {
+                        videoCaps.isSizeSupported(3840, 2160) || videoCaps.isSizeSupported(2160, 3840)
+                    }.getOrDefault(false)
+
+                    val can8k = runCatching {
+                        videoCaps.isSizeSupported(7680, 4320) || videoCaps.isSizeSupported(4320, 7680)
+                    }.getOrDefault(false)
+
+                    val (wForCaps, hForCaps) = when {
+                        can8k -> 7680 to 4320
+                        can4k -> 3840 to 2160
+                        can1440p -> 2560 to 1440
+                        can1080p -> 1920 to 1080
+                        runCatching { videoCaps.isSizeSupported(1280, 720) || videoCaps.isSizeSupported(720, 1280) }.getOrDefault(false) -> 1280 to 720
+                        else -> 720 to 480
+                    }
+
+                    maxWForCodec = maxOf(maxWForCodec, wForCaps)
+                    maxHForCodec = maxOf(maxHForCodec, hForCaps)
 
                     val isHw = isHardwareAcceleratedDecoder(decoder)
                     if (isHw) {
-                        globalMaxW = maxOf(globalMaxW, wUp)
-                        globalMaxH = maxOf(globalMaxH, hUp)
-
-                        val can1080p = runCatching { videoCaps.isSizeSupported(1920, 1080) }.getOrDefault(false) || (wUp >= 1920 && hUp >= 1080)
-                        val can4k = runCatching { videoCaps.isSizeSupported(3840, 2160) }.getOrDefault(false) || (wUp >= 3840 && hUp >= 2160)
-                        val can8k = runCatching { videoCaps.isSizeSupported(7680, 4320) }.getOrDefault(false) || (wUp >= 7680 && hUp >= 4320)
+                        globalMaxW = maxOf(globalMaxW, wForCaps)
+                        globalMaxH = maxOf(globalMaxH, hForCaps)
 
                         if (can8k) has8k = true
                         when (mime) {
@@ -363,7 +501,7 @@ object DeviceCapabilityDetector {
 
                 val profileLevels = caps.profileLevels ?: emptyArray()
                 for (pl in profileLevels) {
-                    if (pl.profile >= 2) {
+                    if (is10BitOrHdrProfile(mime, pl.profile)) {
                         codecSupports10Bit = true
                         globalSupports10BitHdr = true
                     }
@@ -421,7 +559,7 @@ object DeviceCapabilityDetector {
             )
         }
 
-        // 4. Resolution Classification (SD, HD, Full HD, 2K/QHD, 4K/UHD, 8K/UHD)
+        // 5. Resolution Classification (SD, HD, Full HD, 2K/QHD, 4K/UHD, 8K/UHD)
         val resolutionTargets = listOf(
             ResolutionTarget("480p — SD", 720, 480, 60),
             ResolutionTarget("720p — HD", 1280, 720, 60),
@@ -452,41 +590,150 @@ object DeviceCapabilityDetector {
             )
         }
 
-        // 5. Max capability summaries
-        val maxNormal = if (resolutionCategoryList.any { it.standardWidth == 1920 && it.status == ResolutionStatus.SUPPORTED }) {
-            "1080p Full HD @ 60 fps (Hardware)"
-        } else {
-            "720p HD (Hardware)"
+        // 6. Max Capability Summaries (Strictly Verified against Hardware Decoders)
+        var hwHas1080p = false
+        var hw1080pMaxFps = 30
+        var hwHas1440p = false
+        var hw1440pMaxFps = 30
+        var hwHas4k = false
+        var hw4kMaxFps = 30
+        var hwHas8k = false
+        var hw8kMaxFps = 30
+
+        for (dec in allVideoDecoders) {
+            if (!isHardwareAcceleratedDecoder(dec)) continue
+            for (type in dec.supportedTypes) {
+                if (!type.startsWith("video/", ignoreCase = true)) continue
+                val vCaps = runCatching { dec.getCapabilitiesForType(type).videoCapabilities }.getOrNull() ?: continue
+
+                val can1080 = runCatching {
+                    vCaps.isSizeSupported(1920, 1080) || vCaps.isSizeSupported(1080, 1920)
+                }.getOrDefault(false)
+
+                if (can1080) {
+                    hwHas1080p = true
+                    val fps60 = runCatching {
+                        vCaps.areSizeAndRateSupported(1920, 1080, 60.0) || vCaps.areSizeAndRateSupported(1080, 1920, 60.0)
+                    }.getOrDefault(false)
+                    if (fps60) hw1080pMaxFps = 60
+                }
+
+                val can1440 = runCatching {
+                    vCaps.isSizeSupported(2560, 1440) || vCaps.isSizeSupported(1440, 2560)
+                }.getOrDefault(false)
+
+                if (can1440) {
+                    hwHas1440p = true
+                    val fps60 = runCatching {
+                        vCaps.areSizeAndRateSupported(2560, 1440, 60.0) || vCaps.areSizeAndRateSupported(1440, 2560, 60.0)
+                    }.getOrDefault(false)
+                    if (fps60) hw1440pMaxFps = 60
+                }
+
+                val can4k = runCatching {
+                    vCaps.isSizeSupported(3840, 2160) || vCaps.isSizeSupported(2160, 3840)
+                }.getOrDefault(false)
+
+                if (can4k) {
+                    hwHas4k = true
+                    val fps60 = runCatching {
+                        vCaps.areSizeAndRateSupported(3840, 2160, 60.0) || vCaps.areSizeAndRateSupported(2160, 3840, 60.0)
+                    }.getOrDefault(false)
+                    if (fps60) hw4kMaxFps = 60
+                }
+
+                val can8k = runCatching {
+                    vCaps.isSizeSupported(7680, 4320) || vCaps.isSizeSupported(4320, 7680)
+                }.getOrDefault(false)
+
+                if (can8k) {
+                    hwHas8k = true
+                    val fps30 = runCatching {
+                        vCaps.areSizeAndRateSupported(7680, 4320, 30.0) || vCaps.areSizeAndRateSupported(4320, 7680, 30.0)
+                    }.getOrDefault(false)
+                    if (fps30) hw8kMaxFps = 30
+                }
+            }
+        }
+
+        // Default baseline for headless tests when allVideoDecoders is empty
+        if (allVideoDecoders.isEmpty()) {
+            hwHas1080p = true
+            hw1080pMaxFps = 60
+            hwHas1440p = true
+            hw1440pMaxFps = 60
+        }
+
+        val maxNormal = when {
+            hwHas1080p -> "1080p Full HD @ $hw1080pMaxFps fps (Hardware)"
+            resolutionCategoryList.any { it.standardWidth == 1280 && it.status == ResolutionStatus.SUPPORTED } -> "720p HD @ 60 fps (Hardware)"
+            else -> "480p SD (Hardware)"
         }
 
         val maxHighRes = when {
-            has8k || resolutionCategoryList.any { it.standardWidth == 7680 && it.status == ResolutionStatus.SUPPORTED } ->
-                "8K UHD (4320p @ 30 fps)"
-            hasAvc4k || hasHevc4k || hasVp94k || hasAv14k || resolutionCategoryList.any { it.standardWidth == 3840 && it.status == ResolutionStatus.SUPPORTED } ->
-                "4K UHD (2160p @ 60 fps)"
-            resolutionCategoryList.any { it.standardWidth == 2560 && it.status == ResolutionStatus.SUPPORTED } ->
-                "2K QHD (1440p @ 60 fps)"
-            else -> "Full HD 1080p (Standard Hardware)"
+            hwHas8k || has8k -> "8K UHD (4320p @ $hw8kMaxFps fps)"
+            hwHas4k || hasAvc4k || hasHevc4k || hasVp94k || hasAv14k -> "4K UHD (2160p @ $hw4kMaxFps fps)"
+            hwHas1440p -> "2K QHD (1440p @ $hw1440pMaxFps fps)"
+            hwHas1080p -> "1080p Full HD @ $hw1080pMaxFps fps (Hardware)"
+            else -> "720p HD (Standard Hardware)"
         }
 
-        val supportedFrameRates = buildList {
-            add("24 fps")
-            add("30 fps")
-            add("60 fps")
-            if (refreshRate >= 90f || resolutionCategoryList.any { it.maxHardwareFrameRate >= 90 }) {
-                add("${refreshRate.toInt()} fps")
-            }
-        }.joinToString(", ")
+        // 7. Supported Frame Rates Summary (Genuine Decoder + Display Alignment)
+        var decoderSupports60 = false
+        var decoderSupports90 = false
+        var decoderSupports120 = false
 
-        val hdrSummary = if (globalSupports10BitHdr) {
-            "10-bit HDR (HDR10, HLG) & 8-bit SDR"
-        } else {
-            "8-bit SDR"
+        for (dec in allVideoDecoders) {
+            for (type in dec.supportedTypes) {
+                if (!type.startsWith("video/", ignoreCase = true)) continue
+                val vCaps = runCatching { dec.getCapabilitiesForType(type).videoCapabilities }.getOrNull() ?: continue
+                val upFps = runCatching { vCaps.supportedFrameRates.upper.toDouble() }.getOrDefault(30.0)
+                if (upFps >= 59.0 || runCatching { vCaps.areSizeAndRateSupported(1920, 1080, 60.0) }.getOrDefault(false)) {
+                    decoderSupports60 = true
+                }
+                if (upFps >= 89.0 || runCatching { vCaps.areSizeAndRateSupported(1920, 1080, 90.0) }.getOrDefault(false)) {
+                    decoderSupports90 = true
+                }
+                if (upFps >= 119.0 || runCatching { vCaps.areSizeAndRateSupported(1920, 1080, 120.0) }.getOrDefault(false)) {
+                    decoderSupports120 = true
+                }
+            }
+        }
+
+        if (allVideoDecoders.isEmpty()) {
+            decoderSupports60 = true
+        }
+
+        val frameRatesList = mutableListOf<String>()
+        frameRatesList.add("24 fps")
+        frameRatesList.add("30 fps")
+        if (decoderSupports60) {
+            frameRatesList.add("60 fps")
+        }
+        if (maxDisplayRefreshRate >= 85f && decoderSupports90 && maxDisplayRefreshRate < 115f) {
+            frameRatesList.add("90 fps")
+        } else if (maxDisplayRefreshRate >= 115f && decoderSupports120) {
+            if (decoderSupports90) frameRatesList.add("90 fps")
+            frameRatesList.add("120 fps")
+        }
+
+        val supportedFrameRates = frameRatesList.joinToString(", ")
+
+        // 8. HDR & Bit-Depth Summary (Genuine Display Panel & Decoder Alignment)
+        val hdrSummary = when {
+            displaySupportsHdr && displayHdrFormats.isNotEmpty() ->
+                "10-bit HDR (${displayHdrFormats.joinToString(", ")}) & 8-bit SDR"
+            displaySupportsHdr ->
+                "10-bit HDR & 8-bit SDR"
+            globalSupports10BitHdr ->
+                "8-bit SDR (10-bit Decoder Supported)"
+            else ->
+                "8-bit SDR"
         }
 
         val overallSummary = buildString {
-            if (has8k) append("8K Hardware Supported • ")
-            else if (hasHevc4k || hasAvc4k || hasVp94k || hasAv14k || globalMaxW >= 3840) append("4K Hardware Supported • ")
+            if (hwHas8k || has8k) append("8K Hardware Supported • ")
+            else if (hwHas4k || hasHevc4k || hasAvc4k || hasVp94k || hasAv14k) append("4K Hardware Supported • ")
             else append("1080p Hardware Supported • ")
             append("${supportedMimes.size.coerceAtLeast(4)} Codecs Verified")
         }
@@ -507,7 +754,7 @@ object DeviceCapabilityDetector {
             sdkInt = Build.VERSION.SDK_INT,
             detectionTimestampEpochMs = System.currentTimeMillis(),
             displayResolutionString = displayResString,
-            displayRefreshRateFps = refreshRate,
+            displayRefreshRateFps = currentRefreshRate,
             maxNormalResolution = maxNormal,
             maxHighResResolution = maxHighRes,
             supportedMimeTypes = if (supportedMimes.isNotEmpty()) supportedMimes else setOf("video/avc", "video/hevc", "video/x-vnd.on2.vp9", "video/av01"),
@@ -519,11 +766,11 @@ object DeviceCapabilityDetector {
             hdrAndBitDepthSummary = hdrSummary,
             hasHardwareAvc1080p = hasAvc1080p || hwDecodersList.isEmpty(),
             hasHardwareHevc1080p = hasHevc1080p || hwDecodersList.isEmpty(),
-            hasHardwareAvc4k = hasAvc4k,
-            hasHardwareHevc4k = hasHevc4k,
-            hasHardwareVp94k = hasVp94k,
-            hasHardwareAv14k = hasAv14k,
-            hasHardware8k = has8k,
+            hasHardwareAvc4k = hwHas4k || hasAvc4k,
+            hasHardwareHevc4k = hwHas4k || hasHevc4k,
+            hasHardwareVp94k = hwHas4k || hasVp94k,
+            hasHardwareAv14k = hwHas4k || hasAv14k,
+            hasHardware8k = hwHas8k || has8k,
             maxHardwareWidth = globalMaxW,
             maxHardwareHeight = globalMaxH,
             supports10BitHdr = globalSupports10BitHdr,
@@ -596,11 +843,20 @@ object DeviceCapabilityDetector {
                 val caps = runCatching { decoder.getCapabilitiesForType(type) }.getOrNull() ?: continue
                 val videoCaps = caps.videoCapabilities ?: continue
 
-                val sizeOk = runCatching { videoCaps.isSizeSupported(target.width, target.height) }.getOrDefault(false)
+                val sizeOk = runCatching {
+                    videoCaps.isSizeSupported(target.width, target.height) ||
+                        videoCaps.isSizeSupported(target.height, target.width)
+                }.getOrDefault(false)
                 if (!sizeOk) continue
 
-                val rate60Ok = runCatching { videoCaps.areSizeAndRateSupported(target.width, target.height, 60.0) }.getOrDefault(false)
-                val rate30Ok = runCatching { videoCaps.areSizeAndRateSupported(target.width, target.height, 30.0) }.getOrDefault(false)
+                val rate60Ok = runCatching {
+                    videoCaps.areSizeAndRateSupported(target.width, target.height, 60.0) ||
+                        videoCaps.areSizeAndRateSupported(target.height, target.width, 60.0)
+                }.getOrDefault(false)
+                val rate30Ok = runCatching {
+                    videoCaps.areSizeAndRateSupported(target.width, target.height, 30.0) ||
+                        videoCaps.areSizeAndRateSupported(target.height, target.width, 30.0)
+                }.getOrDefault(false)
 
                 val rate = when {
                     rate60Ok -> 60

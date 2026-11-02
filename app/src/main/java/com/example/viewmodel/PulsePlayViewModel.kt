@@ -196,6 +196,7 @@ data class PlaybackUiState(
         get() = currentArtworkData?.let { Arrays.hashCode(it) } ?: 0
 }
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PulsePlayViewModel(application: Application) : AndroidViewModel(application) {
 
     private val database = PulseDatabase.getInstance(application)
@@ -1370,6 +1371,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     // --- Playback Controls ---
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun playMedia(
         media: MediaEntity,
         queueContext: List<MediaEntity> = emptyList(),
@@ -3270,6 +3272,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         setCrossfadeDurationSeconds(next)
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun setGaplessPlaybackEnabled(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(gaplessPlaybackEnabled = enabled)
         (activePlayer as? ExoPlayer)?.pauseAtEndOfMediaItems = !enabled

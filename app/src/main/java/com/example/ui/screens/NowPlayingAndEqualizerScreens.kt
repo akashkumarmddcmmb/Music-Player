@@ -60,6 +60,8 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.Bedtime
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.ClearAll
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -72,6 +74,7 @@ import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -97,9 +100,11 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.SubtitlesOff
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -114,6 +119,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -166,6 +172,7 @@ import androidx.media3.ui.PlayerView
 import com.example.R
 import com.example.data.local.MediaEntity
 import com.example.data.local.MediaType
+import com.example.data.local.PlaybackHistoryEntity
 import com.example.data.preferences.HighResVideoPlaybackMode
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
@@ -178,6 +185,7 @@ import com.example.media.rememberMediaArtworkBitmap
 import com.example.ui.components.AddToPlaylistDialog
 import com.example.ui.components.CollapsedPlaylistDockBar
 import com.example.ui.components.ExpandablePlaylistBottomSheetOverlay
+import com.example.ui.components.MusicPlaybackSettingsDialog
 import com.example.ui.components.PlaybackSpeedDialog
 import com.example.ui.components.PlaylistSheetState
 import com.example.ui.components.SleepTimerDialog
@@ -255,6 +263,33 @@ fun NowPlayingOverlayScreen(
     onToggleSpeedPanel: (() -> Unit)? = null,
     onToggleVideoSettings: (() -> Unit)? = null,
     onToggleSubtitleSettings: (() -> Unit)? = null,
+    onToggleMusicPlaybackSettings: (() -> Unit)? = null,
+    recentHistory: List<PlaybackHistoryEntity> = emptyList(),
+    onPlayHistoryItem: (PlaybackHistoryEntity) -> Unit = {},
+    onSetAbRepeatStart: () -> Unit = {},
+    onSetAbRepeatEnd: () -> Unit = {},
+    onClearAbRepeat: () -> Unit = {},
+    onToggleBookmark: () -> Unit = {},
+    onRemoveBookmark: (Long) -> Unit = {},
+    onSelectRepeatMode: (RepeatModeState) -> Unit = { _ -> onCycleRepeat() },
+    onOpenAudioOutputSwitcher: () -> Unit = {},
+    onToggleBackgroundPlayback: (Boolean) -> Unit = {},
+    onToggleResumePlayback: (Boolean) -> Unit = {},
+    equalizerEnabled: Boolean = false,
+    bassBoostStrength: Int = 0,
+    onOpenCastSettings: () -> Unit = {},
+    onCycleCrossfade: () -> Unit = {},
+    onToggleGaplessPlayback: (Boolean) -> Unit = {},
+    onSetVolumeLevel: (Float) -> Unit = {},
+    onSetAudioBalance: (Float) -> Unit = {},
+    onCycleBassBoost: () -> Unit = {},
+    onSetThemeMode: (com.example.ui.theme.AppThemeMode) -> Unit = {},
+    onSetDynamicColor: (Boolean) -> Unit = {},
+    onSetPlayerShowWaveform: (Boolean) -> Unit = {},
+    onSetPlayerShowQuickActionRow: (Boolean) -> Unit = {},
+    onSetPlayerShowRemainingTime: (Boolean) -> Unit = {},
+    onSetPlayerShowAbAndBookmarkStrip: (Boolean) -> Unit = {},
+    onSendFeedback: (String, String) -> Unit = { _, _ -> },
     onRetryPlayback: () -> Unit
 ) {
     val context = LocalContext.current
@@ -264,6 +299,7 @@ fun NowPlayingOverlayScreen(
     var localShowSpeedPanel by rememberSaveable { mutableStateOf(false) }
     var localShowVideoSettings by rememberSaveable { mutableStateOf(false) }
     var localShowSubtitleSettings by rememberSaveable { mutableStateOf(false) }
+    var localShowMusicSettings by rememberSaveable { mutableStateOf(false) }
 
     val effectiveShowSpeedPanel = if (onToggleSpeedPanel != null) {
         playbackState.showPlaybackSpeedDialog
@@ -280,6 +316,11 @@ fun NowPlayingOverlayScreen(
     } else {
         playbackState.showSubtitleSettingsDialog || localShowSubtitleSettings
     }
+    val effectiveShowMusicSettings = if (onToggleMusicPlaybackSettings != null) {
+        playbackState.showMusicPlaybackSettingsDialog
+    } else {
+        playbackState.showMusicPlaybackSettingsDialog || localShowMusicSettings
+    }
 
     val handleToggleSpeedPanel: () -> Unit = {
         if (onToggleSpeedPanel != null) {
@@ -290,6 +331,7 @@ fun NowPlayingOverlayScreen(
             if (next) {
                 localShowVideoSettings = false
                 localShowSubtitleSettings = false
+                localShowMusicSettings = false
                 showSleepTimerPanel = false
             }
         }
@@ -303,6 +345,7 @@ fun NowPlayingOverlayScreen(
             if (next) {
                 localShowSpeedPanel = false
                 localShowSubtitleSettings = false
+                localShowMusicSettings = false
                 showSleepTimerPanel = false
             }
         }
@@ -316,6 +359,21 @@ fun NowPlayingOverlayScreen(
             if (next) {
                 localShowSpeedPanel = false
                 localShowVideoSettings = false
+                localShowMusicSettings = false
+                showSleepTimerPanel = false
+            }
+        }
+    }
+    val handleToggleMusicSettings: () -> Unit = {
+        if (onToggleMusicPlaybackSettings != null) {
+            onToggleMusicPlaybackSettings()
+        } else {
+            val next = !localShowMusicSettings
+            localShowMusicSettings = next
+            if (next) {
+                localShowSpeedPanel = false
+                localShowVideoSettings = false
+                localShowSubtitleSettings = false
                 showSleepTimerPanel = false
             }
         }
@@ -340,12 +398,14 @@ fun NowPlayingOverlayScreen(
         effectiveShowSpeedPanel,
         effectiveShowVideoSettings,
         effectiveShowSubtitleSettings,
+        effectiveShowMusicSettings,
         playbackState.showVideoCompatibilityDialog,
         playbackState.showVideoInfoDetailsDialog
     ) {
         if (effectiveShowSpeedPanel ||
             effectiveShowVideoSettings ||
             effectiveShowSubtitleSettings ||
+            effectiveShowMusicSettings ||
             playbackState.showVideoCompatibilityDialog ||
             playbackState.showVideoInfoDetailsDialog
         ) {
@@ -355,6 +415,7 @@ fun NowPlayingOverlayScreen(
 
     BackHandler {
         when {
+            effectiveShowMusicSettings -> handleToggleMusicSettings()
             effectiveShowSubtitleSettings -> handleToggleSubtitleSettings()
             effectiveShowVideoSettings -> handleToggleVideoSettings()
             showSleepTimerPanel -> showSleepTimerPanel = false
@@ -416,6 +477,54 @@ fun NowPlayingOverlayScreen(
             onPickSubtitleFileClick = onPickSubtitleFileClick,
             onSeekToCue = onSeekTo,
             onDismiss = handleToggleSubtitleSettings
+        )
+    }
+
+    if (currentMedia?.mediaType != MediaType.VIDEO && effectiveShowMusicSettings) {
+        MusicPlaybackSettingsDialog(
+            playbackState = playbackState,
+            preferences = userPreferences,
+            isFavorite = isFavorite,
+            equalizerEnabled = equalizerEnabled,
+            bassBoostStrength = bassBoostStrength,
+            onDismiss = handleToggleMusicSettings,
+            onSelectSpeed = onSetPlaybackSpeed,
+            onSetAbRepeatStart = onSetAbRepeatStart,
+            onSetAbRepeatEnd = onSetAbRepeatEnd,
+            onClearAbRepeat = onClearAbRepeat,
+            onToggleBookmark = onToggleBookmark,
+            onRemoveBookmark = onRemoveBookmark,
+            onSeekToBookmark = onSeekTo,
+            onStartSleepTimer = onSetSleepTimerMinutes,
+            onCancelSleepTimer = { onSetSleepTimerMinutes(0) },
+            onToggleStopAtEndOfTrack = onSetSleepTimerEndOfTrack,
+            onToggleShuffle = onToggleShuffle,
+            onSelectRepeatMode = onSelectRepeatMode,
+            onToggleBackgroundPlayback = onToggleBackgroundPlayback,
+            onToggleResumePlayback = onToggleResumePlayback,
+            onOpenEqualizer = onOpenEqualizer,
+            onOpenFileInfo = onShowFileInfoCurrentMedia,
+            onOpenAudioOutputSwitcher = onOpenAudioOutputSwitcher,
+            onOpenCastSettings = onOpenCastSettings,
+            onToggleFavorite = onToggleFavorite,
+            onOpenLyricsSettings = handleToggleSubtitleSettings,
+            onShareCurrentMedia = onShareCurrentMedia,
+            onOpenStudio = onOpenStudio,
+            onAddToPlaylistCurrentMedia = onAddToPlaylistCurrentMedia,
+            onSetRingtoneCurrentMedia = onSetRingtoneCurrentMedia,
+            onCycleCrossfade = onCycleCrossfade,
+            onToggleGaplessPlayback = onToggleGaplessPlayback,
+            onSetVolumeLevel = onSetVolumeLevel,
+            onSetAudioBalance = onSetAudioBalance,
+            onCycleBassBoost = onCycleBassBoost,
+            onSetThemeMode = onSetThemeMode,
+            onSetDynamicColor = onSetDynamicColor,
+            onSetPlayerShowWaveform = onSetPlayerShowWaveform,
+            onSetPlayerShowQuickActionRow = onSetPlayerShowQuickActionRow,
+            onSetPlayerShowRemainingTime = onSetPlayerShowRemainingTime,
+            onSetPlayerShowAbAndBookmarkStrip = onSetPlayerShowAbAndBookmarkStrip,
+            onSendFeedback = onSendFeedback,
+            onOpenSpeedDialog = handleToggleSpeedPanel
         )
     }
 
@@ -615,6 +724,7 @@ fun NowPlayingOverlayScreen(
                     showSubtitleSettings = effectiveShowSubtitleSettings,
                     showSleepTimerPanel = showSleepTimerPanel,
                     showSpeedPanel = effectiveShowSpeedPanel,
+                    showMusicSettingsPanel = effectiveShowMusicSettings,
                     onToggleSubtitleSettings = handleToggleSubtitleSettings,
                     onToggleSleepTimerPanel = {
                         val next = !showSleepTimerPanel
@@ -622,10 +732,20 @@ fun NowPlayingOverlayScreen(
                             if (effectiveShowSpeedPanel) handleToggleSpeedPanel()
                             if (effectiveShowVideoSettings) handleToggleVideoSettings()
                             if (effectiveShowSubtitleSettings) handleToggleSubtitleSettings()
+                            if (effectiveShowMusicSettings) handleToggleMusicSettings()
                         }
                         showSleepTimerPanel = next
                     },
                     onToggleSpeedPanel = handleToggleSpeedPanel,
+                    onToggleMusicSettings = handleToggleMusicSettings,
+                    onSetAbRepeatStart = onSetAbRepeatStart,
+                    onSetAbRepeatEnd = onSetAbRepeatEnd,
+                    onClearAbRepeat = onClearAbRepeat,
+                    onToggleBookmark = onToggleBookmark,
+                    onRemoveBookmark = onRemoveBookmark,
+                    onOpenAudioOutputSwitcher = onOpenAudioOutputSwitcher,
+                    recentHistory = recentHistory,
+                    onPlayHistoryItem = onPlayHistoryItem,
                     onCollapse = onCollapse,
                     onPlayPause = onPlayPause,
                     onSeekTo = onSeekTo,
@@ -734,6 +854,7 @@ fun NowPlayingOverlayScreen(
                                     showSpeedPanel = effectiveShowSpeedPanel,
                                     showSleepTimerPanel = showSleepTimerPanel,
                                     showSubtitleSettings = effectiveShowSubtitleSettings,
+                                    showMusicSettingsPanel = effectiveShowMusicSettings,
                                     onToggleSpeedPanel = handleToggleSpeedPanel,
                                     onOpenEqualizer = onOpenEqualizer,
                                     onToggleSleepTimerPanel = {
@@ -742,10 +863,17 @@ fun NowPlayingOverlayScreen(
                                             if (effectiveShowSpeedPanel) handleToggleSpeedPanel()
                                             if (effectiveShowVideoSettings) handleToggleVideoSettings()
                                             if (effectiveShowSubtitleSettings) handleToggleSubtitleSettings()
+                                            if (effectiveShowMusicSettings) handleToggleMusicSettings()
                                         }
                                         showSleepTimerPanel = next
                                     },
                                     onToggleSubtitleSettings = handleToggleSubtitleSettings,
+                                    onToggleMusicSettings = handleToggleMusicSettings,
+                                    onSetAbRepeatStart = onSetAbRepeatStart,
+                                    onSetAbRepeatEnd = onSetAbRepeatEnd,
+                                    onClearAbRepeat = onClearAbRepeat,
+                                    onToggleBookmark = onToggleBookmark,
+                                    onOpenAudioOutputSwitcher = onOpenAudioOutputSwitcher,
                                     onOpenStudio = onOpenStudio,
                                     onToggleFavorite = onToggleFavorite,
                                     onShareCurrentMedia = onShareCurrentMedia,
@@ -810,7 +938,8 @@ fun NowPlayingOverlayScreen(
                             StudioSquareAudioArtworkAndWaveform(
                                 currentMedia = currentMedia,
                                 playbackState = playbackState,
-                                subtitlesEnabled = userPreferences.subtitlesEnabledByDefault
+                                subtitlesEnabled = userPreferences.subtitlesEnabledByDefault,
+                                showWaveform = userPreferences.playerShowWaveform
                             )
                         }
                     }
@@ -836,11 +965,21 @@ fun NowPlayingOverlayScreen(
                                         it != "Unknown Artist" &&
                                         it != "Local Storage"
                                 }
-                                if (artistText != null) {
+                                val albumText = currentMedia.album.takeIf {
+                                    it.isNotBlank() &&
+                                        !it.startsWith("PulsePlay", ignoreCase = true) &&
+                                        it != "<unknown>" &&
+                                        it != "Unknown Album" &&
+                                        it != artistText
+                                }
+                                val subtitleLine = listOfNotNull(artistText, albumText).joinToString(" • ")
+                                if (subtitleLine.isNotBlank()) {
                                     Text(
-                                        text = artistText,
+                                        text = subtitleLine,
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
@@ -859,10 +998,11 @@ fun NowPlayingOverlayScreen(
                         }
                     }
 
-                    // Seek Bar & Timestamps
+                    // Seek Bar & Timestamps (Elapsed + Remaining / Total Duration)
                     item {
                         val duration = playbackState.durationMs.coerceAtLeast(1L)
                         val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
+                        val remainingMs = (duration - pos).coerceAtLeast(0L)
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Slider(
                                 value = pos.toFloat(),
@@ -873,21 +1013,45 @@ fun NowPlayingOverlayScreen(
                                 },
                                 enabled = !playbackState.isVideoControlsLocked,
                                 valueRange = 0f..duration.toFloat(),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = CinemaNeonGreen,
+                                    activeTrackColor = CinemaNeonGreen,
+                                    inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f)
+                                ),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .testTag("now_playing_seek_slider")
                             )
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
                                     text = formatDurationMillis(pos),
                                     style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.primary
+                                    color = CinemaNeonGreen
                                 )
+                                if (playbackState.isAbRepeatActive) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = CinemaNeonGreen.copy(alpha = 0.16f)
+                                    ) {
+                                        Text(
+                                            text = "A-B: ${formatDurationMillis(playbackState.abRepeatStartMs ?: 0L)} → ${formatDurationMillis(playbackState.abRepeatEndMs ?: 0L)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = CinemaNeonGreen,
+                                            fontWeight = FontWeight.SemiBold,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
                                 Text(
-                                    text = formatDurationMillis(duration),
+                                    text = if (userPreferences.playerShowRemainingTime) {
+                                        "-${formatDurationMillis(remainingMs)} • ${formatDurationMillis(duration)}"
+                                    } else {
+                                        formatDurationMillis(duration)
+                                    },
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -949,7 +1113,11 @@ fun NowPlayingOverlayScreen(
                                     modifier = Modifier
                                         .size(68.dp)
                                         .testTag("transport_play_pause_button"),
-                                    shape = CircleShape
+                                    shape = CircleShape,
+                                    colors = IconButtonDefaults.filledIconButtonColors(
+                                        containerColor = CinemaNeonGreen,
+                                        contentColor = Color(0xFF06130B)
+                                    )
                                 ) {
                                     Icon(
                                         imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -984,13 +1152,33 @@ fun NowPlayingOverlayScreen(
                                         },
                                         contentDescription = "Repeat mode: ${playbackState.repeatMode}",
                                         tint = if (playbackState.repeatMode != RepeatModeState.OFF) {
-                                            MaterialTheme.colorScheme.primary
+                                            CinemaNeonGreen
                                         } else {
                                             MaterialTheme.colorScheme.onSurfaceVariant
                                         }
                                     )
                                 }
                             }
+                        }
+                    }
+
+                    // Music Quick-Control Bar & Active A-B Repeat / Bookmarks Strip
+                    if (currentMedia.mediaType != MediaType.VIDEO) {
+                        item {
+                            MusicQuickActionAndMarkersSection(
+                                playbackState = playbackState,
+                                onToggleSpeedPanel = handleToggleSpeedPanel,
+                                onOpenEqualizer = onOpenEqualizer,
+                                onToggleMusicSettings = handleToggleMusicSettings,
+                                onSetAbRepeatStart = onSetAbRepeatStart,
+                                onSetAbRepeatEnd = onSetAbRepeatEnd,
+                                onClearAbRepeat = onClearAbRepeat,
+                                onToggleBookmark = onToggleBookmark,
+                                onRemoveBookmark = onRemoveBookmark,
+                                onSeekToBookmark = onSeekTo,
+                                showQuickActionRow = userPreferences.playerShowQuickActionRow,
+                                showAbAndBookmarkStrip = userPreferences.playerShowAbAndBookmarkStrip
+                            )
                         }
                     }
                     }
@@ -1019,7 +1207,9 @@ fun NowPlayingOverlayScreen(
                         onMoveQueueItem = onMoveQueueItem,
                         onPlayNextItem = onPlayNextItem,
                         onClearQueue = onClearQueue,
-                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist
+                        onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
+                        recentHistory = recentHistory,
+                        onPlayHistoryItem = onPlayHistoryItem
                     )
                 }
             }
@@ -2744,7 +2934,8 @@ private fun StudioSquareAudioArtworkAndWaveform(
     currentMedia: MediaEntity,
     playbackState: PlaybackUiState,
     subtitlesEnabled: Boolean = true,
-    compactMode: Boolean = false
+    compactMode: Boolean = false,
+    showWaveform: Boolean = true
 ) {
     val centerSquareSize = if (compactMode) 180.dp else 230.dp
     val iconSize = if (compactMode) 36.dp else 50.dp
@@ -2856,44 +3047,46 @@ private fun StudioSquareAudioArtworkAndWaveform(
                 }
             }
 
-            Spacer(modifier = Modifier.height(if (compactMode) 10.dp else 18.dp))
+            if (showWaveform) {
+                Spacer(modifier = Modifier.height(if (compactMode) 10.dp else 18.dp))
 
-            // Horizontal Studio Waveform Bar
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(if (compactMode) 36.dp else 48.dp)
-            ) {
-                val barCount = 36
-                val totalWidth = size.width
-                val totalHeight = size.height
-                val barWidth = (totalWidth / (barCount * 1.75f)).coerceAtLeast(3.5f)
-                val spacing = (totalWidth - (barWidth * barCount)) / (barCount - 1).coerceAtLeast(1)
-                val phase = (playbackState.currentPositionMs / 160.0)
-                val progressIndex = if (playbackState.durationMs > 0L) {
-                    ((playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()) * barCount).toInt()
-                } else 0
+                // Horizontal Studio Waveform Bar
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (compactMode) 36.dp else 48.dp)
+                ) {
+                    val barCount = 36
+                    val totalWidth = size.width
+                    val totalHeight = size.height
+                    val barWidth = (totalWidth / (barCount * 1.75f)).coerceAtLeast(3.5f)
+                    val spacing = (totalWidth - (barWidth * barCount)) / (barCount - 1).coerceAtLeast(1)
+                    val phase = (playbackState.currentPositionMs / 160.0)
+                    val progressIndex = if (playbackState.durationMs > 0L) {
+                        ((playbackState.currentPositionMs.toFloat() / playbackState.durationMs.toFloat()) * barCount).toInt()
+                    } else 0
 
-                for (i in 0 until barCount) {
-                    val wave = if (playbackState.isPlaying) {
-                        0.22f + 0.72f * abs(sin(phase + i * 0.42) * cos(phase * 0.5 + i * 0.18)).toFloat()
-                    } else {
-                        0.18f + 0.32f * abs(sin(i * 0.48)).toFloat()
+                    for (i in 0 until barCount) {
+                        val wave = if (playbackState.isPlaying) {
+                            0.22f + 0.72f * abs(sin(phase + i * 0.42) * cos(phase * 0.5 + i * 0.18)).toFloat()
+                        } else {
+                            0.18f + 0.32f * abs(sin(i * 0.48)).toFloat()
+                        }
+                        val barHeight = (totalHeight * wave).coerceAtLeast(8f)
+                        val x = i * (barWidth + spacing)
+                        val y = (totalHeight - barHeight) / 2f
+                        val barColor = when {
+                            i <= progressIndex -> mintGreenAccent
+                            i % 3 == 0 -> primaryColor.copy(alpha = 0.65f)
+                            else -> primaryColor.copy(alpha = 0.35f)
+                        }
+                        drawRoundRect(
+                            color = barColor,
+                            topLeft = Offset(x, y),
+                            size = Size(barWidth, barHeight),
+                            cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
+                        )
                     }
-                    val barHeight = (totalHeight * wave).coerceAtLeast(8f)
-                    val x = i * (barWidth + spacing)
-                    val y = (totalHeight - barHeight) / 2f
-                    val barColor = when {
-                        i <= progressIndex -> secondaryColor
-                        i % 3 == 0 -> primaryColor.copy(alpha = 0.65f)
-                        else -> primaryColor.copy(alpha = 0.35f)
-                    }
-                    drawRoundRect(
-                        color = barColor,
-                        topLeft = Offset(x, y),
-                        size = Size(barWidth, barHeight),
-                        cornerRadius = CornerRadius(barWidth / 2f, barWidth / 2f)
-                    )
                 }
             }
 
@@ -2928,6 +3121,189 @@ private fun StudioSquareAudioArtworkAndWaveform(
  * inside a clean dropdown menu so the main Now Playing screen stays uncluttered.
  */
 @Composable
+private fun MusicQuickActionAndMarkersSection(
+    playbackState: PlaybackUiState,
+    onToggleSpeedPanel: () -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onToggleMusicSettings: () -> Unit,
+    onSetAbRepeatStart: () -> Unit,
+    onSetAbRepeatEnd: () -> Unit,
+    onClearAbRepeat: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    onRemoveBookmark: (Long) -> Unit,
+    onSeekToBookmark: (Long) -> Unit,
+    compactMode: Boolean = false,
+    showQuickActionRow: Boolean = true,
+    showAbAndBookmarkStrip: Boolean = true
+) {
+    val speedFormatted = "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x"
+    val abLabel = when {
+        playbackState.isAbRepeatActive -> "A-B Loop On"
+        playbackState.abRepeatStartMs != null -> "Set Point B"
+        else -> "A-B Repeat"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("now_playing_music_quick_bar"),
+        verticalArrangement = Arrangement.spacedBy(if (compactMode) 6.dp else 8.dp)
+    ) {
+        if (showQuickActionRow) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+            item {
+                FilterChip(
+                    selected = abs(playbackState.playbackSpeed - 1.0f) > 0.03f,
+                    onClick = onToggleSpeedPanel,
+                    label = { Text("Speed $speedFormatted") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Speed,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("music_quick_speed_button")
+                )
+            }
+            item {
+                FilterChip(
+                    selected = false,
+                    onClick = onOpenEqualizer,
+                    label = { Text("Equalizer") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Equalizer,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("music_quick_equalizer_button")
+                )
+            }
+            item {
+                FilterChip(
+                    selected = playbackState.abRepeatStartMs != null,
+                    onClick = {
+                        when {
+                            playbackState.abRepeatStartMs == null -> onSetAbRepeatStart()
+                            playbackState.abRepeatEndMs == null -> onSetAbRepeatEnd()
+                            else -> onClearAbRepeat()
+                        }
+                    },
+                    label = { Text(abLabel) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Repeat,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("music_quick_ab_repeat_button")
+                )
+            }
+            item {
+                FilterChip(
+                    selected = playbackState.trackBookmarksMs.isNotEmpty(),
+                    onClick = onToggleBookmark,
+                    label = {
+                        Text(
+                            if (playbackState.trackBookmarksMs.isEmpty()) "Bookmark"
+                            else "Bookmarks (${playbackState.trackBookmarksMs.size})"
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (playbackState.trackBookmarksMs.isNotEmpty()) {
+                                Icons.Default.Bookmark
+                            } else {
+                                Icons.Default.BookmarkBorder
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("music_quick_bookmark_button")
+                )
+            }
+            item {
+                FilterChip(
+                    selected = playbackState.showMusicPlaybackSettingsDialog,
+                    onClick = onToggleMusicSettings,
+                    label = { Text("Settings") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.testTag("music_quick_settings_button")
+                )
+            }
+            }
+        }
+
+        if (showAbAndBookmarkStrip && (playbackState.abRepeatStartMs != null || playbackState.trackBookmarksMs.isNotEmpty())) {
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("music_active_markers_strip")
+            ) {
+                if (playbackState.abRepeatStartMs != null) {
+                    item {
+                        FilterChip(
+                            selected = true,
+                            onClick = onClearAbRepeat,
+                            label = {
+                                Text(
+                                    if (playbackState.abRepeatEndMs != null) {
+                                        "Loop ${formatDurationMillis(playbackState.abRepeatStartMs)}–${formatDurationMillis(playbackState.abRepeatEndMs)} ×"
+                                    } else {
+                                        "Point A: ${formatDurationMillis(playbackState.abRepeatStartMs)} (Tap B or ×)"
+                                    }
+                                )
+                            },
+                            modifier = Modifier.testTag("music_active_ab_chip")
+                        )
+                    }
+                }
+                items(items = playbackState.trackBookmarksMs) { bmMs ->
+                    FilterChip(
+                        selected = false,
+                        onClick = { onSeekToBookmark(bmMs) },
+                        label = { Text("🔖 ${formatDurationMillis(bmMs)}") },
+                        trailingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove bookmark",
+                                modifier = Modifier
+                                    .size(14.dp)
+                                    .clickable { onRemoveBookmark(bmMs) }
+                            )
+                        },
+                        modifier = Modifier.testTag("music_bookmark_chip_$bmMs")
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Three-Dot Overflow Menu Button in the top-right corner of the Music Player (Now Playing) screen.
+ * Consolidates all secondary options (Playback Speed, Equalizer, Sleep Timer, Lyrics/Subtitles,
+ * Media Studio Audio Cutter, Share, Set as Ringtone, Add to Playlist, File Information,
+ * Playback Settings, A-B Repeat, Bookmark, and Audio Output Switcher)
+ * inside a clean dark translucent dropdown menu so the main Now Playing screen stays uncluttered.
+ */
+@Composable
 private fun NowPlayingOverflowMenuButton(
     currentMedia: MediaEntity,
     playbackState: PlaybackUiState,
@@ -2935,10 +3311,17 @@ private fun NowPlayingOverflowMenuButton(
     showSpeedPanel: Boolean,
     showSleepTimerPanel: Boolean,
     showSubtitleSettings: Boolean,
+    showMusicSettingsPanel: Boolean = false,
     onToggleSpeedPanel: () -> Unit,
     onOpenEqualizer: () -> Unit,
     onToggleSleepTimerPanel: () -> Unit,
     onToggleSubtitleSettings: () -> Unit,
+    onToggleMusicSettings: () -> Unit = {},
+    onSetAbRepeatStart: () -> Unit = {},
+    onSetAbRepeatEnd: () -> Unit = {},
+    onClearAbRepeat: () -> Unit = {},
+    onToggleBookmark: () -> Unit = {},
+    onOpenAudioOutputSwitcher: () -> Unit = {},
     onOpenStudio: () -> Unit,
     onToggleFavorite: () -> Unit,
     onShareCurrentMedia: () -> Unit,
@@ -2959,7 +3342,13 @@ private fun NowPlayingOverflowMenuButton(
 
     Box {
         IconButton(
-            onClick = { menuExpanded = true },
+            onClick = {
+                if (currentMedia.mediaType != MediaType.VIDEO) {
+                    onToggleMusicSettings()
+                } else {
+                    menuExpanded = true
+                }
+            },
             modifier = Modifier
                 .minimumInteractiveComponentSize()
                 .testTag("now_playing_more_options_button")
@@ -2967,12 +3356,12 @@ private fun NowPlayingOverflowMenuButton(
             Icon(
                 imageVector = Icons.Default.MoreVert,
                 contentDescription = "More player options",
-                tint = MaterialTheme.colorScheme.onSurface
+                tint = if (showMusicSettingsPanel) CinemaNeonGreen else MaterialTheme.colorScheme.onSurface
             )
         }
 
         DropdownMenu(
-            expanded = menuExpanded,
+            expanded = menuExpanded && currentMedia.mediaType == MediaType.VIDEO,
             onDismissRequest = { menuExpanded = false },
             modifier = Modifier.testTag("now_playing_overflow_dropdown_menu")
         ) {
@@ -2996,7 +3385,7 @@ private fun NowPlayingOverflowMenuButton(
                     onToggleSpeedPanel()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_speed")
             )
 
@@ -3015,7 +3404,7 @@ private fun NowPlayingOverflowMenuButton(
                     onOpenEqualizer()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_equalizer")
             )
 
@@ -3043,7 +3432,7 @@ private fun NowPlayingOverflowMenuButton(
                     onToggleSleepTimerPanel()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_sleep_timer")
             )
 
@@ -3067,7 +3456,7 @@ private fun NowPlayingOverflowMenuButton(
                     onToggleSubtitleSettings()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_lyrics")
             )
 
@@ -3086,11 +3475,11 @@ private fun NowPlayingOverflowMenuButton(
                     onOpenStudio()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_studio")
             )
 
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
 
             DropdownMenuItem(
                 text = { Text("Share", maxLines = 1) },
@@ -3103,7 +3492,7 @@ private fun NowPlayingOverflowMenuButton(
                     onShareCurrentMedia()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_share")
             )
 
@@ -3119,7 +3508,7 @@ private fun NowPlayingOverflowMenuButton(
                         onSetRingtoneCurrentMedia()
                     },
                     modifier = Modifier
-                        .heightIn(min = 42.dp)
+                        .heightIn(min = 38.dp)
                         .testTag("now_playing_menu_ringtone")
                 )
             }
@@ -3135,7 +3524,7 @@ private fun NowPlayingOverflowMenuButton(
                     onAddToPlaylistCurrentMedia()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_add_to_playlist")
             )
 
@@ -3158,7 +3547,7 @@ private fun NowPlayingOverflowMenuButton(
                     onToggleFavorite()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_favorite")
             )
 
@@ -3173,9 +3562,110 @@ private fun NowPlayingOverflowMenuButton(
                     onShowFileInfoCurrentMedia()
                 },
                 modifier = Modifier
-                    .heightIn(min = 42.dp)
+                    .heightIn(min = 38.dp)
                     .testTag("now_playing_menu_file_info")
             )
+
+            if (currentMedia.mediaType == MediaType.AUDIO) {
+                HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            if (showMusicSettingsPanel) "Hide Playback Settings" else "Playback Settings (A-B, Loop & Audio)",
+                            maxLines = 1
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    onClick = {
+                        menuExpanded = false
+                        onToggleMusicSettings()
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 38.dp)
+                        .testTag("now_playing_menu_playback_settings")
+                )
+
+                DropdownMenuItem(
+                    text = {
+                        val abMenuText = when {
+                            playbackState.isAbRepeatActive -> "Clear A-B Repeat Loop"
+                            playbackState.abRepeatStartMs != null -> "Set A-B Point B"
+                            else -> "Set A-B Point A"
+                        }
+                        Text(abMenuText, maxLines = 1)
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Repeat,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    onClick = {
+                        menuExpanded = false
+                        when {
+                            playbackState.abRepeatStartMs == null -> onSetAbRepeatStart()
+                            playbackState.abRepeatEndMs == null -> onSetAbRepeatEnd()
+                            else -> onClearAbRepeat()
+                        }
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 38.dp)
+                        .testTag("now_playing_menu_ab_repeat")
+                )
+
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            "Bookmark Current Time (${formatDurationMillis(playbackState.currentPositionMs)})",
+                            maxLines = 1
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Bookmark,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    onClick = {
+                        menuExpanded = false
+                        onToggleBookmark()
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 38.dp)
+                        .testTag("now_playing_menu_bookmark")
+                )
+
+                DropdownMenuItem(
+                    text = { Text("Audio Output / Cast", maxLines = 1) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.SpeakerGroup,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    },
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
+                    onClick = {
+                        menuExpanded = false
+                        onOpenAudioOutputSwitcher()
+                    },
+                    modifier = Modifier
+                        .heightIn(min = 38.dp)
+                        .testTag("now_playing_menu_audio_output")
+                )
+            }
         }
     }
 }
@@ -3436,9 +3926,19 @@ private fun LandscapeAudioNowPlayingDeck(
     showSubtitleSettings: Boolean,
     showSleepTimerPanel: Boolean,
     showSpeedPanel: Boolean,
+    showMusicSettingsPanel: Boolean = false,
     onToggleSubtitleSettings: () -> Unit,
     onToggleSleepTimerPanel: () -> Unit,
     onToggleSpeedPanel: () -> Unit,
+    onToggleMusicSettings: () -> Unit = {},
+    onSetAbRepeatStart: () -> Unit = {},
+    onSetAbRepeatEnd: () -> Unit = {},
+    onClearAbRepeat: () -> Unit = {},
+    onToggleBookmark: () -> Unit = {},
+    onRemoveBookmark: (Long) -> Unit = {},
+    onOpenAudioOutputSwitcher: () -> Unit = {},
+    recentHistory: List<PlaybackHistoryEntity> = emptyList(),
+    onPlayHistoryItem: (PlaybackHistoryEntity) -> Unit = {},
     onCollapse: () -> Unit,
     onPlayPause: () -> Unit,
     onSeekTo: (Long) -> Unit,
@@ -3547,7 +4047,8 @@ private fun LandscapeAudioNowPlayingDeck(
                 currentMedia = currentMedia,
                 playbackState = playbackState,
                 subtitlesEnabled = userPreferences.subtitlesEnabledByDefault,
-                compactMode = true
+                compactMode = true,
+                showWaveform = userPreferences.playerShowWaveform
             )
 
             Text(
@@ -3564,9 +4065,17 @@ private fun LandscapeAudioNowPlayingDeck(
                     it != "Unknown Artist" &&
                     it != "Local Storage"
             }
-            if (artistText != null) {
+            val albumText = currentMedia.album.takeIf {
+                it.isNotBlank() &&
+                    !it.startsWith("PulsePlay", ignoreCase = true) &&
+                    it != "<unknown>" &&
+                    it != "Unknown Album" &&
+                    it != artistText
+            }
+            val subtitleLine = listOfNotNull(artistText, albumText).joinToString(" • ")
+            if (subtitleLine.isNotBlank()) {
                 Text(
-                    text = artistText,
+                    text = subtitleLine,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -3580,14 +4089,31 @@ private fun LandscapeAudioNowPlayingDeck(
             modifier = Modifier
                 .weight(0.58f)
                 .fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Top Utility Row: 3-Dot More Options Menu on Right
+            // Top Utility Row: Quick Actions + 3-Dot More Options Menu on Right
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    MusicQuickActionAndMarkersSection(
+                        playbackState = playbackState,
+                        onToggleSpeedPanel = onToggleSpeedPanel,
+                        onOpenEqualizer = onOpenEqualizer,
+                        onToggleMusicSettings = onToggleMusicSettings,
+                        onSetAbRepeatStart = onSetAbRepeatStart,
+                        onSetAbRepeatEnd = onSetAbRepeatEnd,
+                        onClearAbRepeat = onClearAbRepeat,
+                        onToggleBookmark = onToggleBookmark,
+                        onRemoveBookmark = onRemoveBookmark,
+                        onSeekToBookmark = onSeekTo,
+                        compactMode = true,
+                        showQuickActionRow = userPreferences.playerShowQuickActionRow,
+                        showAbAndBookmarkStrip = userPreferences.playerShowAbAndBookmarkStrip
+                    )
+                }
                 NowPlayingOverflowMenuButton(
                     currentMedia = currentMedia,
                     playbackState = playbackState,
@@ -3595,10 +4121,17 @@ private fun LandscapeAudioNowPlayingDeck(
                     showSpeedPanel = showSpeedPanel,
                     showSleepTimerPanel = showSleepTimerPanel,
                     showSubtitleSettings = showSubtitleSettings,
+                    showMusicSettingsPanel = showMusicSettingsPanel,
                     onToggleSpeedPanel = onToggleSpeedPanel,
                     onOpenEqualizer = onOpenEqualizer,
                     onToggleSleepTimerPanel = onToggleSleepTimerPanel,
                     onToggleSubtitleSettings = onToggleSubtitleSettings,
+                    onToggleMusicSettings = onToggleMusicSettings,
+                    onSetAbRepeatStart = onSetAbRepeatStart,
+                    onSetAbRepeatEnd = onSetAbRepeatEnd,
+                    onClearAbRepeat = onClearAbRepeat,
+                    onToggleBookmark = onToggleBookmark,
+                    onOpenAudioOutputSwitcher = onOpenAudioOutputSwitcher,
                     onOpenStudio = onOpenStudio,
                     onToggleFavorite = onToggleFavorite,
                     onShareCurrentMedia = onShareCurrentMedia,
@@ -3638,26 +4171,45 @@ private fun LandscapeAudioNowPlayingDeck(
             // Seek Bar & Timestamps
             val duration = playbackState.durationMs.coerceAtLeast(1L)
             val pos = playbackState.currentPositionMs.coerceIn(0L, duration)
+            val remainingMs = (duration - pos).coerceAtLeast(0L)
             Column(modifier = Modifier.fillMaxWidth()) {
                 Slider(
                     value = pos.toFloat(),
                     onValueChange = { onSeekTo(it.toLong()) },
                     valueRange = 0f..duration.toFloat(),
+                    colors = SliderDefaults.colors(
+                        thumbColor = CinemaNeonGreen,
+                        activeTrackColor = CinemaNeonGreen,
+                        inactiveTrackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.24f)
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("now_playing_seek_slider")
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = formatDurationMillis(pos),
                         style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = CinemaNeonGreen
                     )
+                    if (playbackState.isAbRepeatActive) {
+                        Text(
+                            text = "A-B: ${formatDurationMillis(playbackState.abRepeatStartMs ?: 0L)} → ${formatDurationMillis(playbackState.abRepeatEndMs ?: 0L)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = CinemaNeonGreen,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     Text(
-                        text = formatDurationMillis(duration),
+                        text = if (userPreferences.playerShowRemainingTime) {
+                            "-${formatDurationMillis(remainingMs)} • ${formatDurationMillis(duration)}"
+                        } else {
+                            formatDurationMillis(duration)
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -3680,7 +4232,7 @@ private fun LandscapeAudioNowPlayingDeck(
                         imageVector = Icons.Default.Shuffle,
                         contentDescription = "Shuffle",
                         tint = if (playbackState.shuffleEnabled) {
-                            MaterialTheme.colorScheme.primary
+                            CinemaNeonGreen
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         }
@@ -3705,7 +4257,11 @@ private fun LandscapeAudioNowPlayingDeck(
                     modifier = Modifier
                         .size(54.dp)
                         .testTag("transport_play_pause_button"),
-                    shape = CircleShape
+                    shape = CircleShape,
+                    colors = IconButtonDefaults.filledIconButtonColors(
+                        containerColor = CinemaNeonGreen,
+                        contentColor = Color(0xFF06130B)
+                    )
                 ) {
                     Icon(
                         imageVector = if (playbackState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -3748,7 +4304,7 @@ private fun LandscapeAudioNowPlayingDeck(
                 }
             }
 
-            // Compact Up Next Queue Panel directly BELOW playback controls in RIGHT column
+            // Compact Up Next Queue & Recently Played History Panel directly BELOW playback controls in RIGHT column
             LandscapeInlineQueuePanel(
                 playbackState = playbackState,
                 onSelectQueueItemAt = onSelectQueueItemAt,
@@ -3757,6 +4313,8 @@ private fun LandscapeAudioNowPlayingDeck(
                 onPlayNextItem = onPlayNextItem,
                 onClearQueue = onClearQueue,
                 onSaveQueueAsPlaylist = onSaveQueueAsPlaylist,
+                recentHistory = recentHistory,
+                onPlayHistoryItem = onPlayHistoryItem,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
@@ -3766,8 +4324,8 @@ private fun LandscapeAudioNowPlayingDeck(
 }
 
 /**
- * Compact inline Up Next queue section positioned inside the right-hand player column for landscape mode.
- * Features internal vertical scrolling, queue header with quick actions, and clean track items.
+ * Compact inline Up Next queue & Recently Played History section positioned inside the right-hand player column for landscape mode.
+ * Features internal vertical scrolling, queue/history tab header with quick actions, and clean track items.
  */
 @Composable
 private fun LandscapeInlineQueuePanel(
@@ -3778,11 +4336,14 @@ private fun LandscapeInlineQueuePanel(
     onPlayNextItem: (MediaEntity) -> Unit,
     onClearQueue: () -> Unit,
     onSaveQueueAsPlaylist: (String) -> Unit,
+    recentHistory: List<PlaybackHistoryEntity> = emptyList(),
+    onPlayHistoryItem: (PlaybackHistoryEntity) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var showClearConfirmationDialog by rememberSaveable { mutableStateOf(false) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Up Next Queue, 1 = Recently Played
 
     if (showClearConfirmationDialog) {
         AlertDialog(
@@ -3819,7 +4380,7 @@ private fun LandscapeInlineQueuePanel(
                 .fillMaxSize()
                 .padding(horizontal = 10.dp, vertical = 8.dp)
         ) {
-            // Compact Header Row: Queue Title, Count, Jump to song, Save Playlist, Clear Queue
+            // Compact Header Row: Queue / History Tabs, Jump to song, Save Playlist, Clear Queue
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -3827,34 +4388,41 @@ private fun LandscapeInlineQueuePanel(
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp)
+                    FilterChip(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        label = {
+                            Text(
+                                "${playbackState.queueTitle.ifBlank { "Up Next" }} (${playbackState.queue.size})",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("landscape_queue_tab_queue")
                     )
-                    Text(
-                        text = playbackState.queueTitle.ifBlank { "Up Next" },
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                    FilterChip(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        label = { Text("History (${recentHistory.size})", maxLines = 1) },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.History,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        },
+                        modifier = Modifier.testTag("landscape_queue_tab_history")
                     )
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-                    ) {
-                        Text(
-                            text = "${playbackState.queue.size}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
-                        )
-                    }
                 }
 
                 Row(
@@ -3925,8 +4493,80 @@ private fun LandscapeInlineQueuePanel(
 
             Spacer(modifier = Modifier.height(4.dp))
 
-            // Internally vertically scrollable list of tracks
-            if (playbackState.queue.isEmpty()) {
+            // Internally vertically scrollable list of tracks (Queue or History)
+            if (selectedTab == 1) {
+                if (recentHistory.isEmpty()) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No playback history yet",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        contentPadding = PaddingValues(bottom = 4.dp)
+                    ) {
+                        itemsIndexed(
+                            items = recentHistory,
+                            key = { idx, item -> "land_hist_${idx}_${item.uriString}" }
+                        ) { idx, historyItem ->
+                            val isCurrent = playbackState.currentMedia?.uriString == historyItem.uriString
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isCurrent) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                                } else {
+                                    MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onPlayHistoryItem(historyItem) }
+                                    .testTag("landscape_history_row_$idx")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isCurrent) Icons.Default.GraphicEq else Icons.Default.History,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = historyItem.titleSnapshot,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${historyItem.mediaType.name} • ${historyItem.playCount}x",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Text(
+                                        text = formatDurationMillis(historyItem.durationMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (playbackState.queue.isEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center

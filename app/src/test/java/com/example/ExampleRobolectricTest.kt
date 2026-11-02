@@ -3121,7 +3121,8 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("now_playing_menu_file_info").assertExists()
 
         // 3. Select Playback Speed from inside the 3-dot menu -> opens PlaybackSpeedControlCard
-        composeTestRule.onNodeWithTag("now_playing_menu_speed").performClick()
+        composeTestRule.onNodeWithTag("now_playing_menu_speed")
+            .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.mainClock.advanceTimeBy(250L)
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("playback_speed_panel").assertExists()
@@ -3130,7 +3131,8 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("now_playing_more_options_button").performClick()
         composeTestRule.mainClock.advanceTimeBy(250L)
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("now_playing_menu_studio").performClick()
+        composeTestRule.onNodeWithTag("now_playing_menu_studio")
+            .performSemanticsAction(SemanticsActions.OnClick)
         composeTestRule.mainClock.advanceTimeBy(250L)
         composeTestRule.waitForIdle()
         assertTrue(studioOpened)
@@ -5352,7 +5354,152 @@ class ExampleRobolectricTest {
         assertNotNull(afterRecheckCaps)
         assertEquals(6, afterRecheckCaps.resolutionCategories.size)
     }
+
+    @Test
+    fun `musicPlayerUpgradedFeatures_abRepeatBookmarksSettingsAndHistoryTabWorkEndToEnd`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(app)
+        val sampleTrack = MediaEntity(
+            uriString = "file:///test_upgraded_music.wav",
+            mediaStoreId = null,
+            title = "Studio Reference Track",
+            artist = "PulsePlay Audio Lab",
+            album = "Reference Sessions Vol. 1",
+            folderName = "StudioSessions",
+            durationMs = 210_000L,
+            sizeBytes = 4_096_000L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700001200L
+        )
+        vm.setQueue(listOf(sampleTrack), initialIndex = 0, queueTitle = "StudioSessions")
+
+        // Verify ViewModel A-B Repeat & Bookmarks state transitions
+        vm.setAbRepeatPointA(15_000L)
+        assertEquals(15_000L, vm.playbackState.value.abRepeatStartMs)
+        assertFalse(vm.playbackState.value.isAbRepeatActive)
+
+        vm.setAbRepeatPointB(45_000L)
+        assertEquals(45_000L, vm.playbackState.value.abRepeatEndMs)
+        assertTrue(vm.playbackState.value.isAbRepeatActive)
+
+        vm.addOrToggleBookmarkAtCurrentPosition()
+        assertEquals(1, vm.playbackState.value.trackBookmarksMs.size)
+
+        vm.setMusicPlaybackSettingsDialogVisible(true)
+        assertTrue(vm.playbackState.value.showMusicPlaybackSettingsDialog)
+        assertFalse(vm.playbackState.value.showPlaybackSpeedDialog)
+
+        // Verify mutual exclusivity with Speed dialog
+        vm.setPlaybackSpeedDialogVisible(true)
+        assertTrue(vm.playbackState.value.showPlaybackSpeedDialog)
+        assertFalse(vm.playbackState.value.showMusicPlaybackSettingsDialog)
+        vm.setPlaybackSpeedDialogVisible(false)
+
+        // Verify Crossfade, Gapless, Volume, Audio Balance & Bass Boost in ViewModel
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        vm.cycleCrossfadeDuration()
+        assertEquals(2, vm.userPreferences.value.crossfadeDurationSeconds)
+
+        vm.setGaplessPlaybackEnabled(false)
+        assertFalse(vm.userPreferences.value.gaplessPlaybackEnabled)
+        vm.setGaplessPlaybackEnabled(true)
+        assertTrue(vm.userPreferences.value.gaplessPlaybackEnabled)
+
+        vm.setVolumeLevel(0.65f)
+        assertEquals(0.65f, vm.playbackState.value.volumeGestureLevel, 0.01f)
+
+        vm.setAudioBalance(-0.25f)
+        assertEquals(-0.25f, vm.userPreferences.value.audioBalance, 0.01f)
+        vm.setAudioBalance(0f)
+
+        vm.cycleBassBoostQuick()
+        assertTrue(vm.equalizerState.value.isEnabled)
+        assertEquals(250, vm.equalizerState.value.bassBoostStrength)
+
+        var testViewport by mutableStateOf(DpSize(412.dp, 1100.dp))
+        vm.setNowPlayingExpanded(true)
+
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(testViewport)) {
+                    PulsePlayAppRoot(viewModel = vm)
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify Quick-Control Bar & Active Markers Strip on Music Now Playing screen
+        composeTestRule.onNodeWithTag("now_playing_music_quick_bar").assertExists()
+        composeTestRule.onNodeWithTag("music_quick_speed_button").assertExists()
+        composeTestRule.onNodeWithTag("music_quick_equalizer_button").assertExists()
+        composeTestRule.onNodeWithTag("music_quick_ab_repeat_button").assertExists()
+        composeTestRule.onNodeWithTag("music_quick_bookmark_button").assertExists()
+        composeTestRule.onNodeWithTag("music_quick_settings_button").assertExists()
+        composeTestRule.onNodeWithTag("music_active_markers_strip").assertExists()
+        composeTestRule.onNodeWithTag("music_active_ab_chip").assertExists()
+
+        // Open Unified 5-Section Music Quick Settings Panel via 3-dot More Options button
+        composeTestRule.onNodeWithTag("now_playing_more_options_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+
+        // Verify ONLY ONE settings panel is open and all 5 reference sections exist
+        assertEquals(1, composeTestRule.onAllNodesWithTag("music_playback_settings_panel").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("music_settings_section_a_grid").assertExists()
+        composeTestRule.onNodeWithTag("music_settings_section_b_play_settings").assertExists()
+        composeTestRule.onNodeWithTag("music_settings_section_c_loop").assertExists()
+        composeTestRule.onNodeWithTag("music_settings_section_d_audio_controls").assertExists()
+        composeTestRule.onNodeWithTag("music_settings_section_e_more").assertExists()
+
+        // Verify Section B Crossfade & Gapless buttons and A-B Clear
+        composeTestRule.onNodeWithTag("music_settings_crossfade_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(4, vm.userPreferences.value.crossfadeDurationSeconds)
+
+        composeTestRule.onNodeWithTag("music_settings_ab_clear")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertFalse(vm.playbackState.value.isAbRepeatActive)
+
+        // Verify Section C Loop pills
+        composeTestRule.onNodeWithTag("music_settings_repeat_one")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(com.example.viewmodel.RepeatModeState.ONE, vm.playbackState.value.repeatMode)
+
+        // Verify Section E sub-dialogs (Edit Player, Lyrics Help, Feedback, Customize Theme)
+        composeTestRule.onNodeWithTag("music_settings_edit_player_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("edit_player_layout_dialog").assertExists()
+        composeTestRule.onNodeWithTag("edit_player_done_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("music_settings_lyrics_help_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("lyrics_help_tutorial_dialog").assertExists()
+        composeTestRule.onNodeWithTag("lyrics_help_close_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+
+        // Switch to Landscape mode while Quick Settings panel is open -> verify no duplicate panel and right-docked layout
+        testViewport = DpSize(900.dp, 480.dp)
+        composeTestRule.waitForIdle()
+        assertEquals(1, composeTestRule.onAllNodesWithTag("music_playback_settings_panel").fetchSemanticsNodes().size)
+        composeTestRule.onNodeWithTag("landscape_audio_now_playing_split").assertExists()
+
+        // Close Settings Panel via Done button
+        composeTestRule.onNodeWithTag("music_settings_done_button")
+            .performSemanticsAction(SemanticsActions.OnClick)
+        composeTestRule.waitForIdle()
+        assertEquals(0, composeTestRule.onAllNodesWithTag("music_playback_settings_panel").fetchSemanticsNodes().size)
+    }
 }
+
 
 
 

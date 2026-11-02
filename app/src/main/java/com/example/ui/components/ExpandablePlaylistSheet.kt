@@ -106,7 +106,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
+import androidx.compose.material.icons.filled.History
+import androidx.compose.material3.FilterChip
 import com.example.data.local.MediaEntity
+import com.example.data.local.PlaybackHistoryEntity
 import com.example.media.rememberMediaArtworkBitmap
 import com.example.viewmodel.PlaybackUiState
 import com.example.viewmodel.RepeatModeState
@@ -339,10 +342,13 @@ fun ExpandablePlaylistBottomSheetOverlay(
     onPlayNextItem: (MediaEntity) -> Unit,
     onClearQueue: () -> Unit,
     onSaveQueueAsPlaylist: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    recentHistory: List<PlaybackHistoryEntity> = emptyList(),
+    onPlayHistoryItem: (PlaybackHistoryEntity) -> Unit = {}
 ) {
     val coroutineScope = rememberCoroutineScope()
     var showClearConfirmationDialog by rememberSaveable { mutableStateOf(false) }
+    var selectedSheetTab by rememberSaveable { mutableIntStateOf(0) } // 0 = Playing Queue, 1 = Recently Played
 
     if (showClearConfirmationDialog) {
         AlertDialog(
@@ -590,12 +596,149 @@ fun ExpandablePlaylistBottomSheetOverlay(
                         }
                     )
 
+                    // Segmented Tab Bar: Playing Queue vs Recently Played History
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 6.dp)
+                            .testTag("playlist_sheet_tab_bar"),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilterChip(
+                            selected = selectedSheetTab == 0,
+                            onClick = { selectedSheetTab = 0 },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            label = { Text("Playing Queue (${playbackState.queue.size})") },
+                            modifier = Modifier.testTag("playlist_sheet_tab_queue")
+                        )
+                        FilterChip(
+                            selected = selectedSheetTab == 1,
+                            onClick = { selectedSheetTab = 1 },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.History,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            label = { Text("Recently Played (${recentHistory.size})") },
+                            modifier = Modifier.testTag("playlist_sheet_tab_history")
+                        )
+                    }
+
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                     )
 
-                    // Virtualized Queue Song List (supports 1,000–10,000+ tracks smoothly)
-                    if (playbackState.queue.isEmpty()) {
+                    if (selectedSheetTab == 1) {
+                        if (recentHistory.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp)
+                                    .testTag("playlist_sheet_history_empty_state"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.History,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(44.dp)
+                                    )
+                                    Text(
+                                        text = "No Playback History Yet",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Tracks you play will appear here so you can replay them anytime.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                                    .testTag("expandable_history_lazy_column"),
+                                contentPadding = PaddingValues(
+                                    start = 12.dp,
+                                    end = 16.dp,
+                                    top = 8.dp,
+                                    bottom = 24.dp
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                itemsIndexed(
+                                    items = recentHistory,
+                                    key = { idx, item -> "hist_${idx}_${item.uriString}" }
+                                ) { idx, historyItem ->
+                                    val isCurrent = playbackState.currentMedia?.uriString == historyItem.uriString
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = if (isCurrent) {
+                                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onPlayHistoryItem(historyItem) }
+                                            .testTag("playlist_history_row_$idx")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (isCurrent) Icons.Default.GraphicEq else Icons.Default.History,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = historyItem.titleSnapshot,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.SemiBold,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${historyItem.mediaType.name} • Played ${historyItem.playCount}x",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            Text(
+                                                text = formatDurationMillis(historyItem.durationMs),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if (playbackState.queue.isEmpty()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()

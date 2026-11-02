@@ -666,11 +666,50 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
     // File Information / Details Dialog
     if (activeFileInfo != null) {
         val info = activeFileInfo!!
+        val matchedMedia = remember(info.locationOrUri, allMedia, playbackState.currentMedia) {
+            allMedia.find { it.uriString == info.locationOrUri } ?: playbackState.currentMedia
+        }
         MediaFileInformationDialog(
             info = info,
             onCopyLocation = { locationText ->
                 if (MediaFileActionsHelper.copyTextToClipboard(context, "Media File Location", locationText)) {
                     viewModel.postStatusBannerMessage("Copied file location to clipboard.")
+                }
+            },
+            isFavorite = matchedMedia?.let { favoriteUris.contains(it.uriString) } ?: false,
+            onToggleFavoriteClick = matchedMedia?.let { media ->
+                { viewModel.toggleFavorite(media) }
+            },
+            onShareClick = matchedMedia?.let { media ->
+                {
+                    activeFileInfo = null
+                    when (val outcome = MediaFileActionsHelper.shareMediaFile(context, media)) {
+                        is ShareOutcome.Success -> {
+                            viewModel.postStatusBannerMessage(
+                                "Sharing '${media.title}' (${outcome.mimeType})",
+                                InAppNotificationType.TEMPORARY_INFO
+                            )
+                        }
+                        is ShareOutcome.Failure -> {
+                            viewModel.postStatusBannerMessage(
+                                outcome.errorMessage,
+                                InAppNotificationType.PERSISTENT_ERROR
+                            )
+                        }
+                    }
+                }
+            },
+            onAddToPlaylistClick = matchedMedia?.let { media ->
+                {
+                    activeFileInfo = null
+                    pendingPlaylistAddMedia = media
+                }
+            },
+            onOpenInStudioClick = matchedMedia?.let { media ->
+                {
+                    activeFileInfo = null
+                    viewModel.setNowPlayingExpanded(false)
+                    viewModel.openStudioForMedia(media)
                 }
             },
             onDismiss = { activeFileInfo = null }
@@ -871,6 +910,89 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 },
                 onToggleSubtitleSettings = {
                     viewModel.setSubtitleSettingsDialogVisible(!playbackState.showSubtitleSettingsDialog)
+                },
+                onToggleMusicPlaybackSettings = {
+                    viewModel.setMusicPlaybackSettingsDialogVisible(!playbackState.showMusicPlaybackSettingsDialog)
+                },
+                recentHistory = history,
+                onPlayHistoryItem = { historyItem ->
+                    viewModel.playFromHistoryItem(historyItem)
+                },
+                onSetAbRepeatStart = {
+                    viewModel.setAbRepeatPointA()
+                },
+                onSetAbRepeatEnd = {
+                    viewModel.setAbRepeatPointB()
+                },
+                onClearAbRepeat = {
+                    viewModel.clearAbRepeat()
+                },
+                onToggleBookmark = {
+                    viewModel.addOrToggleBookmarkAtCurrentPosition()
+                },
+                onRemoveBookmark = { bookmarkMs ->
+                    viewModel.removeTrackBookmark(bookmarkMs)
+                },
+                onSelectRepeatMode = { mode ->
+                    viewModel.setRepeatModeState(mode)
+                },
+                onOpenAudioOutputSwitcher = {
+                    val msg = MediaFileActionsHelper.openAudioOutputSwitcher(context)
+                    viewModel.postStatusBannerMessage(msg, InAppNotificationType.TEMPORARY_INFO)
+                },
+                onToggleBackgroundPlayback = { enabled ->
+                    viewModel.setBackgroundPlaybackEnabled(enabled)
+                },
+                onToggleResumePlayback = { enabled ->
+                    viewModel.setResumePlaybackEnabled(enabled)
+                },
+                equalizerEnabled = eqState.isEnabled,
+                bassBoostStrength = eqState.bassBoostStrength,
+                onOpenCastSettings = {
+                    val msg = MediaFileActionsHelper.openCastSettings(context)
+                    viewModel.postStatusBannerMessage(msg, InAppNotificationType.TEMPORARY_INFO)
+                },
+                onCycleCrossfade = {
+                    viewModel.cycleCrossfadeDuration()
+                },
+                onToggleGaplessPlayback = { enabled ->
+                    viewModel.setGaplessPlaybackEnabled(enabled)
+                },
+                onSetVolumeLevel = { level ->
+                    viewModel.setVolumeLevel(level)
+                },
+                onSetAudioBalance = { balance ->
+                    viewModel.setAudioBalance(balance)
+                },
+                onCycleBassBoost = {
+                    viewModel.cycleBassBoostQuick()
+                },
+                onSetThemeMode = { mode ->
+                    viewModel.setThemeMode(mode)
+                },
+                onSetDynamicColor = { enabled ->
+                    viewModel.setDynamicColor(enabled)
+                },
+                onSetPlayerShowWaveform = { enabled ->
+                    viewModel.setPlayerShowWaveform(enabled)
+                },
+                onSetPlayerShowQuickActionRow = { enabled ->
+                    viewModel.setPlayerShowQuickActionRow(enabled)
+                },
+                onSetPlayerShowRemainingTime = { enabled ->
+                    viewModel.setPlayerShowRemainingTime(enabled)
+                },
+                onSetPlayerShowAbAndBookmarkStrip = { enabled ->
+                    viewModel.setPlayerShowAbAndBookmarkStrip(enabled)
+                },
+                onSendFeedback = { category, message ->
+                    val msg = MediaFileActionsHelper.sendFeedbackIntent(
+                        context = context,
+                        category = category,
+                        message = message,
+                        currentMedia = playbackState.currentMedia
+                    )
+                    viewModel.postStatusBannerMessage(msg, InAppNotificationType.TEMPORARY_INFO)
                 }
             )
             InAppNotificationBanner(

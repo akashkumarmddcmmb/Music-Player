@@ -1002,4 +1002,100 @@ object MediaFileActionsHelper {
         }
         IsoBmffCodecInfo(videoCodec = videoCodec, audioCodec = audioCodec)
     }.getOrNull()
+
+    /**
+     * Opens the system Audio Output / Bluetooth & Cast switcher panel when supported by the Android OS,
+     * falling back to Bluetooth/Sound settings gracefully.
+     */
+    fun openAudioOutputSwitcher(context: Context): String {
+        val candidates = listOf(
+            "com.android.settings.panel.action.MEDIA_OUTPUT",
+            Settings.ACTION_SOUND_SETTINGS,
+            Settings.ACTION_BLUETOOTH_SETTINGS
+        )
+        for (action in candidates) {
+            val launched = runCatching {
+                val intent = Intent(action).apply {
+                    if (context !is Activity) {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                }
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) {
+                return "Opened system Audio Output & Bluetooth device switcher."
+            }
+        }
+        return "Audio Output routing is managed automatically by your active Bluetooth/Speaker connection."
+    }
+
+    /**
+     * Opens the Android Cast / Wireless Display / Media Output routing settings screen.
+     */
+    fun openCastSettings(context: Context): String {
+        val candidates = listOf(
+            Settings.ACTION_CAST_SETTINGS,
+            "com.android.settings.panel.action.MEDIA_OUTPUT",
+            Settings.ACTION_BLUETOOTH_SETTINGS
+        )
+        for (action in candidates) {
+            val launched = runCatching {
+                val intent = Intent(action).apply {
+                    if (context !is Activity) {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                }
+                context.startActivity(intent)
+                true
+            }.getOrDefault(false)
+            if (launched) {
+                return "Opened Android Cast & Wireless Audio Routing settings."
+            }
+        }
+        return "Cast & Wireless Audio routing is managed by your device's active media output."
+    }
+
+    /**
+     * Launches an Android Share / Email intent with user feedback and optional track diagnostics,
+     * and copies the formatted feedback report to clipboard as a reliable fallback.
+     */
+    fun sendFeedbackIntent(
+        context: Context,
+        category: String,
+        message: String,
+        currentMedia: MediaEntity?
+    ): String {
+        val trackSummary = currentMedia?.let {
+            "\nTrack: ${it.title} (${it.mimeType}, ${it.durationMs}ms)"
+        }.orEmpty()
+        val fullBody = buildString {
+            append("PulsePlay Music Player Feedback\n")
+            append("Category: $category\n")
+            append("Message: ${message.ifBlank { "General feedback" }}")
+            append(trackSummary)
+        }
+        copyTextToClipboard(context, "PulsePlay Feedback", fullBody)
+        val launched = runCatching {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_SUBJECT, "PulsePlay Feedback: $category")
+                putExtra(Intent.EXTRA_TEXT, fullBody)
+            }
+            val chooser = Intent.createChooser(sendIntent, "Send PulsePlay Feedback").apply {
+                if (context !is Activity) {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            }
+            context.startActivity(chooser)
+            true
+        }.getOrDefault(false)
+        return if (launched) {
+            "Feedback prepared ($category) and opened share sheet."
+        } else {
+            "Feedback saved to clipboard ($category). Thank you for helping improve PulsePlay!"
+        }
+    }
 }
+
+

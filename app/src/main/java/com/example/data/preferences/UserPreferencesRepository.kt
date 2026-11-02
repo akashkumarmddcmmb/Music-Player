@@ -79,6 +79,13 @@ data class UserPreferencesState(
     val bassBoostStrength: Int = 0, // 0..1000
     val preampGainDb: Float = 0.0f, // -12.0f .. +12.0f
     val customBandLevelsMb: List<Int> = listOf(0, 0, 0, 0, 0),
+    // Music Play Settings & Edit Player Customization
+    val crossfadeDurationSeconds: Int = 0, // 0 = Off, 2, 4, 6, 8, 12
+    val gaplessPlaybackEnabled: Boolean = true,
+    val playerShowWaveform: Boolean = true,
+    val playerShowQuickActionRow: Boolean = true,
+    val playerShowRemainingTime: Boolean = true,
+    val playerShowAbAndBookmarkStrip: Boolean = true,
     // Hardware Decoder Preference (Simple ON/OFF switch, enabled by default)
     val hardwareDecoderPreferenceEnabled: Boolean = true,
     // Software Decoder Fallback (Simple ON/OFF switch, disabled by default)
@@ -115,6 +122,12 @@ class UserPreferencesRepository(private val context: Context) {
         val BASS_STRENGTH = intPreferencesKey("bass_boost_strength")
         val PREAMP_GAIN_DB = floatPreferencesKey("preamp_gain_db")
         val EQ_BANDS_CSV = stringPreferencesKey("equalizer_bands_csv")
+        val CROSSFADE_SECONDS = intPreferencesKey("crossfade_duration_seconds")
+        val GAPLESS_PLAYBACK = booleanPreferencesKey("gapless_playback_enabled")
+        val PLAYER_SHOW_WAVEFORM = booleanPreferencesKey("player_show_waveform")
+        val PLAYER_SHOW_QUICK_ROW = booleanPreferencesKey("player_show_quick_action_row")
+        val PLAYER_SHOW_REMAINING_TIME = booleanPreferencesKey("player_show_remaining_time")
+        val PLAYER_SHOW_AB_BOOKMARK_STRIP = booleanPreferencesKey("player_show_ab_bookmark_strip")
         val HARDWARE_DECODER_PREFERENCE = booleanPreferencesKey("hardware_decoder_preference_enabled")
         val ALLOW_4K_SW_FALLBACK = booleanPreferencesKey("allow_experimental_4k_software_fallback")
         val OPTIONAL_ADS_ENABLED = booleanPreferencesKey("optional_ads_module_enabled")
@@ -173,6 +186,12 @@ class UserPreferencesRepository(private val context: Context) {
             bassBoostStrength = (prefs[Keys.BASS_STRENGTH] ?: 0).coerceIn(0, 1000),
             preampGainDb = (prefs[Keys.PREAMP_GAIN_DB] ?: 0.0f).coerceIn(-12.0f, 12.0f),
             customBandLevelsMb = parsedBands,
+            crossfadeDurationSeconds = (prefs[Keys.CROSSFADE_SECONDS] ?: 0).coerceIn(0, 15),
+            gaplessPlaybackEnabled = prefs[Keys.GAPLESS_PLAYBACK] ?: true,
+            playerShowWaveform = prefs[Keys.PLAYER_SHOW_WAVEFORM] ?: true,
+            playerShowQuickActionRow = prefs[Keys.PLAYER_SHOW_QUICK_ROW] ?: true,
+            playerShowRemainingTime = prefs[Keys.PLAYER_SHOW_REMAINING_TIME] ?: true,
+            playerShowAbAndBookmarkStrip = prefs[Keys.PLAYER_SHOW_AB_BOOKMARK_STRIP] ?: true,
             hardwareDecoderPreferenceEnabled = hwDecoderPref,
             allowExperimental4kSoftwareFallback = allowSwFallback || highResMode == HighResVideoPlaybackMode.SOFTWARE_FALLBACK,
             optionalAdsModuleEnabled = prefs[Keys.OPTIONAL_ADS_ENABLED] ?: false,
@@ -181,6 +200,30 @@ class UserPreferencesRepository(private val context: Context) {
             includePrereleaseUpdates = prefs[Keys.INCLUDE_PRERELEASE_UPDATES] ?: false,
             selectedUpdateChannel = savedUpdateChannel
         )
+    }
+
+    suspend fun setCrossfadeDurationSeconds(seconds: Int) {
+        context.pulseDataStore.edit { it[Keys.CROSSFADE_SECONDS] = seconds.coerceIn(0, 15) }
+    }
+
+    suspend fun setGaplessPlaybackEnabled(enabled: Boolean) {
+        context.pulseDataStore.edit { it[Keys.GAPLESS_PLAYBACK] = enabled }
+    }
+
+    suspend fun setPlayerShowWaveform(show: Boolean) {
+        context.pulseDataStore.edit { it[Keys.PLAYER_SHOW_WAVEFORM] = show }
+    }
+
+    suspend fun setPlayerShowQuickActionRow(show: Boolean) {
+        context.pulseDataStore.edit { it[Keys.PLAYER_SHOW_QUICK_ROW] = show }
+    }
+
+    suspend fun setPlayerShowRemainingTime(show: Boolean) {
+        context.pulseDataStore.edit { it[Keys.PLAYER_SHOW_REMAINING_TIME] = show }
+    }
+
+    suspend fun setPlayerShowAbAndBookmarkStrip(show: Boolean) {
+        context.pulseDataStore.edit { it[Keys.PLAYER_SHOW_AB_BOOKMARK_STRIP] = show }
     }
 
     suspend fun setThemeMode(mode: AppThemeMode) {

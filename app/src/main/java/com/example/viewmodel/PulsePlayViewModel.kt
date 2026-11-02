@@ -180,10 +180,17 @@ data class PlaybackUiState(
     val showPlaybackSpeedDialog: Boolean = false,
     val showVideoSettingsDialog: Boolean = false,
     val showSubtitleSettingsDialog: Boolean = false,
+    val showMusicPlaybackSettingsDialog: Boolean = false,
+    val abRepeatStartMs: Long? = null,
+    val abRepeatEndMs: Long? = null,
+    val trackBookmarksMs: List<Long> = emptyList(),
     val playbackModeAvailabilities: List<PlaybackModeAvailabilityReport> = emptyList()
 ) {
     val isSleepTimerActive: Boolean
         get() = sleepTimerRemainingMs > 0L || sleepTimerStopAtEndOfTrack
+
+    val isAbRepeatActive: Boolean
+        get() = abRepeatStartMs != null && abRepeatEndMs != null && abRepeatEndMs > abRepeatStartMs
 
     val currentArtworkDataHash: Int
         get() = currentArtworkData?.let { Arrays.hashCode(it) } ?: 0
@@ -272,8 +279,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     val statusBannerMessage: StateFlow<String?> = notificationManager.currentMessage
 
     // Preferences & Equalizer State
-    val userPreferences: StateFlow<UserPreferencesState> = preferencesRepository.preferencesFlow
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), UserPreferencesState())
+    private val _userPreferences = MutableStateFlow(UserPreferencesState())
+    val userPreferences: StateFlow<UserPreferencesState> = _userPreferences.asStateFlow()
 
     val equalizerState: StateFlow<HardwareEqualizerState> = equalizerController.state
 
@@ -332,6 +339,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     private var artworkResolutionJob: Job? = null
     private var subtitleErrorAutoDismissJob: Job? = null
     private var lastHistoryWriteTimeMs: Long = 0L
+    private val bookmarksByUri = mutableMapOf<String, List<Long>>()
     private val decoderRecoveryAttemptsByUri = object : LinkedHashMap<String, Int>(32, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean = size > 64
     }
@@ -505,6 +513,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 videoCapabilityEvaluation = nextVideoEval,
                 showVideoCompatibilityDialog = false,
                 showVideoInfoDetailsDialog = false,
+                abRepeatStartMs = null,
+                abRepeatEndMs = null,
+                trackBookmarksMs = if (nextEntity != null) bookmarksByUri[nextEntity.uriString].orEmpty() else emptyList(),
                 activeVideoEngineStrategy = nextVideoEval?.recommendedStrategy
                     ?: AdaptiveVideoEngineStrategy.NORMAL_HARDWARE_PATH,
                 isTemporaryHighResEngineActive = nextVideoEval?.resolutionTier?.isHighRes4kOrAbove == true,
@@ -844,6 +855,11 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     isDownscaledPlayback = telemetry.isDownscaledOrLowerResActive,
                     avSyncHealthy = telemetry.avSyncHealthy
                 )
+            }
+        }
+        viewModelScope.launch {
+            preferencesRepository.preferencesFlow.collect { prefs ->
+                _userPreferences.value = prefs
             }
         }
         viewModelScope.launch {
@@ -1218,6 +1234,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 showPlaybackSpeedDialog = false,
                 showVideoSettingsDialog = false,
                 showSubtitleSettingsDialog = false,
+                showMusicPlaybackSettingsDialog = false,
                 showVideoCompatibilityDialog = false,
                 showVideoInfoDetailsDialog = false
             )
@@ -1495,6 +1512,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
             player.setMediaItems(mediaItems, startIndex, initialSeekMs)
             player.playbackParameters = PlaybackParameters(prefs.defaultPlaybackSpeed)
+            if (player is ExoPlayer) {
+                player.pauseAtEndOfMediaItems = !prefs.gaplessPlaybackEnabled
+            }
+            player.volume = _playbackState.value.volumeGestureLevel.coerceIn(0f, 1f)
             player.prepare()
             player.playWhenReady = true
             player.play()
@@ -1537,6 +1558,10 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 showPlaybackSpeedDialog = false,
                 showVideoSettingsDialog = false,
                 showSubtitleSettingsDialog = false,
+                showMusicPlaybackSettingsDialog = false,
+                abRepeatStartMs = null,
+                abRepeatEndMs = null,
+                trackBookmarksMs = bookmarksByUri[media.uriString].orEmpty(),
                 activeVideoEngineStrategy = videoCapabilityEval?.recommendedStrategy
                     ?: latestTelemetry.activeEngineStrategy,
                 isTemporaryHighResEngineActive = videoCapabilityEval?.resolutionTier?.isHighRes4kOrAbove == true ||
@@ -1776,6 +1801,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         _playbackState.value = _playbackState.value.copy(repeatMode = nextMode)
     }
 
+    fun setRepeatModeState(mode: RepeatModeState) {
+        activePlayer?.repeatMode = when (mode) {
+            RepeatModeState.OFF -> Player.REPEAT_MODE_OFF
+            RepeatModeState.ONE -> Player.REPEAT_MODE_ONE
+            RepeatModeState.ALL -> Player.REPEAT_MODE_ALL
+        }
+        _playbackState.value = _playbackState.value.copy(repeatMode = mode)
+    }
+
     fun setPlaybackSpeed(speed: Float) {
         val clamped = speed.coerceIn(0.25f, 3.0f)
         activePlayer?.setPlaybackSpeed(clamped)
@@ -1895,8 +1929,22 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun adjustVolumeGesture(delta: Float) {
         val next = (_playbackState.value.volumeGestureLevel + delta).coerceIn(0.0f, 1.0f)
-        activePlayer?.volume = next
-        _playbackState.value = _playbackState.value.copy(volumeGestureLevel = next)
+        setVolumeLevel(next)
+    }
+
+    fun setVolumeLevel(level: Float) {
+        val clamped = level.coerceIn(0.0f, 1.0f)
+        activePlayer?.volume = clamped
+        _playbackState.value = _playbackState.value.copy(volumeGestureLevel = clamped)
+        runCatching {
+            val audioManager = getApplication<Application>()
+                .getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+            if (audioManager != null) {
+                val maxVol = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                val targetVol = (clamped * maxVol).toInt().coerceIn(0, maxVol)
+                audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, targetVol, 0)
+            }
+        }
     }
 
     fun retryCurrentPlayback() {
@@ -1920,7 +1968,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             showVideoInfoDetailsDialog = false,
             showPlaybackSpeedDialog = false,
             showVideoSettingsDialog = false,
-            showSubtitleSettingsDialog = false
+            showSubtitleSettingsDialog = false,
+            showMusicPlaybackSettingsDialog = false
         )
     }
 
@@ -1931,7 +1980,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
             showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
             showVideoSettingsDialog = if (visible) false else _playbackState.value.showVideoSettingsDialog,
-            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog
+            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog,
+            showMusicPlaybackSettingsDialog = if (visible) false else _playbackState.value.showMusicPlaybackSettingsDialog
         )
     }
 
@@ -1942,7 +1992,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             showPlaybackSpeedDialog = if (visible) false else _playbackState.value.showPlaybackSpeedDialog,
             showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
             showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
-            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog
+            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog,
+            showMusicPlaybackSettingsDialog = if (visible) false else _playbackState.value.showMusicPlaybackSettingsDialog
         )
     }
 
@@ -1953,8 +2004,119 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             showPlaybackSpeedDialog = if (visible) false else _playbackState.value.showPlaybackSpeedDialog,
             showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
             showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
-            showVideoSettingsDialog = if (visible) false else _playbackState.value.showVideoSettingsDialog
+            showVideoSettingsDialog = if (visible) false else _playbackState.value.showVideoSettingsDialog,
+            showMusicPlaybackSettingsDialog = if (visible) false else _playbackState.value.showMusicPlaybackSettingsDialog
         )
+    }
+
+    fun setMusicPlaybackSettingsDialogVisible(visible: Boolean) {
+        if (visible) _isEqualizerSheetOpen.value = false
+        _playbackState.value = _playbackState.value.copy(
+            showMusicPlaybackSettingsDialog = visible,
+            showPlaybackSpeedDialog = if (visible) false else _playbackState.value.showPlaybackSpeedDialog,
+            showVideoCompatibilityDialog = if (visible) false else _playbackState.value.showVideoCompatibilityDialog,
+            showVideoInfoDetailsDialog = if (visible) false else _playbackState.value.showVideoInfoDetailsDialog,
+            showVideoSettingsDialog = if (visible) false else _playbackState.value.showVideoSettingsDialog,
+            showSubtitleSettingsDialog = if (visible) false else _playbackState.value.showSubtitleSettingsDialog
+        )
+    }
+
+    fun setAbRepeatPointA(positionMs: Long = _playbackState.value.currentPositionMs) {
+        val state = _playbackState.value
+        val dur = (state.durationMs.takeIf { it > 0L } ?: state.currentMedia?.durationMs?.takeIf { it > 0L } ?: 600_000L).coerceAtLeast(1000L)
+        val clampedA = positionMs.coerceIn(0L, (dur - 500L).coerceAtLeast(0L))
+        val updatedB = state.abRepeatEndMs?.takeIf { it > clampedA + 500L }
+        _playbackState.value = state.copy(
+            abRepeatStartMs = clampedA,
+            abRepeatEndMs = updatedB
+        )
+        postStatusBannerMessage(
+            "A-B Repeat Point A set at ${com.example.ui.components.formatDurationMillis(clampedA)}",
+            InAppNotificationType.TEMPORARY_INFO
+        )
+    }
+
+    fun setAbRepeatPointB(positionMs: Long = _playbackState.value.currentPositionMs) {
+        val state = _playbackState.value
+        val startA = state.abRepeatStartMs ?: 0L
+        val dur = (state.durationMs.takeIf { it > 0L } ?: state.currentMedia?.durationMs?.takeIf { it > 0L } ?: 600_000L).coerceAtLeast(1000L)
+        val clampedB = positionMs.coerceIn((startA + 500L).coerceAtMost(dur), dur)
+        if (clampedB <= startA) {
+            postStatusBannerMessage(
+                "Point B must be after Point A (${com.example.ui.components.formatDurationMillis(startA)}).",
+                InAppNotificationType.TEMPORARY_WARNING
+            )
+            return
+        }
+        _playbackState.value = state.copy(
+            abRepeatStartMs = startA,
+            abRepeatEndMs = clampedB
+        )
+        postStatusBannerMessage(
+            "A-B Repeat active: ${com.example.ui.components.formatDurationMillis(startA)} – ${com.example.ui.components.formatDurationMillis(clampedB)}",
+            InAppNotificationType.TEMPORARY_SUCCESS
+        )
+    }
+
+    fun clearAbRepeat() {
+        val state = _playbackState.value
+        if (state.abRepeatStartMs == null && state.abRepeatEndMs == null) return
+        _playbackState.value = state.copy(
+            abRepeatStartMs = null,
+            abRepeatEndMs = null
+        )
+        postStatusBannerMessage(
+            "A-B Repeat loop cleared.",
+            InAppNotificationType.TEMPORARY_INFO
+        )
+    }
+
+    fun addOrToggleBookmarkAtCurrentPosition() {
+        val state = _playbackState.value
+        val media = state.currentMedia ?: return
+        val pos = state.currentPositionMs.coerceAtLeast(0L)
+        val existing = state.trackBookmarksMs
+        val nearMatch = existing.firstOrNull { kotlin.math.abs(it - pos) < 1500L }
+        val updated = if (nearMatch != null) {
+            existing.filterNot { it == nearMatch }
+        } else {
+            (existing + pos).distinct().sorted()
+        }
+        bookmarksByUri[media.uriString] = updated
+        _playbackState.value = state.copy(trackBookmarksMs = updated)
+        postStatusBannerMessage(
+            if (nearMatch != null) {
+                "Removed bookmark at ${com.example.ui.components.formatDurationMillis(nearMatch)}"
+            } else {
+                "Bookmarked ${com.example.ui.components.formatDurationMillis(pos)} in '${media.title}'"
+            },
+            InAppNotificationType.TEMPORARY_SUCCESS
+        )
+    }
+
+    fun removeTrackBookmark(bookmarkMs: Long) {
+        val state = _playbackState.value
+        val media = state.currentMedia ?: return
+        val updated = state.trackBookmarksMs.filterNot { it == bookmarkMs }
+        bookmarksByUri[media.uriString] = updated
+        _playbackState.value = state.copy(trackBookmarksMs = updated)
+    }
+
+    fun playFromHistoryItem(historyItem: PlaybackHistoryEntity) {
+        val matched = allMedia.value.firstOrNull { it.uriString == historyItem.uriString }
+        if (matched != null) {
+            val contextQueue = if (matched.mediaType == MediaType.AUDIO) {
+                audioMedia.value.ifEmpty { listOf(matched) }
+            } else {
+                videoMedia.value.ifEmpty { listOf(matched) }
+            }
+            playMedia(matched, contextQueue)
+        } else {
+            postStatusBannerMessage(
+                "Track '${historyItem.titleSnapshot}' is no longer in the library.",
+                InAppNotificationType.TEMPORARY_WARNING
+            )
+        }
     }
 
     fun dismissVideoCompatibilityDialog() {
@@ -2729,14 +2891,45 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             while (isActive) {
                 val player = activePlayer
                 if (player != null && player.isPlaying) {
-                    val pos = player.currentPosition.coerceAtLeast(0L)
+                    val rawPos = player.currentPosition.coerceAtLeast(0L)
+                    val stateSnap = _playbackState.value
                     val dur = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
-                        ?: _playbackState.value.durationMs
+                        ?: stateSnap.durationMs
+                    val pos = if (stateSnap.isAbRepeatActive &&
+                        stateSnap.abRepeatEndMs != null &&
+                        stateSnap.abRepeatStartMs != null &&
+                        rawPos >= stateSnap.abRepeatEndMs
+                    ) {
+                        val loopStart = stateSnap.abRepeatStartMs.coerceAtLeast(0L)
+                        player.seekTo(loopStart)
+                        loopStart
+                    } else {
+                        rawPos
+                    }
                     _playbackState.value = _playbackState.value.copy(
                         currentPositionMs = pos,
                         durationMs = dur
                     )
                     updateSubtitleCueForPosition(pos)
+
+                    // Apply smooth Crossfade envelope when Crossfade > 0s on audio tracks
+                    val crossfadeSec = userPreferences.value.crossfadeDurationSeconds
+                    val baseVol = _playbackState.value.volumeGestureLevel.coerceIn(0f, 1f)
+                    if (crossfadeSec > 0 &&
+                        stateSnap.currentMedia?.mediaType == MediaType.AUDIO &&
+                        dur > (crossfadeSec * 2000L)
+                    ) {
+                        val fadeWindowMs = crossfadeSec * 1000L
+                        val remainingTrackMs = (dur - pos).coerceAtLeast(0L)
+                        val envelope = when {
+                            pos in 0L..fadeWindowMs -> (pos.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.20f, 1f)
+                            remainingTrackMs in 0L..fadeWindowMs -> (remainingTrackMs.toFloat() / fadeWindowMs.toFloat()).coerceIn(0.15f, 1f)
+                            else -> 1f
+                        }
+                        player.volume = (baseVol * envelope).coerceIn(0f, 1f)
+                    } else if (player.volume != baseVol) {
+                        player.volume = baseVol
+                    }
 
                     val now = System.currentTimeMillis()
                     if (now - lastHistoryWriteTimeMs >= 10_000L) {
@@ -2842,6 +3035,21 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun cycleBassBoostQuick() {
+        val steps = listOf(0, 250, 500, 750, 1000)
+        val current = equalizerController.state.value.bassBoostStrength
+        val next = steps.firstOrNull { it > current } ?: 0
+        if (next > 0 && !equalizerController.state.value.isEnabled) {
+            equalizerController.setEnabled(true)
+        }
+        equalizerController.setBassBoost(next)
+        saveEqualizerToPreferences()
+        postStatusBannerMessage(
+            if (next == 0) "Bass Boost: Off" else "Bass Boost: ${next / 10}%",
+            InAppNotificationType.TEMPORARY_INFO
+        )
+    }
+
     private fun saveEqualizerToPreferences() {
         val eqState = equalizerController.state.value
         viewModelScope.launch {
@@ -2944,14 +3152,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     // --- Preferences & Privacy Actions ---
     fun setThemeMode(mode: AppThemeMode) {
+        _userPreferences.value = _userPreferences.value.copy(themeMode = mode)
         viewModelScope.launch { preferencesRepository.setThemeMode(mode) }
     }
 
     fun setDynamicColor(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(dynamicColor = enabled)
         viewModelScope.launch { preferencesRepository.setDynamicColor(enabled) }
     }
 
     fun setDefaultPlaybackSpeedPref(speed: Float) {
+        _userPreferences.value = _userPreferences.value.copy(defaultPlaybackSpeed = speed)
         viewModelScope.launch {
             preferencesRepository.setDefaultPlaybackSpeed(speed)
             setPlaybackSpeed(speed)
@@ -2959,41 +3170,101 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun setResumePlaybackEnabled(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(resumePlaybackEnabled = enabled)
         viewModelScope.launch { preferencesRepository.setResumePlaybackEnabled(enabled) }
     }
 
     fun setRecordPlaybackHistory(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(recordPlaybackHistory = enabled)
         viewModelScope.launch { preferencesRepository.setRecordPlaybackHistory(enabled) }
     }
 
     fun setKeepScreenOnDuringVideo(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(keepScreenOnDuringVideo = enabled)
         viewModelScope.launch { preferencesRepository.setKeepScreenOnDuringVideo(enabled) }
     }
 
     fun setBackgroundPlaybackEnabled(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(backgroundPlaybackEnabled = enabled)
         viewModelScope.launch { preferencesRepository.setBackgroundPlaybackEnabled(enabled) }
     }
 
     fun setVideoGestureControlsEnabled(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(videoGestureControlsEnabled = enabled)
         viewModelScope.launch { preferencesRepository.setVideoGestureControlsEnabled(enabled) }
     }
 
     fun setVideoOrientationPreference(pref: VideoOrientationPreference) {
+        _userPreferences.value = _userPreferences.value.copy(videoOrientationPreference = pref)
         viewModelScope.launch { preferencesRepository.setVideoOrientationPreference(pref) }
     }
 
     fun cycleVideoOrientationPreference() {
+        val current = userPreferences.value.videoOrientationPreference
+        val entries = VideoOrientationPreference.entries
+        val next = entries[(entries.indexOf(current) + 1) % entries.size]
+        _userPreferences.value = _userPreferences.value.copy(videoOrientationPreference = next)
         viewModelScope.launch {
-            val current = userPreferences.value.videoOrientationPreference
-            val entries = VideoOrientationPreference.entries
-            val next = entries[(entries.indexOf(current) + 1) % entries.size]
             preferencesRepository.setVideoOrientationPreference(next)
         }
     }
 
     fun setAudioBalance(balance: Float) {
-        equalizerController.setStereoBalance(balance)
-        viewModelScope.launch { preferencesRepository.setAudioBalance(balance) }
+        val clamped = balance.coerceIn(-1.0f, 1.0f)
+        _userPreferences.value = _userPreferences.value.copy(audioBalance = clamped)
+        equalizerController.setStereoBalance(clamped)
+        viewModelScope.launch { preferencesRepository.setAudioBalance(clamped) }
+    }
+
+    fun setCrossfadeDurationSeconds(seconds: Int) {
+        val clamped = seconds.coerceIn(0, 12)
+        _userPreferences.value = _userPreferences.value.copy(crossfadeDurationSeconds = clamped)
+        viewModelScope.launch {
+            preferencesRepository.setCrossfadeDurationSeconds(clamped)
+        }
+        postStatusBannerMessage(
+            if (clamped == 0) "Crossfade: Off" else "Crossfade set to ${clamped}s",
+            InAppNotificationType.TEMPORARY_INFO
+        )
+    }
+
+    fun cycleCrossfadeDuration() {
+        val steps = listOf(0, 2, 4, 6, 8, 12)
+        val current = userPreferences.value.crossfadeDurationSeconds
+        val next = steps[(steps.indexOf(current).takeIf { it >= 0 }?.plus(1) ?: 1) % steps.size]
+        setCrossfadeDurationSeconds(next)
+    }
+
+    fun setGaplessPlaybackEnabled(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(gaplessPlaybackEnabled = enabled)
+        (activePlayer as? ExoPlayer)?.pauseAtEndOfMediaItems = !enabled
+        viewModelScope.launch {
+            preferencesRepository.setGaplessPlaybackEnabled(enabled)
+        }
+        postStatusBannerMessage(
+            if (enabled) "Gapless Playback enabled" else "Gapless Playback disabled",
+            InAppNotificationType.TEMPORARY_INFO
+        )
+    }
+
+    fun setPlayerShowWaveform(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(playerShowWaveform = enabled)
+        viewModelScope.launch { preferencesRepository.setPlayerShowWaveform(enabled) }
+    }
+
+    fun setPlayerShowQuickActionRow(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(playerShowQuickActionRow = enabled)
+        viewModelScope.launch { preferencesRepository.setPlayerShowQuickActionRow(enabled) }
+    }
+
+    fun setPlayerShowRemainingTime(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(playerShowRemainingTime = enabled)
+        viewModelScope.launch { preferencesRepository.setPlayerShowRemainingTime(enabled) }
+    }
+
+    fun setPlayerShowAbAndBookmarkStrip(enabled: Boolean) {
+        _userPreferences.value = _userPreferences.value.copy(playerShowAbAndBookmarkStrip = enabled)
+        viewModelScope.launch { preferencesRepository.setPlayerShowAbAndBookmarkStrip(enabled) }
     }
 
     fun setSubtitlesEnabled(enabled: Boolean) {

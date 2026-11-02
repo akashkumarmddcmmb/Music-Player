@@ -47,20 +47,46 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Repeat
+import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.RingVolume
 import androidx.compose.material.icons.filled.ScreenRotation
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
+import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.filled.WarningAmber
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Feedback
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.SpeakerGroup
+import androidx.compose.material.icons.filled.SyncAlt
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextAlign
+import com.example.ui.theme.AppThemeMode
 import com.example.data.local.PlaylistWithCount
 import com.example.data.preferences.UserPreferencesState
 import com.example.data.preferences.VideoOrientationPreference
@@ -112,6 +138,7 @@ import com.example.media.VideoCompatibilityAction
 import com.example.media.VideoStreamCapabilityEvaluation
 import com.example.media.rememberMediaArtworkBitmap
 import com.example.viewmodel.PlaybackUiState
+import com.example.viewmodel.RepeatModeState
 
 fun formatDurationMillis(durationMs: Long): String {
     val totalSeconds = (durationMs / 1000L).coerceAtLeast(0L)
@@ -479,13 +506,24 @@ fun MediaItemCard(
 fun MediaFileInformationDialog(
     info: DetailedMediaFileInfo,
     onDismiss: () -> Unit,
-    onCopyLocation: (String) -> Unit
+    onCopyLocation: (String) -> Unit,
+    isFavorite: Boolean = false,
+    onToggleFavoriteClick: (() -> Unit)? = null,
+    onShareClick: (() -> Unit)? = null,
+    onAddToPlaylistClick: (() -> Unit)? = null,
+    onOpenInStudioClick: (() -> Unit)? = null
 ) {
     var copiedLocationFeedback by remember { mutableStateOf(false) }
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        modifier = Modifier.testTag("file_info_dialog"),
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier
+            .fillMaxWidth(if (isLandscape) 0.88f else 0.94f)
+            .widthIn(max = if (isLandscape) 640.dp else 520.dp)
+            .testTag("file_info_dialog"),
         title = {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -518,10 +556,99 @@ fun MediaFileInformationDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .heightIn(max = if (isLandscape) 240.dp else 460.dp)
                     .verticalScroll(rememberScrollState())
                     .testTag("file_info_scroll_column"),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                if (onToggleFavoriteClick != null || onShareClick != null || onAddToPlaylistClick != null || onOpenInStudioClick != null) {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("file_info_quick_actions_row")
+                    ) {
+                        if (onToggleFavoriteClick != null) {
+                            item {
+                                FilterChip(
+                                    selected = isFavorite,
+                                    onClick = onToggleFavoriteClick,
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    label = { Text(if (isFavorite) "Favorited" else "Favorite") },
+                                    modifier = Modifier.testTag("file_info_favorite_chip")
+                                )
+                            }
+                        }
+                        if (onAddToPlaylistClick != null) {
+                            item {
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        onDismiss()
+                                        onAddToPlaylistClick()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    label = { Text("Add to Playlist") },
+                                    modifier = Modifier.testTag("file_info_add_playlist_chip")
+                                )
+                            }
+                        }
+                        if (onShareClick != null) {
+                            item {
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        onDismiss()
+                                        onShareClick()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Share,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    label = { Text("Share") },
+                                    modifier = Modifier.testTag("file_info_share_chip")
+                                )
+                            }
+                        }
+                        if (onOpenInStudioClick != null) {
+                            item {
+                                FilterChip(
+                                    selected = false,
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenInStudioClick()
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.ContentCut,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    },
+                                    label = { Text("Media Studio") },
+                                    modifier = Modifier.testTag("file_info_studio_chip")
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+                }
+
                 FileInfoMetadataRow(
                     label = "File Name",
                     value = info.fullFileName,
@@ -577,6 +704,11 @@ fun MediaFileInformationDialog(
                     label = "Bitrate",
                     value = info.bitrate,
                     testTag = "file_info_row_bitrate"
+                )
+                FileInfoMetadataRow(
+                    label = "Sample Rate & Channels",
+                    value = info.sampleRateAndChannels,
+                    testTag = "file_info_row_sample_rate_channels"
                 )
 
                 HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
@@ -2498,4 +2630,1560 @@ fun PersistentMiniPlayerBar(
         }
     }
 }
+
+private val ReferencePanelCharcoal = Color(0xFF1A1D24)
+private val ReferencePanelSurface = Color(0xFF232730)
+private val ReferenceActiveGreen = Color(0xFF00E676)
+private val ReferenceDividerColor = Color.White.copy(alpha = 0.10f)
+private val ReferenceNormalText = Color(0xFFF3F5F8)
+private val ReferenceSecondaryText = Color(0xFFAAB2C0)
+
+/**
+ * Reference-style circular outline icon button with centered label below.
+ * Normal state: white/light grey icon and thin circular outline.
+ * Active state: bright green (#00E676) icon, border, subtle green tint, and label.
+ */
+@Composable
+private fun MusicCircularActionItem(
+    icon: ImageVector,
+    label: String,
+    isActive: Boolean = false,
+    badgeText: String? = null,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val activeColor = ReferenceActiveGreen
+    val iconTint = if (isActive) activeColor else ReferenceNormalText
+    val borderColor = if (isActive) activeColor else Color.White.copy(alpha = 0.24f)
+    val circleBg = if (isActive) activeColor.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.04f)
+    val labelColor = if (isActive) activeColor else ReferenceNormalText.copy(alpha = 0.90f)
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp, horizontal = 2.dp)
+            .testTag(testTag)
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(circleBg, CircleShape)
+                .border(1.2.dp, borderColor, CircleShape)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = label,
+                tint = iconTint,
+                modifier = Modifier.size(20.dp)
+            )
+            if (!badgeText.isNullOrBlank()) {
+                Surface(
+                    color = if (isActive) activeColor else ReferencePanelSurface,
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .border(0.8.dp, borderColor, RoundedCornerShape(6.dp))
+                ) {
+                    Text(
+                        text = badgeText,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isActive) Color(0xFF05180E) else ReferenceNormalText,
+                        modifier = Modifier.padding(horizontal = 3.dp, vertical = 1.dp),
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            lineHeight = 13.sp,
+            fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+            color = labelColor,
+            textAlign = TextAlign.Center,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ReferenceSectionHeading(title: String, trailingSummary: String? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = ReferenceSecondaryText,
+            fontSize = 13.sp
+        )
+        if (!trailingSummary.isNullOrBlank()) {
+            Text(
+                text = trailingSummary,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
+                color = ReferenceActiveGreen,
+                fontSize = 11.sp
+            )
+        }
+    }
+}
+
+/**
+ * Unified Dark Charcoal Translucent Music Quick Settings Panel reproducing the 5-section
+ * reference video specification:
+ * - Section A: Top Action Icon Grid (Equalizer, Audio Output, Cast, Favorite, Bookmark, Lyrics, Share, Audio Info)
+ * - Section B: Play settings (A-B Repeat, Sleep Timer, Playback Speed, Shuffle, Repeat Mode, Crossfade, Gapless, Stop After Current)
+ * - Section C: Loop (Horizontal pill control group: Shuffle | Repeat One | Repeat All | Repeat Off)
+ * - Section D: Audio controls (Thin Volume & Audio Balance sliders with circular thumb + bright green active track, plus Audio Output, Bass Boost & EQ shortcuts)
+ * - Section E: More (Edit Player, Lyrics Help/Tutorials, File Info, Feedback, Customize Theme, Share Song, Add to Playlist, Set Ringtone, Studio)
+ *
+ * Responsive across Portrait (clean bottom/center overlay) and Landscape (right-hand translucent panel keeping left playback visible).
+ */
+@Composable
+fun MusicPlaybackSettingsDialog(
+    playbackState: PlaybackUiState,
+    preferences: UserPreferencesState,
+    onDismiss: () -> Unit,
+    onSelectSpeed: (Float) -> Unit,
+    onSetAbRepeatStart: () -> Unit,
+    onSetAbRepeatEnd: () -> Unit,
+    onClearAbRepeat: () -> Unit,
+    onToggleBookmark: () -> Unit,
+    onRemoveBookmark: (Long) -> Unit,
+    onSeekToBookmark: (Long) -> Unit,
+    onStartSleepTimer: (Int) -> Unit,
+    onCancelSleepTimer: () -> Unit,
+    onToggleStopAtEndOfTrack: (Boolean) -> Unit,
+    onToggleShuffle: () -> Unit,
+    onSelectRepeatMode: (RepeatModeState) -> Unit,
+    onToggleBackgroundPlayback: (Boolean) -> Unit,
+    onToggleResumePlayback: (Boolean) -> Unit,
+    onOpenEqualizer: () -> Unit,
+    onOpenFileInfo: () -> Unit,
+    onOpenAudioOutputSwitcher: () -> Unit,
+    isFavorite: Boolean = false,
+    equalizerEnabled: Boolean = false,
+    bassBoostStrength: Int = 0,
+    onToggleFavorite: () -> Unit = {},
+    onOpenLyricsSettings: () -> Unit = {},
+    onShareCurrentMedia: () -> Unit = {},
+    onOpenCastSettings: () -> Unit = {},
+    onCycleCrossfade: () -> Unit = {},
+    onToggleGaplessPlayback: (Boolean) -> Unit = {},
+    onSetVolumeLevel: (Float) -> Unit = {},
+    onSetAudioBalance: (Float) -> Unit = {},
+    onCycleBassBoost: () -> Unit = {},
+    onOpenStudio: () -> Unit = {},
+    onAddToPlaylistCurrentMedia: () -> Unit = {},
+    onSetRingtoneCurrentMedia: () -> Unit = {},
+    onSetThemeMode: (AppThemeMode) -> Unit = {},
+    onSetDynamicColor: (Boolean) -> Unit = {},
+    onSetPlayerShowWaveform: (Boolean) -> Unit = {},
+    onSetPlayerShowQuickActionRow: (Boolean) -> Unit = {},
+    onSetPlayerShowRemainingTime: (Boolean) -> Unit = {},
+    onSetPlayerShowAbAndBookmarkStrip: (Boolean) -> Unit = {},
+    onSendFeedback: (String, String) -> Unit = { _, _ -> },
+    onOpenSpeedDialog: (() -> Unit)? = null
+) {
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val isLandscape = configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE ||
+        configuration.screenWidthDp > configuration.screenHeightDp
+
+    var showEditPlayerDialog by rememberSaveable { mutableStateOf(false) }
+    var showLyricsHelpDialog by rememberSaveable { mutableStateOf(false) }
+    var showFeedbackDialog by rememberSaveable { mutableStateOf(false) }
+    var showCustomizeThemeDialog by rememberSaveable { mutableStateOf(false) }
+
+    if (showEditPlayerDialog) {
+        EditPlayerLayoutDialog(
+            preferences = preferences,
+            onToggleWaveform = onSetPlayerShowWaveform,
+            onToggleQuickActionRow = onSetPlayerShowQuickActionRow,
+            onToggleRemainingTime = onSetPlayerShowRemainingTime,
+            onToggleAbAndBookmarkStrip = onSetPlayerShowAbAndBookmarkStrip,
+            onToggleBackgroundPlayback = onToggleBackgroundPlayback,
+            onToggleResumePlayback = onToggleResumePlayback,
+            onDismiss = { showEditPlayerDialog = false }
+        )
+    }
+
+    if (showLyricsHelpDialog) {
+        LyricsHelpTutorialDialog(
+            onOpenLyricsLoader = {
+                showLyricsHelpDialog = false
+                onDismiss()
+                onOpenLyricsSettings()
+            },
+            onDismiss = { showLyricsHelpDialog = false }
+        )
+    }
+
+    if (showFeedbackDialog) {
+        PlayerFeedbackDialog(
+            currentTrackTitle = playbackState.currentMedia?.title,
+            onSubmit = { category, message ->
+                showFeedbackDialog = false
+                onSendFeedback(category, message)
+            },
+            onDismiss = { showFeedbackDialog = false }
+        )
+    }
+
+    if (showCustomizeThemeDialog) {
+        CustomizeThemeDialog(
+            preferences = preferences,
+            onSetThemeMode = onSetThemeMode,
+            onSetDynamicColor = onSetDynamicColor,
+            onDismiss = { showCustomizeThemeDialog = false }
+        )
+    }
+
+    val panelAlignment = if (isLandscape) Alignment.CenterEnd else Alignment.BottomCenter
+    val panelMaxWidth = if (isLandscape) 440.dp else 520.dp
+    val maxScrollHeight = if (isLandscape) {
+        (configuration.screenHeightDp - 96).coerceIn(190, 420).dp
+    } else {
+        (configuration.screenHeightDp - 140).coerceIn(220, 560).dp
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = panelAlignment
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = if (isLandscape) 0.38f else 0.52f))
+                    .clickable(onClick = onDismiss)
+                    .testTag("music_settings_scrim")
+            )
+            Surface(
+                shape = if (isLandscape) {
+                    RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp, topEnd = 14.dp, bottomEnd = 14.dp)
+                } else {
+                    RoundedCornerShape(24.dp)
+                },
+                color = ReferencePanelCharcoal.copy(alpha = 0.94f),
+                tonalElevation = 8.dp,
+                shadowElevation = 20.dp,
+                modifier = Modifier
+                    .fillMaxWidth(if (isLandscape) 0.62f else 0.96f)
+                    .widthIn(max = panelMaxWidth)
+                    .padding(
+                        horizontal = if (isLandscape) 8.dp else 10.dp,
+                        vertical = if (isLandscape) 8.dp else 12.dp
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = Color.White.copy(alpha = 0.12f),
+                        shape = if (isLandscape) {
+                            RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp, topEnd = 14.dp, bottomEnd = 14.dp)
+                        } else {
+                            RoundedCornerShape(24.dp)
+                        }
+                    )
+                    .testTag("music_playback_settings_panel")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(
+                            horizontal = if (isLandscape) 16.dp else 18.dp,
+                            vertical = if (isLandscape) 12.dp else 16.dp
+                        ),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // Top Panel Header Bar
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clip(CircleShape)
+                                    .background(ReferenceActiveGreen.copy(alpha = 0.16f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = null,
+                                    tint = ReferenceActiveGreen,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            Column {
+                                Text(
+                                    text = "Player Quick Settings",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ReferenceNormalText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = playbackState.currentMedia?.title ?: "Active Audio Stream",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ReferenceSecondaryText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            IconButton(
+                                onClick = {
+                                    onDismiss()
+                                    onOpenStudio()
+                                },
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .testTag("now_playing_menu_studio")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ContentCut,
+                                    contentDescription = "Edit in Media Studio",
+                                    tint = ReferenceNormalText,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            IconButton(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .testTag("music_settings_header_close_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Close Music Playback Settings",
+                                    tint = ReferenceNormalText,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = ReferenceDividerColor)
+
+                    // Vertically Scrollable 5-Section Body
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = maxScrollHeight)
+                            .verticalScroll(rememberScrollState())
+                            .testTag("now_playing_overflow_dropdown_menu"),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        // =========================================================================
+                        // SECTION A – TOP ACTION ICON GRID (8 Circular Icons, 4x2)
+                        // 1. Equalizer | 2. Audio Output | 3. Cast | 4. Favorite
+                        // 5. Bookmark  | 6. Lyrics       | 7. Share | 8. Audio Info
+                        // =========================================================================
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("music_settings_section_a_grid"),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Equalizer,
+                                    label = "Equalizer",
+                                    isActive = equalizerEnabled || bassBoostStrength > 0,
+                                    badgeText = if (equalizerEnabled) "ON" else null,
+                                    testTag = "now_playing_menu_equalizer",
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenEqualizer()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Speaker,
+                                    label = "Audio Output",
+                                    isActive = false,
+                                    testTag = "music_settings_audio_output_button",
+                                    onClick = onOpenAudioOutputSwitcher,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Cast,
+                                    label = "Cast",
+                                    isActive = false,
+                                    testTag = "music_settings_cast_button",
+                                    onClick = onOpenCastSettings,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = if (isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                                    label = "Favorite",
+                                    isActive = isFavorite,
+                                    testTag = "now_playing_menu_favorite",
+                                    onClick = onToggleFavorite,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                MusicCircularActionItem(
+                                    icon = if (playbackState.trackBookmarksMs.isNotEmpty()) {
+                                        Icons.Default.Bookmark
+                                    } else {
+                                        Icons.Default.BookmarkBorder
+                                    },
+                                    label = "Bookmark",
+                                    isActive = playbackState.trackBookmarksMs.isNotEmpty(),
+                                    badgeText = playbackState.trackBookmarksMs.size.takeIf { it > 0 }?.toString(),
+                                    testTag = "music_settings_add_bookmark_button",
+                                    onClick = onToggleBookmark,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Subtitles,
+                                    label = "Lyrics",
+                                    isActive = playbackState.loadedSubtitleFormat != null,
+                                    badgeText = playbackState.loadedSubtitleFormat?.name,
+                                    testTag = "now_playing_menu_lyrics",
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenLyricsSettings()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Share,
+                                    label = "Share",
+                                    isActive = false,
+                                    testTag = "now_playing_menu_share",
+                                    onClick = {
+                                        onDismiss()
+                                        onShareCurrentMedia()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Info,
+                                    label = "Audio Info",
+                                    isActive = false,
+                                    testTag = "now_playing_menu_file_info",
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenFileInfo()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            // Saved Bookmarks Strip (when bookmarks exist on active track)
+                            if (playbackState.trackBookmarksMs.isNotEmpty()) {
+                                LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    items(items = playbackState.trackBookmarksMs) { bmMs ->
+                                        FilterChip(
+                                            selected = true,
+                                            onClick = { onSeekToBookmark(bmMs) },
+                                            label = {
+                                                Text(
+                                                    text = "🔖 ${formatDurationMillis(bmMs)}",
+                                                    fontSize = 11.sp,
+                                                    color = ReferenceActiveGreen
+                                                )
+                                            },
+                                            trailingIcon = {
+                                                Icon(
+                                                    imageVector = Icons.Default.Close,
+                                                    contentDescription = "Remove bookmark",
+                                                    tint = ReferenceActiveGreen,
+                                                    modifier = Modifier
+                                                        .size(14.dp)
+                                                        .clickable { onRemoveBookmark(bmMs) }
+                                                )
+                                            },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = ReferenceActiveGreen.copy(alpha = 0.14f)
+                                            ),
+                                            modifier = Modifier.testTag("music_settings_bookmark_chip_$bmMs")
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = ReferenceDividerColor)
+
+                        // =========================================================================
+                        // SECTION B – PLAY SETTINGS (Heading: "Play settings", 8 Circular Icons, 4x2)
+                        // 1. A-B Repeat | 2. Sleep Timer | 3. Playback Speed | 4. Shuffle
+                        // 5. Repeat     | 6. Crossfade   | 7. Gapless        | 8. Stop After Current
+                        // =========================================================================
+                        val speedBadge = "${"%.2f".format(playbackState.playbackSpeed).trimEnd('0').trimEnd('.')}x"
+                        val sleepBadge = when {
+                            playbackState.sleepTimerStopAtEndOfTrack -> "EOT"
+                            playbackState.sleepTimerRemainingMs > 0L -> "${(playbackState.sleepTimerRemainingMs / 60_000L).coerceAtLeast(1L)}m"
+                            else -> null
+                        }
+                        val crossfadeBadge = if (preferences.crossfadeDurationSeconds > 0) {
+                            "${preferences.crossfadeDurationSeconds}s"
+                        } else {
+                            "Off"
+                        }
+
+                        ReferenceSectionHeading(
+                            title = "Play settings",
+                            trailingSummary = "$speedBadge • ${if (preferences.gaplessPlaybackEnabled) "Gapless" else "Standard"}"
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("music_settings_section_b_play_settings"),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Repeat,
+                                    label = "A-B Repeat",
+                                    isActive = playbackState.abRepeatStartMs != null,
+                                    badgeText = when {
+                                        playbackState.isAbRepeatActive -> "A-B"
+                                        playbackState.abRepeatStartMs != null -> "A"
+                                        else -> null
+                                    },
+                                    testTag = "music_settings_ab_grid_button",
+                                    onClick = {
+                                        when {
+                                            playbackState.abRepeatStartMs == null -> onSetAbRepeatStart()
+                                            playbackState.abRepeatEndMs == null -> onSetAbRepeatEnd()
+                                            else -> onClearAbRepeat()
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Bedtime,
+                                    label = "Sleep Timer",
+                                    isActive = playbackState.isSleepTimerActive,
+                                    badgeText = sleepBadge,
+                                    testTag = "now_playing_menu_sleep_timer",
+                                    onClick = {
+                                        val nextMins = when (playbackState.sleepTimerTotalMinutes) {
+                                            0 -> 15
+                                            15 -> 30
+                                            30 -> 45
+                                            45 -> 60
+                                            else -> 0
+                                        }
+                                        if (nextMins == 0) onCancelSleepTimer() else onStartSleepTimer(nextMins)
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Speed,
+                                    label = "Speed",
+                                    isActive = abs(playbackState.playbackSpeed - 1.0f) > 0.04f,
+                                    badgeText = speedBadge,
+                                    testTag = "now_playing_menu_speed",
+                                    onClick = {
+                                        if (onOpenSpeedDialog != null) {
+                                            onDismiss()
+                                            onOpenSpeedDialog()
+                                        } else {
+                                            val speeds = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+                                            val curIdx = speeds.indexOfFirst { abs(it - playbackState.playbackSpeed) < 0.04f }
+                                            val nextSpd = speeds[(curIdx + 1) % speeds.size]
+                                            onSelectSpeed(nextSpd)
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Shuffle,
+                                    label = "Shuffle",
+                                    isActive = playbackState.shuffleEnabled,
+                                    testTag = "music_settings_play_shuffle_button",
+                                    onClick = onToggleShuffle,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                MusicCircularActionItem(
+                                    icon = if (playbackState.repeatMode == RepeatModeState.ONE) {
+                                        Icons.Default.RepeatOne
+                                    } else {
+                                        Icons.Default.Repeat
+                                    },
+                                    label = when (playbackState.repeatMode) {
+                                        RepeatModeState.ONE -> "Repeat 1"
+                                        RepeatModeState.ALL -> "Repeat All"
+                                        RepeatModeState.OFF -> "Repeat Off"
+                                    },
+                                    isActive = playbackState.repeatMode != RepeatModeState.OFF,
+                                    testTag = "music_settings_play_repeat_button",
+                                    onClick = {
+                                        val nextMode = when (playbackState.repeatMode) {
+                                            RepeatModeState.OFF -> RepeatModeState.ALL
+                                            RepeatModeState.ALL -> RepeatModeState.ONE
+                                            RepeatModeState.ONE -> RepeatModeState.OFF
+                                        }
+                                        onSelectRepeatMode(nextMode)
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.SyncAlt,
+                                    label = "Crossfade",
+                                    isActive = preferences.crossfadeDurationSeconds > 0,
+                                    badgeText = crossfadeBadge,
+                                    testTag = "music_settings_crossfade_button",
+                                    onClick = onCycleCrossfade,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.GraphicEq,
+                                    label = "Gapless",
+                                    isActive = preferences.gaplessPlaybackEnabled,
+                                    badgeText = if (preferences.gaplessPlaybackEnabled) "ON" else "OFF",
+                                    testTag = "music_settings_gapless_button",
+                                    onClick = { onToggleGaplessPlayback(!preferences.gaplessPlaybackEnabled) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.HourglassTop,
+                                    label = "Stop After",
+                                    isActive = playbackState.sleepTimerStopAtEndOfTrack,
+                                    badgeText = if (playbackState.sleepTimerStopAtEndOfTrack) "ON" else null,
+                                    testTag = "music_settings_stop_after_current_button",
+                                    onClick = {
+                                        onToggleStopAtEndOfTrack(!playbackState.sleepTimerStopAtEndOfTrack)
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            // Inline Precision Controls for A-B Repeat, Speed & Sleep Timer
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = onSetAbRepeatStart,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_ab_set_a"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = playbackState.abRepeatStartMs?.let { "A: ${formatDurationMillis(it)}" } ?: "Set Point A",
+                                        fontSize = 11.sp,
+                                        color = if (playbackState.abRepeatStartMs != null) ReferenceActiveGreen else ReferenceNormalText,
+                                        maxLines = 1
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = onSetAbRepeatEnd,
+                                    enabled = playbackState.abRepeatStartMs != null,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_ab_set_b"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = playbackState.abRepeatEndMs?.let { "B: ${formatDurationMillis(it)}" } ?: "Set Point B",
+                                        fontSize = 11.sp,
+                                        color = if (playbackState.abRepeatEndMs != null) ReferenceActiveGreen else ReferenceNormalText,
+                                        maxLines = 1
+                                    )
+                                }
+                                if (playbackState.abRepeatStartMs != null || playbackState.abRepeatEndMs != null) {
+                                    TextButton(
+                                        onClick = onClearAbRepeat,
+                                        modifier = Modifier.testTag("music_settings_ab_clear")
+                                    ) {
+                                        Text("Clear", fontSize = 11.sp, color = ReferenceActiveGreen, maxLines = 1)
+                                    }
+                                }
+                            }
+
+                            // Quick Speed Chips Row
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f)) { spd ->
+                                    val isSelected = abs(playbackState.playbackSpeed - spd) < 0.05f
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { onSelectSpeed(spd) },
+                                        label = {
+                                            Text(
+                                                text = "${spd}x",
+                                                fontSize = 11.sp,
+                                                color = if (isSelected) Color(0xFF041A0E) else ReferenceNormalText,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                maxLines = 1
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ReferenceActiveGreen,
+                                            containerColor = ReferencePanelSurface
+                                        ),
+                                        modifier = Modifier.testTag("music_settings_speed_${spd}")
+                                    )
+                                }
+                            }
+
+                            // Quick Sleep Timer Presets Row
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(listOf(0, 10, 15, 30, 45, 60)) { mins ->
+                                    val selected = if (mins == 0) {
+                                        !playbackState.isSleepTimerActive
+                                    } else {
+                                        !playbackState.sleepTimerStopAtEndOfTrack && playbackState.sleepTimerTotalMinutes == mins
+                                    }
+                                    FilterChip(
+                                        selected = selected,
+                                        onClick = {
+                                            if (mins == 0) onCancelSleepTimer() else onStartSleepTimer(mins)
+                                        },
+                                        label = {
+                                            Text(
+                                                text = if (mins == 0) "Timer Off" else "${mins}m",
+                                                fontSize = 11.sp,
+                                                color = if (selected) Color(0xFF041A0E) else ReferenceNormalText,
+                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ReferenceActiveGreen,
+                                            containerColor = ReferencePanelSurface
+                                        ),
+                                        modifier = Modifier.testTag("music_settings_sleep_${mins}")
+                                    )
+                                }
+                                item {
+                                    FilterChip(
+                                        selected = playbackState.sleepTimerStopAtEndOfTrack,
+                                        onClick = { onToggleStopAtEndOfTrack(!playbackState.sleepTimerStopAtEndOfTrack) },
+                                        label = {
+                                            Text(
+                                                text = "End of Track",
+                                                fontSize = 11.sp,
+                                                color = if (playbackState.sleepTimerStopAtEndOfTrack) Color(0xFF041A0E) else ReferenceNormalText,
+                                                fontWeight = if (playbackState.sleepTimerStopAtEndOfTrack) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = ReferenceActiveGreen,
+                                            containerColor = ReferencePanelSurface
+                                        ),
+                                        modifier = Modifier.testTag("music_settings_sleep_end_of_track")
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = ReferenceDividerColor)
+
+                        // =========================================================================
+                        // SECTION C – LOOP (Heading: "Loop")
+                        // Horizontal pill-shaped control group with bright green active state:
+                        // Shuffle | Repeat One | Repeat All | Repeat Off
+                        // =========================================================================
+                        ReferenceSectionHeading(title = "Loop")
+
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = ReferencePanelSurface,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, Color.White.copy(alpha = 0.10f), RoundedCornerShape(50))
+                                .testTag("music_settings_section_c_loop")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                LoopPillSegment(
+                                    label = "Shuffle",
+                                    icon = Icons.Default.Shuffle,
+                                    selected = playbackState.shuffleEnabled,
+                                    testTag = "music_settings_shuffle_chip",
+                                    onClick = onToggleShuffle,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                LoopPillSegment(
+                                    label = "Repeat 1",
+                                    icon = Icons.Default.RepeatOne,
+                                    selected = playbackState.repeatMode == RepeatModeState.ONE,
+                                    testTag = "music_settings_repeat_one",
+                                    onClick = { onSelectRepeatMode(RepeatModeState.ONE) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                LoopPillSegment(
+                                    label = "Repeat All",
+                                    icon = Icons.Default.Repeat,
+                                    selected = playbackState.repeatMode == RepeatModeState.ALL,
+                                    testTag = "music_settings_repeat_all",
+                                    onClick = { onSelectRepeatMode(RepeatModeState.ALL) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                LoopPillSegment(
+                                    label = "Repeat Off",
+                                    icon = null,
+                                    selected = playbackState.repeatMode == RepeatModeState.OFF,
+                                    testTag = "music_settings_repeat_off",
+                                    onClick = { onSelectRepeatMode(RepeatModeState.OFF) },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                        }
+
+                        HorizontalDivider(color = ReferenceDividerColor)
+
+                        // =========================================================================
+                        // SECTION D – AUDIO CONTROLS (Heading: "Audio controls")
+                        // Replaces video brightness slider with thin Volume Slider, Audio Balance
+                        // Slider, Audio Output selection, Bass Boost shortcut, and Equalizer shortcut.
+                        // =========================================================================
+                        val volumePercent = (playbackState.volumeGestureLevel.coerceIn(0f, 1f) * 100f).roundToInt()
+                        val balanceText = when {
+                            abs(preferences.audioBalance) < 0.05f -> "Center (0.0)"
+                            preferences.audioBalance < 0f -> "L ${(abs(preferences.audioBalance) * 100).roundToInt()}%"
+                            else -> "R ${(preferences.audioBalance * 100).roundToInt()}%"
+                        }
+                        ReferenceSectionHeading(
+                            title = "Audio controls",
+                            trailingSummary = "Vol $volumePercent% • $balanceText"
+                        )
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("music_settings_section_d_audio_controls"),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            // 1. Thin Volume Slider with circular thumb and bright green active track
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.VolumeUp,
+                                    contentDescription = "Volume",
+                                    tint = ReferenceActiveGreen,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Slider(
+                                    value = playbackState.volumeGestureLevel.coerceIn(0f, 1f),
+                                    onValueChange = onSetVolumeLevel,
+                                    valueRange = 0f..1f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = ReferenceActiveGreen,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.18f)
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_volume_slider")
+                                )
+                                Text(
+                                    text = "$volumePercent%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ReferenceNormalText,
+                                    modifier = Modifier.width(36.dp),
+                                    textAlign = TextAlign.End
+                                )
+                            }
+
+                            // 2. Thin Stereo Audio Balance (L/R) Slider with center reset
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "L/R",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (abs(preferences.audioBalance) > 0.04f) ReferenceActiveGreen else ReferenceSecondaryText,
+                                    modifier = Modifier.width(24.dp)
+                                )
+                                Slider(
+                                    value = preferences.audioBalance.coerceIn(-1f, 1f),
+                                    onValueChange = onSetAudioBalance,
+                                    valueRange = -1f..1f,
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.White,
+                                        activeTrackColor = ReferenceActiveGreen,
+                                        inactiveTrackColor = Color.White.copy(alpha = 0.18f)
+                                    ),
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_balance_slider")
+                                )
+                                Text(
+                                    text = if (abs(preferences.audioBalance) < 0.05f) "0.0" else "%+.1f".format(preferences.audioBalance),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = ReferenceActiveGreen,
+                                    modifier = Modifier
+                                        .width(36.dp)
+                                        .clickable { onSetAudioBalance(0f) }
+                                        .testTag("music_settings_balance_reset"),
+                                    textAlign = TextAlign.End
+                                )
+                            }
+
+                            // 3. Audio Output, Bass Boost & Equalizer Shortcut Pills
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(
+                                    onClick = onCycleBassBoost,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_bass_boost_button"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.GraphicEq,
+                                        contentDescription = null,
+                                        tint = if (bassBoostStrength > 0) ReferenceActiveGreen else ReferenceNormalText,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = if (bassBoostStrength > 0) "Bass ${bassBoostStrength / 10}%" else "Bass Boost",
+                                        fontSize = 11.sp,
+                                        color = if (bassBoostStrength > 0) ReferenceActiveGreen else ReferenceNormalText,
+                                        maxLines = 1
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenEqualizer()
+                                    },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_open_equalizer_button"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Equalizer,
+                                        contentDescription = null,
+                                        tint = if (equalizerEnabled) ReferenceActiveGreen else ReferenceNormalText,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "5-Band EQ",
+                                        fontSize = 11.sp,
+                                        color = if (equalizerEnabled) ReferenceActiveGreen else ReferenceNormalText,
+                                        maxLines = 1
+                                    )
+                                }
+                                OutlinedButton(
+                                    onClick = onOpenAudioOutputSwitcher,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("music_settings_audio_route_shortcut"),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.SpeakerGroup,
+                                        contentDescription = null,
+                                        tint = ReferenceNormalText,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "Output",
+                                        fontSize = 11.sp,
+                                        color = ReferenceNormalText,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = ReferenceDividerColor)
+
+                        // =========================================================================
+                        // SECTION E – MORE (Heading: "More", Circular Icon Grid)
+                        // 1. Edit Player | 2. Lyrics Help / Tutorials | 3. File Info | 4. Feedback
+                        // 5. Customize Theme | 6. Share Song | 7. Add to Playlist | 8. Set Ringtone
+                        // =========================================================================
+                        ReferenceSectionHeading(title = "More")
+
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("music_settings_section_e_more"),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Edit,
+                                    label = "Edit Player",
+                                    isActive = !preferences.playerShowWaveform ||
+                                        !preferences.playerShowQuickActionRow ||
+                                        !preferences.playerShowRemainingTime,
+                                    testTag = "music_settings_edit_player_button",
+                                    onClick = { showEditPlayerDialog = true },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.AutoMirrored.Filled.HelpOutline,
+                                    label = "Lyrics Help",
+                                    isActive = false,
+                                    testTag = "music_settings_lyrics_help_button",
+                                    onClick = { showLyricsHelpDialog = true },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Info,
+                                    label = "File Info",
+                                    isActive = false,
+                                    testTag = "music_settings_file_info_button",
+                                    onClick = {
+                                        onDismiss()
+                                        onOpenFileInfo()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Feedback,
+                                    label = "Feedback",
+                                    isActive = false,
+                                    testTag = "music_settings_feedback_button",
+                                    onClick = { showFeedbackDialog = true },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Palette,
+                                    label = "Theme",
+                                    isActive = preferences.themeMode == AppThemeMode.DARK,
+                                    badgeText = preferences.themeMode.name.take(4),
+                                    testTag = "music_settings_customize_theme_button",
+                                    onClick = { showCustomizeThemeDialog = true },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.Share,
+                                    label = "Share Song",
+                                    isActive = false,
+                                    testTag = "music_settings_more_share_button",
+                                    onClick = {
+                                        onDismiss()
+                                        onShareCurrentMedia()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.AutoMirrored.Filled.PlaylistAdd,
+                                    label = "Playlist",
+                                    isActive = false,
+                                    testTag = "now_playing_menu_add_to_playlist",
+                                    onClick = {
+                                        onDismiss()
+                                        onAddToPlaylistCurrentMedia()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                                MusicCircularActionItem(
+                                    icon = Icons.Default.RingVolume,
+                                    label = "Ringtone",
+                                    isActive = false,
+                                    testTag = "now_playing_menu_ringtone",
+                                    onClick = {
+                                        onDismiss()
+                                        onSetRingtoneCurrentMedia()
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            // Background Audio & Resume Position Switches
+                            VideoSettingsSwitchRow(
+                                title = "Background Audio Playback",
+                                subtitle = "Keep playing music when screen is off or switching apps",
+                                checked = preferences.backgroundPlaybackEnabled,
+                                onCheckedChange = onToggleBackgroundPlayback,
+                                testTag = "music_settings_background_playback_switch"
+                            )
+                            VideoSettingsSwitchRow(
+                                title = "Resume Last Playback Position",
+                                subtitle = "Automatically restore saved timestamp when replaying tracks",
+                                checked = preferences.resumePlaybackEnabled,
+                                onCheckedChange = onToggleResumePlayback,
+                                testTag = "music_settings_resume_playback_switch"
+                            )
+                        }
+                    }
+
+                    // Footer Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        Button(
+                            onClick = onDismiss,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = ReferenceActiveGreen,
+                                contentColor = Color(0xFF041A0E)
+                            ),
+                            modifier = Modifier.testTag("music_settings_done_button")
+                        ) {
+                            Text("Done", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoopPillSegment(
+    label: String,
+    icon: ImageVector?,
+    selected: Boolean,
+    testTag: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bgColor = if (selected) ReferenceActiveGreen else Color.Transparent
+    val contentColor = if (selected) Color(0xFF041A0E) else ReferenceNormalText
+
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = bgColor,
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .clickable(onClick = onClick)
+            .testTag(testTag)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (icon != null) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = contentColor,
+                    modifier = Modifier.size(14.dp)
+                )
+                Spacer(modifier = Modifier.width(3.dp))
+            }
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                color = contentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun EditPlayerLayoutDialog(
+    preferences: UserPreferencesState,
+    onToggleWaveform: (Boolean) -> Unit,
+    onToggleQuickActionRow: (Boolean) -> Unit,
+    onToggleRemainingTime: (Boolean) -> Unit,
+    onToggleAbAndBookmarkStrip: (Boolean) -> Unit,
+    onToggleBackgroundPlayback: (Boolean) -> Unit,
+    onToggleResumePlayback: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ReferencePanelCharcoal,
+        titleContentColor = ReferenceNormalText,
+        textContentColor = ReferenceNormalText,
+        title = {
+            Text(
+                text = "Edit Player Interface",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .testTag("edit_player_layout_dialog"),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                VideoSettingsSwitchRow(
+                    title = "Live Acoustic Waveform",
+                    subtitle = "Show animated frequency bars beneath album artwork",
+                    checked = preferences.playerShowWaveform,
+                    onCheckedChange = onToggleWaveform,
+                    testTag = "edit_player_waveform_switch"
+                )
+                VideoSettingsSwitchRow(
+                    title = "Quick-Action Control Strip",
+                    subtitle = "Show Speed, Equalizer, A-B Repeat & Bookmark shortcuts on player",
+                    checked = preferences.playerShowQuickActionRow,
+                    onCheckedChange = onToggleQuickActionRow,
+                    testTag = "edit_player_quick_row_switch"
+                )
+                VideoSettingsSwitchRow(
+                    title = "Remaining Track Duration",
+                    subtitle = "Display countdown time (-MM:SS) next to total duration",
+                    checked = preferences.playerShowRemainingTime,
+                    onCheckedChange = onToggleRemainingTime,
+                    testTag = "edit_player_remaining_time_switch"
+                )
+                VideoSettingsSwitchRow(
+                    title = "Active A-B & Bookmark Markers",
+                    subtitle = "Show saved timestamp chips on the main player screen",
+                    checked = preferences.playerShowAbAndBookmarkStrip,
+                    onCheckedChange = onToggleAbAndBookmarkStrip,
+                    testTag = "edit_player_markers_switch"
+                )
+                VideoSettingsSwitchRow(
+                    title = "Background Playback",
+                    subtitle = "Continue playing audio when app is minimized",
+                    checked = preferences.backgroundPlaybackEnabled,
+                    onCheckedChange = onToggleBackgroundPlayback,
+                    testTag = "edit_player_bg_switch"
+                )
+                VideoSettingsSwitchRow(
+                    title = "Resume Track Position",
+                    subtitle = "Restore last timestamp on long tracks & podcasts",
+                    checked = preferences.resumePlaybackEnabled,
+                    onCheckedChange = onToggleResumePlayback,
+                    testTag = "edit_player_resume_switch"
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ReferenceActiveGreen,
+                    contentColor = Color(0xFF041A0E)
+                ),
+                modifier = Modifier.testTag("edit_player_done_button")
+            ) {
+                Text("Done", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+private fun LyricsHelpTutorialDialog(
+    onOpenLyricsLoader: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ReferencePanelCharcoal,
+        titleContentColor = ReferenceNormalText,
+        textContentColor = ReferenceNormalText,
+        title = {
+            Text(
+                text = "Synchronized Lyrics & Tutorials",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .testTag("lyrics_help_tutorial_dialog"),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "1. Automatic Companion Matching",
+                    fontWeight = FontWeight.SemiBold,
+                    color = ReferenceActiveGreen
+                )
+                Text(
+                    text = "Place a .srt or .vtt file in the same folder with the exact same filename as your audio track (e.g., Song.mp3 and Song.srt) to auto-sync lyrics.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ReferenceSecondaryText
+                )
+                Text(
+                    text = "2. Manual SAF Lyrics Import",
+                    fontWeight = FontWeight.SemiBold,
+                    color = ReferenceActiveGreen
+                )
+                Text(
+                    text = "Tap 'Lyrics' in Quick Settings to load any external .SRT or .VTT file from device storage and fine-tune sync offset (-5000ms to +5000ms) or font scale.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ReferenceSecondaryText
+                )
+                Text(
+                    text = "3. A-B Repeat & Bookmarks",
+                    fontWeight = FontWeight.SemiBold,
+                    color = ReferenceActiveGreen
+                )
+                Text(
+                    text = "Tap 'A-B Repeat' once at the start of a verse (Point A) and again at the end (Point B) to loop that section seamlessly.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = ReferenceSecondaryText
+                )
+            }
+        },
+        dismissButton = {
+            OutlinedButton(
+                onClick = onOpenLyricsLoader,
+                modifier = Modifier.testTag("lyrics_help_open_loader_button")
+            ) {
+                Text("Load Lyrics File", color = ReferenceActiveGreen)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ReferenceActiveGreen,
+                    contentColor = Color(0xFF041A0E)
+                ),
+                modifier = Modifier.testTag("lyrics_help_close_button")
+            ) {
+                Text("Got It", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+private fun PlayerFeedbackDialog(
+    currentTrackTitle: String?,
+    onSubmit: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedCategory by rememberSaveable { mutableStateOf("Audio Quality") }
+    var feedbackNotes by rememberSaveable { mutableStateOf("") }
+    val categories = listOf("Audio Quality", "Lyrics Sync", "Equalizer DSP", "UI & Controls")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ReferencePanelCharcoal,
+        titleContentColor = ReferenceNormalText,
+        textContentColor = ReferenceNormalText,
+        title = {
+            Text(
+                text = "Send Player Feedback",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .testTag("player_feedback_dialog"),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Track: ${currentTrackTitle ?: "None"}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = ReferenceSecondaryText
+                )
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(categories) { cat ->
+                        val selected = selectedCategory == cat
+                        FilterChip(
+                            selected = selected,
+                            onClick = { selectedCategory = cat },
+                            label = {
+                                Text(
+                                    text = cat,
+                                    fontSize = 11.sp,
+                                    color = if (selected) Color(0xFF041A0E) else ReferenceNormalText
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ReferenceActiveGreen,
+                                containerColor = ReferencePanelSurface
+                            ),
+                            modifier = Modifier.testTag("feedback_cat_${cat.lowercase().replace(" ", "_")}")
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = feedbackNotes,
+                    onValueChange = { feedbackNotes = it },
+                    label = { Text("Describe your experience or suggestion") },
+                    singleLine = false,
+                    minLines = 3,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("feedback_message_input")
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel", color = ReferenceSecondaryText)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSubmit(selectedCategory, feedbackNotes) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ReferenceActiveGreen,
+                    contentColor = Color(0xFF041A0E)
+                ),
+                modifier = Modifier.testTag("feedback_send_button")
+            ) {
+                Text("Send Feedback", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+private fun CustomizeThemeDialog(
+    preferences: UserPreferencesState,
+    onSetThemeMode: (AppThemeMode) -> Unit,
+    onSetDynamicColor: (Boolean) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = ReferencePanelCharcoal,
+        titleContentColor = ReferenceNormalText,
+        textContentColor = ReferenceNormalText,
+        title = {
+            Text(
+                text = "Customize Player Theme",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("customize_theme_dialog"),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "Appearance Mode",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = ReferenceActiveGreen
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    AppThemeMode.entries.forEach { mode ->
+                        val selected = preferences.themeMode == mode
+                        FilterChip(
+                            selected = selected,
+                            onClick = { onSetThemeMode(mode) },
+                            label = {
+                                Text(
+                                    text = mode.name,
+                                    fontSize = 11.sp,
+                                    color = if (selected) Color(0xFF041A0E) else ReferenceNormalText,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = ReferenceActiveGreen,
+                                containerColor = ReferencePanelSurface
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("theme_mode_chip_${mode.name.lowercase()}")
+                        )
+                    }
+                }
+                VideoSettingsSwitchRow(
+                    title = "Material You Dynamic Wallpaper Accent",
+                    subtitle = "Disable to lock signature PulsePlay Neon Green (#00E676) studio palette",
+                    checked = preferences.dynamicColor,
+                    onCheckedChange = onSetDynamicColor,
+                    testTag = "theme_dynamic_color_switch"
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = ReferenceActiveGreen,
+                    contentColor = Color(0xFF041A0E)
+                ),
+                modifier = Modifier.testTag("customize_theme_done_button")
+            ) {
+                Text("Done", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+
 

@@ -71,9 +71,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithTag
@@ -81,6 +83,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import com.example.data.preferences.SortOption
@@ -2438,13 +2441,13 @@ class ExampleRobolectricTest {
         composeTestRule.mainClock.advanceTimeBy(300L)
         composeTestRule.waitForIdle()
 
-        // 1. Verify all video controls are initially visible in Landscape
+        // 1. Verify video controls in Landscape and confirm 10s circular buttons are removed
         composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
         composeTestRule.onNodeWithTag("now_playing_seek_slider").assertExists()
         composeTestRule.onNodeWithTag("video_current_time_text").assertExists()
         composeTestRule.onNodeWithTag("video_total_time_text").assertExists()
-        composeTestRule.onNodeWithTag("transport_rewind_10_button").assertExists()
-        composeTestRule.onNodeWithTag("transport_forward_10_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_rewind_10_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("transport_forward_10_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("transport_previous_button").assertExists()
         composeTestRule.onNodeWithTag("transport_next_button").assertExists()
         composeTestRule.onNodeWithTag("video_subtitles_chip").assertExists()
@@ -2475,18 +2478,28 @@ class ExampleRobolectricTest {
         // Controls MUST immediately recover and be visible again!
         composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
         composeTestRule.onNodeWithTag("now_playing_seek_slider").assertExists()
-        composeTestRule.onNodeWithTag("transport_forward_10_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_rewind_10_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("transport_forward_10_button").assertDoesNotExist()
         composeTestRule.onNodeWithTag("now_playing_more_options_button").assertExists()
 
-        // 4. Test transport controls: +10s forward, -10s rewind, Next, Previous, Play/Pause
+        // 4. Test double-tap seeking: Right half (+10s forward), Left half (-10s rewind), Next, Previous
         val posBeforeSeek = positionMsState
-        composeTestRule.onNodeWithTag("transport_forward_10_button").performClick()
-        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.onNodeWithTag("video_surface_container").performTouchInput {
+            doubleClick(Offset(width * 0.78f, height * 0.50f))
+        }
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
         assertEquals(posBeforeSeek + 10_000L, positionMsState)
+        // Double-tap must not accidentally hide controls
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
 
-        composeTestRule.onNodeWithTag("transport_rewind_10_button").performClick()
-        composeTestRule.mainClock.advanceTimeBy(100L)
+        composeTestRule.onNodeWithTag("video_surface_container").performTouchInput {
+            doubleClick(Offset(width * 0.22f, height * 0.50f))
+        }
+        composeTestRule.mainClock.advanceTimeBy(250L)
+        composeTestRule.waitForIdle()
         assertEquals(posBeforeSeek, positionMsState)
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
 
         composeTestRule.onNodeWithTag("transport_next_button").performClick()
         composeTestRule.mainClock.advanceTimeBy(100L)
@@ -5500,8 +5513,164 @@ class ExampleRobolectricTest {
         composeTestRule.waitForIdle()
         assertEquals(0, composeTestRule.onAllNodesWithTag("music_playback_settings_panel").fetchSemanticsNodes().size)
     }
+
+    @Test
+    fun completeProjectAudit_all14VerificationAreasPassEndToEnd() {
+        val context = ApplicationProvider.getApplicationContext<Application>()
+        val vm = PulsePlayViewModel(context)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        vm.setEqualizerEnabled(false)
+        vm.updateBassBoost(0)
+        vm.setAudioBalance(0f)
+        vm.setPreampGainDb(0f)
+        vm.setVideoGestureControlsEnabled(true)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+
+        val videoTrack = MediaEntity(
+            uriString = "file:///audit_cinema_video.mp4",
+            mediaStoreId = null,
+            title = "Cinema Reference Video",
+            artist = "PulsePlay Cinema Lab",
+            album = "Reference Reel",
+            folderName = "Videos",
+            durationMs = 120_000L,
+            sizeBytes = 8_192_000L,
+            mimeType = "video/mp4",
+            mediaType = MediaType.VIDEO,
+            width = 1920,
+            height = 1080,
+            dateAddedEpochSec = 1700002000L
+        )
+        val audioTrack = MediaEntity(
+            uriString = "file:///audit_studio_audio.wav",
+            mediaStoreId = null,
+            title = "Studio Reference Audio",
+            artist = "PulsePlay Audio Lab",
+            album = "Reference Sessions",
+            folderName = "Music",
+            durationMs = 180_000L,
+            sizeBytes = 4_096_000L,
+            mimeType = "audio/wav",
+            mediaType = MediaType.AUDIO,
+            dateAddedEpochSec = 1700002100L
+        )
+
+        // 1. Video Player: verify 10s circular buttons are removed and double-tap left/right seeks -10s / +10s with clamping
+        vm.setQueue(listOf(videoTrack, audioTrack), initialIndex = 0, queueTitle = "Videos")
+        vm.setNowPlayingExpanded(true)
+        vm.seekTo(60_000L) // 01:00
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(60_000L, vm.playbackState.value.currentPositionMs)
+
+        var testViewport by mutableStateOf(DpSize(412.dp, 892.dp))
+        composeTestRule.setContent {
+            PulsePlayTheme {
+                Box(modifier = Modifier.requiredSize(testViewport)) {
+                    PulsePlayAppRoot(viewModel = vm)
+                }
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Verify circular 10s buttons do not exist in portrait video mode
+        composeTestRule.onNodeWithTag("transport_rewind_10_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("transport_forward_10_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("transport_play_pause_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_previous_button").assertExists()
+        composeTestRule.onNodeWithTag("transport_next_button").assertExists()
+
+        // Double-tap LEFT half at 01:00 -> 00:50 (-10s) and verify transient feedback
+        composeTestRule.onNodeWithTag("video_surface_container")
+            .performTouchInput {
+                doubleClick(position = androidx.compose.ui.geometry.Offset(width * 0.20f, height * 0.50f))
+            }
+        composeTestRule.waitForIdle()
+        assertEquals(50_000L, vm.playbackState.value.currentPositionMs)
+        composeTestRule.onNodeWithTag("video_double_tap_seek_feedback").assertExists()
+
+        // Repeated double-tap RIGHT half -> +10s (01:00) and +10s (01:10)
+        composeTestRule.onNodeWithTag("video_surface_container")
+            .performTouchInput {
+                doubleClick(position = androidx.compose.ui.geometry.Offset(width * 0.80f, height * 0.50f))
+            }
+        composeTestRule.waitForIdle()
+        assertEquals(60_000L, vm.playbackState.value.currentPositionMs)
+
+        composeTestRule.onNodeWithTag("video_surface_container")
+            .performTouchInput {
+                doubleClick(position = androidx.compose.ui.geometry.Offset(width * 0.80f, height * 0.50f))
+            }
+        composeTestRule.waitForIdle()
+        assertEquals(70_000L, vm.playbackState.value.currentPositionMs)
+
+        // Boundary clamping: seek near 00:05 and double-tap left -> clamps cleanly to 00:00
+        vm.seekTo(5_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("video_surface_container")
+            .performTouchInput {
+                doubleClick(position = androidx.compose.ui.geometry.Offset(width * 0.20f, height * 0.50f))
+            }
+        composeTestRule.waitForIdle()
+        assertEquals(0L, vm.playbackState.value.currentPositionMs)
+
+        // Boundary clamping: seek near end (115s of 120s) and double-tap right -> clamps cleanly to 120,000 ms
+        vm.seekTo(115_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("video_surface_container")
+            .performTouchInput {
+                doubleClick(position = androidx.compose.ui.geometry.Offset(width * 0.80f, height * 0.50f))
+            }
+        composeTestRule.waitForIdle()
+        assertEquals(120_000L, vm.playbackState.value.currentPositionMs)
+
+        // Landscape mode double-tap seeking verification
+        testViewport = DpSize(892.dp, 412.dp)
+        vm.seekTo(40_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("transport_rewind_10_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("transport_forward_10_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("video_surface_container")
+            .performTouchInput {
+                doubleClick(position = androidx.compose.ui.geometry.Offset(width * 0.25f, height * 0.50f))
+            }
+        composeTestRule.waitForIdle()
+        assertEquals(30_000L, vm.playbackState.value.currentPositionMs)
+
+        // 2. Centralized Dialog & Sheet Mutual Exclusion Verification
+        vm.setVideoSettingsDialogVisible(true)
+        assertTrue(vm.playbackState.value.showVideoSettingsDialog)
+        assertFalse(vm.isEqualizerSheetOpen.value)
+
+        // Opening Equalizer sheet must automatically close Video Settings dialog
+        vm.setEqualizerSheetOpen(true)
+        assertTrue(vm.isEqualizerSheetOpen.value)
+        assertFalse(vm.playbackState.value.showVideoSettingsDialog)
+
+        // Opening Subtitle Settings must automatically close Equalizer sheet
+        vm.setSubtitleSettingsDialogVisible(true)
+        assertTrue(vm.playbackState.value.showSubtitleSettingsDialog)
+        assertFalse(vm.isEqualizerSheetOpen.value)
+
+        // Opening Playback Speed must automatically close Subtitle Settings
+        vm.setPlaybackSpeedDialogVisible(true)
+        assertTrue(vm.playbackState.value.showPlaybackSpeedDialog)
+        assertFalse(vm.playbackState.value.showSubtitleSettingsDialog)
+
+        // closeAllPlaybackDialogs closes every dialog and sheet cleanly
+        vm.closeAllPlaybackDialogs()
+        assertFalse(vm.playbackState.value.showPlaybackSpeedDialog)
+        assertFalse(vm.playbackState.value.showVideoSettingsDialog)
+        assertFalse(vm.playbackState.value.showSubtitleSettingsDialog)
+        assertFalse(vm.playbackState.value.showMusicPlaybackSettingsDialog)
+        assertFalse(vm.isEqualizerSheetOpen.value)
+
+        // 3. Studio Export Play-After-Export Verification
+        val firstLibraryItem = vm.allMedia.value.firstOrNull() ?: audioTrack
+        vm.openStudioForMedia(firstLibraryItem)
+        assertTrue(vm.isStudioSheetOpen.value)
+        vm.playExportedOutputUri(firstLibraryItem.uriString)
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        composeTestRule.waitForIdle()
+    }
 }
-
-
-
 

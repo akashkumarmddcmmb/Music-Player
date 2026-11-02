@@ -70,7 +70,6 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
-import androidx.compose.material.icons.filled.Forward10
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.GraphicEq
@@ -90,7 +89,6 @@ import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
-import androidx.compose.material.icons.filled.Replay10
 import androidx.compose.material.icons.filled.RingVolume
 import androidx.compose.material.icons.filled.ScreenLockLandscape
 import androidx.compose.material.icons.filled.ScreenLockPortrait
@@ -136,6 +134,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -204,6 +203,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.roundToInt
 import kotlin.math.sin
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -924,6 +924,7 @@ fun NowPlayingOverlayScreen(
                                 shouldKeepVideoAwake = shouldKeepVideoAwake,
                                 showSubtitleSettings = effectiveShowSubtitleSettings,
                                 showVideoSettingsSheet = effectiveShowVideoSettings,
+                                onSeekTo = onSeekTo,
                                 onToggleSubtitleSettings = handleToggleSubtitleSettings,
                                 onToggleVideoSettings = handleToggleVideoSettings,
                                 onCycleAspectMode = onCycleAspectMode,
@@ -1226,6 +1227,7 @@ private fun PortraitVideoSurfaceSection(
     shouldKeepVideoAwake: Boolean,
     showSubtitleSettings: Boolean,
     showVideoSettingsSheet: Boolean,
+    onSeekTo: (Long) -> Unit = {},
     onToggleSubtitleSettings: () -> Unit,
     onToggleVideoSettings: () -> Unit,
     onCycleAspectMode: () -> Unit,
@@ -1238,6 +1240,9 @@ private fun PortraitVideoSurfaceSection(
 ) {
     var containerWidthPx by remember { mutableIntStateOf(640) }
     var containerHeightPx by remember { mutableIntStateOf(360) }
+    val latestPositionMs by rememberUpdatedState(playbackState.currentPositionMs)
+    val latestDurationMs by rememberUpdatedState(playbackState.durationMs)
+    val latestOnSeekTo by rememberUpdatedState(onSeekTo)
 
     val frameTransform = remember(playbackState.videoRotationDegrees, containerWidthPx, containerHeightPx) {
         PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(
@@ -1263,6 +1268,22 @@ private fun PortraitVideoSurfaceSection(
                 .onSizeChanged { sz ->
                     containerWidthPx = sz.width.coerceAtLeast(1)
                     containerHeightPx = sz.height.coerceAtLeast(1)
+                }
+                .pointerInput(userPreferences.videoGestureControlsEnabled, playbackState.isVideoControlsLocked) {
+                    if (userPreferences.videoGestureControlsEnabled && !playbackState.isVideoControlsLocked) {
+                        detectTapGestures(
+                            onDoubleTap = { offset ->
+                                val widthPx = size.width.coerceAtLeast(1)
+                                val deltaMs = if (offset.x < widthPx / 2f) -10_000L else 10_000L
+                                val target = if (latestDurationMs > 0L) {
+                                    (latestPositionMs + deltaMs).coerceIn(0L, latestDurationMs)
+                                } else {
+                                    (latestPositionMs + deltaMs).coerceAtLeast(0L)
+                                }
+                                latestOnSeekTo(target)
+                            }
+                        )
+                    }
                 }
                 .pointerInput(userPreferences.videoGestureControlsEnabled, playbackState.isVideoControlsLocked) {
                     if (userPreferences.videoGestureControlsEnabled && !playbackState.isVideoControlsLocked) {
@@ -1603,7 +1624,15 @@ private fun ImmersiveVideoCinemaLayout(
     var showAudioTrackSheet by rememberSaveable { mutableStateOf(false) }
     var showVideoOverflowMenu by rememberSaveable { mutableStateOf(false) }
     var gestureFeedbackBanner by remember { mutableStateOf<String?>(null) }
+    var doubleTapSeekFeedbackText by remember { mutableStateOf<String?>(null) }
+    var doubleTapSeekIsForward by remember { mutableStateOf(true) }
+    var doubleTapSeekTick by remember { mutableIntStateOf(0) }
+    var lastCommittedSeekTargetMs by remember { mutableLongStateOf(-1L) }
+    var lastCommittedSeekWallMs by remember { mutableLongStateOf(0L) }
+    var positionAtLastSeekCall by remember { mutableLongStateOf(-1L) }
     var localInteractionTick by rememberSaveable { mutableIntStateOf(0) }
+    val gestureScope = rememberCoroutineScope()
+    var pendingSingleTapJob by remember { mutableStateOf<Job?>(null) }
 
     val notifyUserInteraction: () -> Unit = {
         localInteractionTick++
@@ -1668,6 +1697,14 @@ private fun ImmersiveVideoCinemaLayout(
         }
     }
 
+    // Auto-dismiss subtle double-tap seek feedback ("-10 seconds" / "+10 seconds")
+    LaunchedEffect(doubleTapSeekTick, doubleTapSeekFeedbackText) {
+        if (doubleTapSeekFeedbackText != null) {
+            delay(850L)
+            doubleTapSeekFeedbackText = null
+        }
+    }
+
     val frameTransform = remember(playbackState.videoRotationDegrees, containerWidthPx, containerHeightPx) {
         PlayerHandoffAndVideoPolicy.computeVideoFrameTransform(
             rotationDegrees = playbackState.videoRotationDegrees,
@@ -1698,12 +1735,40 @@ private fun ImmersiveVideoCinemaLayout(
         }
     }
 
+    val latestPositionMs by rememberUpdatedState(playbackState.currentPositionMs)
+    val latestDurationMs by rememberUpdatedState(playbackState.durationMs)
+    val latestOnSeekTo by rememberUpdatedState(onSeekTo)
+    val latestPlayerInstance by rememberUpdatedState(playerInstance)
+
     val seekRelativeMs: (Long) -> Unit = { deltaMs ->
         notifyUserInteraction()
-        val duration = playbackState.durationMs.coerceAtLeast(1L)
-        val target = (playbackState.currentPositionMs + deltaMs).coerceIn(0L, duration)
-        onSeekTo(target)
-        gestureFeedbackBanner = if (deltaMs > 0) "+10s Forward" else "-10s Rewind"
+        val nowWall = SystemClock.uptimeMillis()
+        val preSeekStatePos = latestPositionMs
+        val playerPos = latestPlayerInstance?.currentPosition?.takeIf { it >= 0L }
+        val basePos = if (
+            lastCommittedSeekTargetMs >= 0L &&
+            preSeekStatePos == positionAtLastSeekCall &&
+            (nowWall - lastCommittedSeekWallMs) in 0L..400L
+        ) {
+            lastCommittedSeekTargetMs
+        } else {
+            playerPos?.takeIf { abs(it - preSeekStatePos) < 1000L } ?: preSeekStatePos
+        }
+        val duration = latestDurationMs.takeIf { it > 0L }
+            ?: latestPlayerInstance?.duration?.takeIf { it > 0L }
+            ?: 0L
+        val target = if (duration > 0L) {
+            (basePos + deltaMs).coerceIn(0L, duration)
+        } else {
+            (basePos + deltaMs).coerceAtLeast(0L)
+        }
+        positionAtLastSeekCall = preSeekStatePos
+        lastCommittedSeekTargetMs = target
+        lastCommittedSeekWallMs = nowWall
+        latestOnSeekTo(target)
+        doubleTapSeekIsForward = deltaMs > 0L
+        doubleTapSeekFeedbackText = if (deltaMs > 0L) "+10 seconds" else "-10 seconds"
+        doubleTapSeekTick++
     }
 
     val cycleSpeedQuick: () -> Unit = {
@@ -1749,11 +1814,26 @@ private fun ImmersiveVideoCinemaLayout(
     val latestToggleSubtitleSettings by rememberUpdatedState(onToggleSubtitleSettings)
     val latestNotifyInteraction by rememberUpdatedState(notifyUserInteraction)
     val latestSeekRelativeMs by rememberUpdatedState(seekRelativeMs)
-    val latestOnPlayPause by rememberUpdatedState(onPlayPause)
     val latestOnBrightnessDelta by rememberUpdatedState(onBrightnessGestureDelta)
     val latestOnVolumeDelta by rememberUpdatedState(onVolumeGestureDelta)
     val latestBrightnessLevel by rememberUpdatedState(playbackState.brightnessGestureLevel)
     val latestVolumeLevel by rememberUpdatedState(playbackState.volumeGestureLevel)
+
+    val performSingleTapToggle: () -> Unit = {
+        latestNotifyInteraction()
+        if (!latestControlsVisible) {
+            latestSetControlsVisible(true)
+        } else if (showAudioTrackSheet) {
+            showAudioTrackSheet = false
+        } else if (latestShowVideoSettings) {
+            latestToggleVideoSettings()
+        } else if (latestShowSubtitleSettings) {
+            latestToggleSubtitleSettings()
+        } else {
+            latestSetControlsVisible(false)
+        }
+    }
+    val latestPerformSingleTapToggle by rememberUpdatedState(performSingleTapToggle)
 
     Box(
         modifier = Modifier
@@ -1908,15 +1988,43 @@ private fun ImmersiveVideoCinemaLayout(
             }
         }
 
+        // Subtle transient double-tap seek text feedback ("-10 seconds" on left, "+10 seconds" on right)
+        // Shows only brief text animation without any permanent or circular 10s button icons.
+        AnimatedVisibility(
+            visible = doubleTapSeekFeedbackText != null,
+            enter = fadeIn(animationSpec = tween(120)),
+            exit = fadeOut(animationSpec = tween(180)),
+            modifier = Modifier
+                .align(if (doubleTapSeekIsForward) Alignment.CenterEnd else Alignment.CenterStart)
+                .padding(horizontal = if (isLandscapeViewport) 56.dp else 32.dp)
+                .testTag("video_double_tap_seek_feedback")
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.62f),
+                shape = RoundedCornerShape(50),
+                modifier = Modifier.border(1.dp, CinemaNeonGreen.copy(alpha = 0.45f), RoundedCornerShape(50))
+            ) {
+                Text(
+                    text = doubleTapSeekFeedbackText.orEmpty(),
+                    color = CinemaNeonGreen,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+        }
+
         // 3. TOP INTERACTIVE LAYER (ABOVE PlayerView):
-        //    Handles single-tap to show/hide controls immediately (never cancelled by currentPositionMs updates),
-        //    rapid double-tap seek/play-pause, vertical brightness/volume swipes, and hosts all HUD controls.
+        //    Handles single-tap to show/hide controls, left-half double-tap (-10s rewind),
+        //    right-half double-tap (+10s forward), and vertical brightness/volume swipes.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
                     var lastTapUptimeMs = 0L
+                    var lastTapWallClockMs = 0L
                     var lastTapPosition = Offset.Zero
+                    var hasPendingFirstTap = false
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Main)
                         var consumedByChild = down.isConsumed
@@ -1924,7 +2032,41 @@ private fun ImmersiveVideoCinemaLayout(
                         var lastY = down.position.y
                         var totalDy = 0f
                         var upPosition = down.position
+                        var upUptimeMs = down.uptimeMillis
                         val touchSlop = viewConfiguration.touchSlop
+                        val widthPx = size.width.coerceAtLeast(1)
+                        val heightPx = size.height.coerceAtLeast(1)
+
+                        val downWallNow = SystemClock.uptimeMillis()
+                        val deltaEventMs = if (hasPendingFirstTap && down.uptimeMillis >= lastTapUptimeMs) {
+                            down.uptimeMillis - lastTapUptimeMs
+                        } else {
+                            Long.MAX_VALUE
+                        }
+                        val deltaWallMs = if (hasPendingFirstTap && downWallNow >= lastTapWallClockMs) {
+                            downWallNow - lastTapWallClockMs
+                        } else {
+                            Long.MAX_VALUE
+                        }
+                        val isWithinDoubleTapWindow = hasPendingFirstTap && (deltaEventMs <= 320L || deltaWallMs <= 320L)
+                        val isSameHalf = (down.position.x < widthPx / 2f) == (lastTapPosition.x < widthPx / 2f)
+                        val isNearLastTap = (down.position - lastTapPosition).getDistance() < 200f && isSameHalf
+                        val topReservedPx = if (latestControlsVisible) 56.dp.toPx() else 0f
+                        val bottomReservedPx = if (latestControlsVisible) 68.dp.toPx() else 0f
+                        val isInVideoViewingArea = down.position.y >= topReservedPx &&
+                            down.position.y <= (heightPx - bottomReservedPx).coerceAtLeast(topReservedPx + 1f)
+
+                        val isDoubleTapSecondDown = !consumedByChild &&
+                            !latestIsLocked &&
+                            latestGesturesEnabled &&
+                            isWithinDoubleTapWindow &&
+                            isNearLastTap &&
+                            isInVideoViewingArea
+
+                        if (isDoubleTapSecondDown) {
+                            pendingSingleTapJob?.cancel()
+                            pendingSingleTapJob = null
+                        }
 
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Main)
@@ -1935,17 +2077,20 @@ private fun ImmersiveVideoCinemaLayout(
                                 ?: event.changes.firstOrNull()
                             if (pointerChange != null) {
                                 upPosition = pointerChange.position
+                                upUptimeMs = pointerChange.uptimeMillis
                                 val stepDy = pointerChange.position.y - lastY
                                 lastY = pointerChange.position.y
                                 totalDy += stepDy
 
                                 if (!consumedByChild && !isVerticalDrag && abs(totalDy) > touchSlop) {
                                     isVerticalDrag = true
+                                    pendingSingleTapJob?.cancel()
+                                    pendingSingleTapJob = null
+                                    hasPendingFirstTap = false
                                 }
                                 if (!consumedByChild && isVerticalDrag && latestGesturesEnabled && !latestIsLocked) {
                                     pointerChange.consume()
                                     latestNotifyInteraction()
-                                    val widthPx = size.width.coerceAtLeast(1)
                                     val delta = -stepDy / 500f
                                     if (pointerChange.position.x < widthPx / 2f) {
                                         latestOnBrightnessDelta(delta)
@@ -1963,37 +2108,44 @@ private fun ImmersiveVideoCinemaLayout(
                             }
                         }
 
-                        if (!consumedByChild && !isVerticalDrag) {
-                            val now = SystemClock.uptimeMillis()
-                            val isRapidSecondTap = latestControlsVisible &&
-                                !latestIsLocked &&
-                                latestGesturesEnabled &&
-                                (now - lastTapUptimeMs) in 35L..260L &&
-                                (upPosition - lastTapPosition).getDistance() < 140f
-
-                            if (isRapidSecondTap) {
+                        if (consumedByChild) {
+                            pendingSingleTapJob?.cancel()
+                            pendingSingleTapJob = null
+                            hasPendingFirstTap = false
+                        } else if (!isVerticalDrag) {
+                            if (isDoubleTapSecondDown) {
+                                pendingSingleTapJob?.cancel()
+                                pendingSingleTapJob = null
+                                hasPendingFirstTap = false
                                 lastTapUptimeMs = 0L
-                                latestNotifyInteraction()
-                                val widthPx = size.width.coerceAtLeast(1)
-                                when {
-                                    upPosition.x < widthPx * 0.35f -> latestSeekRelativeMs(-10_000L)
-                                    upPosition.x > widthPx * 0.65f -> latestSeekRelativeMs(10_000L)
-                                    else -> latestOnPlayPause()
+                                lastTapWallClockMs = 0L
+                                if (upPosition.x < widthPx / 2f) {
+                                    latestSeekRelativeMs(-10_000L)
+                                } else {
+                                    latestSeekRelativeMs(10_000L)
                                 }
                             } else {
-                                lastTapUptimeMs = now
-                                lastTapPosition = upPosition
-                                latestNotifyInteraction()
-                                if (!latestControlsVisible) {
-                                    latestSetControlsVisible(true)
-                                } else if (showAudioTrackSheet) {
-                                    showAudioTrackSheet = false
-                                } else if (latestShowVideoSettings) {
-                                    latestToggleVideoSettings()
-                                } else if (latestShowSubtitleSettings) {
-                                    latestToggleSubtitleSettings()
+                                val canDoubleTapHere = !latestIsLocked &&
+                                    latestGesturesEnabled &&
+                                    upPosition.y >= topReservedPx &&
+                                    upPosition.y <= (heightPx - bottomReservedPx).coerceAtLeast(topReservedPx + 1f)
+
+                                if (!canDoubleTapHere) {
+                                    hasPendingFirstTap = false
+                                    pendingSingleTapJob?.cancel()
+                                    pendingSingleTapJob = null
+                                    latestPerformSingleTapToggle()
                                 } else {
-                                    latestSetControlsVisible(false)
+                                    hasPendingFirstTap = true
+                                    lastTapUptimeMs = upUptimeMs
+                                    lastTapWallClockMs = SystemClock.uptimeMillis()
+                                    lastTapPosition = upPosition
+                                    pendingSingleTapJob?.cancel()
+                                    pendingSingleTapJob = gestureScope.launch {
+                                        delay(200L)
+                                        hasPendingFirstTap = false
+                                        latestPerformSingleTapToggle()
+                                    }
                                 }
                             }
                         }
@@ -2063,7 +2215,6 @@ private fun ImmersiveVideoCinemaLayout(
                 ) {
                     val isCompactHudHeight = maxHeight < 400.dp
                     val centerPlayButtonSize = if (isCompactHudHeight) 56.dp else 68.dp
-                    val centerSeekButtonSize = if (isCompactHudHeight) 48.dp else 54.dp
 
                     // 1. TOP BAR: Back Arrow, Video Title + "FHD 1080p • 39.7 MB" subtitle, Lock, CC, Equalizer, 1-Tap Fullscreen/Rotate
                     Row(
@@ -2537,10 +2688,11 @@ private fun ImmersiveVideoCinemaLayout(
                         }
                     }
 
-                    // 2. CENTER 5-BUTTON TRANSPORT OVERLAY: Previous | -10s Replay | Neon Green Play/Pause | +10s Forward | Next
+                    // 2. CENTER 3-BUTTON TRANSPORT OVERLAY: Previous | Neon Green Play/Pause | Next
+                    //    (10-second rewind/forward circular buttons removed; seeking is performed via left/right double-tap)
                     Row(
                         modifier = Modifier.align(Alignment.Center),
-                        horizontalArrangement = Arrangement.spacedBy(if (isLandscapeViewport) 20.dp else 14.dp),
+                        horizontalArrangement = Arrangement.spacedBy(if (isLandscapeViewport) 28.dp else 24.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         // Previous Video
@@ -2558,23 +2710,6 @@ private fun ImmersiveVideoCinemaLayout(
                             Icon(
                                 imageVector = Icons.Default.SkipPrevious,
                                 contentDescription = "Previous",
-                                tint = Color.White,
-                                modifier = Modifier.size(26.dp)
-                            )
-                        }
-
-                        // Rewind 10 Seconds (↺10)
-                        IconButton(
-                            onClick = { seekRelativeMs(-10_000L) },
-                            modifier = Modifier
-                                .size(centerSeekButtonSize)
-                                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                                .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-                                .testTag("transport_rewind_10_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Replay10,
-                                contentDescription = "Rewind 10 seconds",
                                 tint = Color.White,
                                 modifier = Modifier.size(26.dp)
                             )
@@ -2598,23 +2733,6 @@ private fun ImmersiveVideoCinemaLayout(
                                 contentDescription = if (playbackState.isPlaying) "Pause" else "Play",
                                 tint = Color(0xFF06150D),
                                 modifier = Modifier.size(if (isCompactHudHeight) 30.dp else 36.dp)
-                            )
-                        }
-
-                        // Fast-Forward 10 Seconds (↻10)
-                        IconButton(
-                            onClick = { seekRelativeMs(10_000L) },
-                            modifier = Modifier
-                                .size(centerSeekButtonSize)
-                                .background(Color.Black.copy(alpha = 0.55f), CircleShape)
-                                .border(1.dp, Color.White.copy(alpha = 0.16f), CircleShape)
-                                .testTag("transport_forward_10_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Forward10,
-                                contentDescription = "Forward 10 seconds",
-                                tint = Color.White,
-                                modifier = Modifier.size(26.dp)
                             )
                         }
 

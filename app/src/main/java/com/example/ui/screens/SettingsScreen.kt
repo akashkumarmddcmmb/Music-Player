@@ -379,7 +379,7 @@ fun ProfileAndSettingsScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Video Gesture Controls", style = MaterialTheme.typography.bodyMedium)
                         Text(
-                            "Vertical swipe for brightness (left) & volume (right); double-tap play/pause",
+                            "Vertical swipe for brightness (left) & volume (right); double-tap left/right to seek 10s",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )

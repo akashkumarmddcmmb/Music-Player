@@ -1601,9 +1601,16 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun seekTo(positionMs: Long) {
-        val player = activePlayer ?: return
-        val clamped = positionMs.coerceIn(0L, _playbackState.value.durationMs.coerceAtLeast(1L))
-        player.seekTo(clamped)
+        val duration = _playbackState.value.durationMs
+            .takeIf { it > 0L }
+            ?: activePlayer?.duration?.takeIf { it > 0L && it != C.TIME_UNSET }
+            ?: 0L
+        val clamped = if (duration > 0L) {
+            positionMs.coerceIn(0L, duration)
+        } else {
+            positionMs.coerceAtLeast(0L)
+        }
+        activePlayer?.seekTo(clamped)
         updateSubtitleCueForPosition(clamped)
         _playbackState.value = _playbackState.value.copy(currentPositionMs = clamped)
     }
@@ -2022,6 +2029,18 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         )
     }
 
+    fun closeAllPlaybackDialogs() {
+        _isEqualizerSheetOpen.value = false
+        _playbackState.value = _playbackState.value.copy(
+            showPlaybackSpeedDialog = false,
+            showVideoCompatibilityDialog = false,
+            showVideoInfoDetailsDialog = false,
+            showVideoSettingsDialog = false,
+            showSubtitleSettingsDialog = false,
+            showMusicPlaybackSettingsDialog = false
+        )
+    }
+
     fun setMusicPlaybackSettingsDialogVisible(visible: Boolean) {
         if (visible) _isEqualizerSheetOpen.value = false
         _playbackState.value = _playbackState.value.copy(
@@ -2370,6 +2389,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
             queueTitle = resolvedQueueTitle,
             currentQueueIndex = safeIndex,
             currentMedia = activeMedia,
+            durationMs = activeMedia?.durationMs ?: current.durationMs,
             hasRenderedFirstFrame = false,
             decoderRecoveryAttempts = 0,
             playbackError = null
@@ -3183,6 +3203,21 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun clearCompletedProcessingJobs() {
         viewModelScope.launch {
             dao.clearCompletedJobs()
+        }
+    }
+
+    fun playExportedOutputUri(outUri: String) {
+        if (outUri.isBlank()) return
+        viewModelScope.launch {
+            val existing = allMedia.value.find { it.uriString == outUri }
+                ?: dao.getMediaByUri(outUri)
+                ?: runCatching { mediaRepository.importSafMediaUri(Uri.parse(outUri)) }.getOrNull()
+            if (existing != null) {
+                closeStudioSheet()
+                val queue = allMedia.value.takeIf { it.isNotEmpty() } ?: listOf(existing)
+                playMedia(existing, if (queue.any { it.uriString == existing.uriString }) queue else listOf(existing) + queue)
+                setNowPlayingExpanded(true)
+            }
         }
     }
 

@@ -663,6 +663,27 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
         )
     }
 
+    LaunchedEffect(
+        isEqualizerSheetOpen,
+        playbackState.showPlaybackSpeedDialog,
+        playbackState.showVideoSettingsDialog,
+        playbackState.showSubtitleSettingsDialog,
+        playbackState.showMusicPlaybackSettingsDialog,
+        playbackState.showVideoCompatibilityDialog,
+        playbackState.showVideoInfoDetailsDialog
+    ) {
+        if (isEqualizerSheetOpen ||
+            playbackState.showPlaybackSpeedDialog ||
+            playbackState.showVideoSettingsDialog ||
+            playbackState.showSubtitleSettingsDialog ||
+            playbackState.showMusicPlaybackSettingsDialog ||
+            playbackState.showVideoCompatibilityDialog ||
+            playbackState.showVideoInfoDetailsDialog
+        ) {
+            activeFileInfo = null
+        }
+    }
+
     // File Information / Details Dialog
     if (activeFileInfo != null) {
         val info = activeFileInfo!!
@@ -756,12 +777,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 onCancelActiveJob = { viewModel.cancelActiveProcessingJob() },
                 onClearCompletedJobs = { viewModel.clearCompletedProcessingJobs() },
                 onPlayExportedUri = { outUri ->
-                    val exported = allMedia.find { it.uriString == outUri }
-                    if (exported != null) {
-                        viewModel.closeStudioSheet()
-                        viewModel.playMedia(exported, allMedia)
-                        viewModel.setNowPlayingExpanded(true)
-                    }
+                    viewModel.playExportedOutputUri(outUri)
                 }
             )
             InAppNotificationBanner(
@@ -846,6 +862,7 @@ fun PulsePlayAppRoot(viewModel: PulsePlayViewModel) {
                 },
                 onShowFileInfoCurrentMedia = {
                     playbackState.currentMedia?.let { media ->
+                        viewModel.closeAllPlaybackDialogs()
                         activeFileInfo = MediaFileActionsHelper.extractDetailedMediaFileInfo(context, media)
                     }
                 },

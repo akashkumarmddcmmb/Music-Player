@@ -5398,6 +5398,7 @@ class ExampleRobolectricTest {
 
         // Verify Crossfade, Gapless, Volume, Audio Balance & Bass Boost in ViewModel
         org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        vm.setCrossfadeDurationSeconds(0)
         vm.cycleCrossfadeDuration()
         assertEquals(2, vm.userPreferences.value.crossfadeDurationSeconds)
 
@@ -5413,6 +5414,7 @@ class ExampleRobolectricTest {
         assertEquals(-0.25f, vm.userPreferences.value.audioBalance, 0.01f)
         vm.setAudioBalance(0f)
 
+        vm.updateBassBoost(0)
         vm.cycleBassBoostQuick()
         assertTrue(vm.equalizerState.value.isEnabled)
         assertEquals(250, vm.equalizerState.value.bassBoostStrength)

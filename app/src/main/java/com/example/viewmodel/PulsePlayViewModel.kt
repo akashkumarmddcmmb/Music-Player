@@ -281,6 +281,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     // Preferences & Equalizer State
     private val _userPreferences = MutableStateFlow(UserPreferencesState())
     val userPreferences: StateFlow<UserPreferencesState> = _userPreferences.asStateFlow()
+    private val pendingPreferenceWrites = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile
+    private var hasExplicitEqualizerMutation = false
 
     val equalizerState: StateFlow<HardwareEqualizerState> = equalizerController.state
 
@@ -789,16 +792,18 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 legacyAllowSoftwareFallback = initialPrefs.allowExperimental4kSoftwareFallback,
                 hardwareDecoderPreference = initialPrefs.hardwareDecoderPreferenceEnabled
             )
-            equalizerController.setStereoBalance(initialPrefs.audioBalance)
-            equalizerController.setPreampGainDb(initialPrefs.preampGainDb)
-            equalizerController.bindToAudioSession(
-                audioSessionId = PulsePlaybackService.serviceAudioSessionId.value,
-                enabled = initialPrefs.equalizerEnabled,
-                presetIndex = initialPrefs.equalizerPresetIndex,
-                bassStrength = initialPrefs.bassBoostStrength,
-                savedBandLevelsMb = initialPrefs.customBandLevelsMb,
-                isPlaybackActive = PulsePlaybackService.serviceIsPlaying.value
-            )
+            if (!hasExplicitEqualizerMutation) {
+                equalizerController.setStereoBalance(initialPrefs.audioBalance)
+                equalizerController.setPreampGainDb(initialPrefs.preampGainDb)
+                equalizerController.bindToAudioSession(
+                    audioSessionId = PulsePlaybackService.serviceAudioSessionId.value,
+                    enabled = initialPrefs.equalizerEnabled,
+                    presetIndex = initialPrefs.equalizerPresetIndex,
+                    bassStrength = initialPrefs.bassBoostStrength,
+                    savedBandLevelsMb = initialPrefs.customBandLevelsMb,
+                    isPlaybackActive = PulsePlaybackService.serviceIsPlaying.value
+                )
+            }
 
             PulsePlaybackService.serviceAudioSessionId.collect { serviceSessionId ->
                 val prefs = preferencesRepository.preferencesFlow.first()
@@ -807,11 +812,15 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                     legacyAllowSoftwareFallback = prefs.allowExperimental4kSoftwareFallback,
                     hardwareDecoderPreference = prefs.hardwareDecoderPreferenceEnabled
                 )
-                equalizerController.setStereoBalance(prefs.audioBalance)
-                equalizerController.setPreampGainDb(prefs.preampGainDb)
+                if (!hasExplicitEqualizerMutation) {
+                    equalizerController.setStereoBalance(prefs.audioBalance)
+                    equalizerController.setPreampGainDb(prefs.preampGainDb)
+                }
                 val currentSession = equalizerController.state.value
-                val effectiveEnabled = prefs.equalizerEnabled
-                val effectiveBands = if (currentSession.bands.any { it.currentLevelMb != 0 }) {
+                val effectiveEnabled = if (hasExplicitEqualizerMutation) currentSession.isEnabled else prefs.equalizerEnabled
+                val effectivePreset = if (hasExplicitEqualizerMutation) currentSession.selectedPresetIndex else prefs.equalizerPresetIndex
+                val effectiveBass = if (hasExplicitEqualizerMutation) currentSession.bassBoostStrength else prefs.bassBoostStrength
+                val effectiveBands = if (hasExplicitEqualizerMutation || currentSession.bands.any { it.currentLevelMb != 0 }) {
                     currentSession.bands.map { it.currentLevelMb }
                 } else {
                     prefs.customBandLevelsMb
@@ -824,8 +833,8 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
                 equalizerController.bindToAudioSession(
                     audioSessionId = resolvedId,
                     enabled = effectiveEnabled,
-                    presetIndex = prefs.equalizerPresetIndex,
-                    bassStrength = prefs.bassBoostStrength,
+                    presetIndex = effectivePreset,
+                    bassStrength = effectiveBass,
                     savedBandLevelsMb = effectiveBands,
                     isPlaybackActive = activePlayer?.isPlaying == true || PulsePlaybackService.serviceIsPlaying.value
                 )
@@ -859,7 +868,9 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             preferencesRepository.preferencesFlow.collect { prefs ->
-                _userPreferences.value = prefs
+                if (pendingPreferenceWrites.get() == 0) {
+                    _userPreferences.value = prefs
+                }
             }
         }
         viewModelScope.launch {
@@ -3009,33 +3020,39 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     // --- Equalizer & Audio DSP Actions ---
     fun setEqualizerEnabled(enabled: Boolean) {
+        hasExplicitEqualizerMutation = true
         equalizerController.setEnabled(enabled)
         saveEqualizerToPreferences()
     }
 
     fun selectEqualizerPreset(presetIndex: Int) {
+        hasExplicitEqualizerMutation = true
         equalizerController.applyPreset(presetIndex)
         saveEqualizerToPreferences()
     }
 
     fun updateEqualizerBand(bandIndex: Int, levelMb: Int) {
+        hasExplicitEqualizerMutation = true
         equalizerController.setBandLevel(bandIndex, levelMb)
         saveEqualizerToPreferences()
     }
 
     fun updateBassBoost(strength: Int) {
+        hasExplicitEqualizerMutation = true
         equalizerController.setBassBoost(strength)
         saveEqualizerToPreferences()
     }
 
     fun setPreampGainDb(gainDb: Float) {
+        hasExplicitEqualizerMutation = true
         equalizerController.setPreampGainDb(gainDb)
-        viewModelScope.launch {
+        launchPreferenceWrite {
             preferencesRepository.setPreampGainDb(gainDb)
         }
     }
 
     fun cycleBassBoostQuick() {
+        hasExplicitEqualizerMutation = true
         val steps = listOf(0, 250, 500, 750, 1000)
         val current = equalizerController.state.value.bassBoostStrength
         val next = steps.firstOrNull { it > current } ?: 0
@@ -3052,13 +3069,30 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     private fun saveEqualizerToPreferences() {
         val eqState = equalizerController.state.value
-        viewModelScope.launch {
+        _userPreferences.value = _userPreferences.value.copy(
+            equalizerEnabled = eqState.isEnabled,
+            equalizerPresetIndex = eqState.selectedPresetIndex,
+            bassBoostStrength = eqState.bassBoostStrength,
+            customBandLevelsMb = eqState.bands.map { it.currentLevelMb }
+        )
+        launchPreferenceWrite {
             preferencesRepository.setEqualizerState(
                 enabled = eqState.isEnabled,
                 presetIndex = eqState.selectedPresetIndex,
                 bassBoostStrength = eqState.bassBoostStrength,
                 bandLevelsMb = eqState.bands.map { it.currentLevelMb }
             )
+        }
+    }
+
+    private fun launchPreferenceWrite(block: suspend () -> Unit) {
+        pendingPreferenceWrites.incrementAndGet()
+        viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                pendingPreferenceWrites.decrementAndGet()
+            }
         }
     }
 
@@ -3153,17 +3187,17 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     // --- Preferences & Privacy Actions ---
     fun setThemeMode(mode: AppThemeMode) {
         _userPreferences.value = _userPreferences.value.copy(themeMode = mode)
-        viewModelScope.launch { preferencesRepository.setThemeMode(mode) }
+        launchPreferenceWrite { preferencesRepository.setThemeMode(mode) }
     }
 
     fun setDynamicColor(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(dynamicColor = enabled)
-        viewModelScope.launch { preferencesRepository.setDynamicColor(enabled) }
+        launchPreferenceWrite { preferencesRepository.setDynamicColor(enabled) }
     }
 
     fun setDefaultPlaybackSpeedPref(speed: Float) {
         _userPreferences.value = _userPreferences.value.copy(defaultPlaybackSpeed = speed)
-        viewModelScope.launch {
+        launchPreferenceWrite {
             preferencesRepository.setDefaultPlaybackSpeed(speed)
             setPlaybackSpeed(speed)
         }
@@ -3171,32 +3205,32 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setResumePlaybackEnabled(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(resumePlaybackEnabled = enabled)
-        viewModelScope.launch { preferencesRepository.setResumePlaybackEnabled(enabled) }
+        launchPreferenceWrite { preferencesRepository.setResumePlaybackEnabled(enabled) }
     }
 
     fun setRecordPlaybackHistory(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(recordPlaybackHistory = enabled)
-        viewModelScope.launch { preferencesRepository.setRecordPlaybackHistory(enabled) }
+        launchPreferenceWrite { preferencesRepository.setRecordPlaybackHistory(enabled) }
     }
 
     fun setKeepScreenOnDuringVideo(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(keepScreenOnDuringVideo = enabled)
-        viewModelScope.launch { preferencesRepository.setKeepScreenOnDuringVideo(enabled) }
+        launchPreferenceWrite { preferencesRepository.setKeepScreenOnDuringVideo(enabled) }
     }
 
     fun setBackgroundPlaybackEnabled(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(backgroundPlaybackEnabled = enabled)
-        viewModelScope.launch { preferencesRepository.setBackgroundPlaybackEnabled(enabled) }
+        launchPreferenceWrite { preferencesRepository.setBackgroundPlaybackEnabled(enabled) }
     }
 
     fun setVideoGestureControlsEnabled(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(videoGestureControlsEnabled = enabled)
-        viewModelScope.launch { preferencesRepository.setVideoGestureControlsEnabled(enabled) }
+        launchPreferenceWrite { preferencesRepository.setVideoGestureControlsEnabled(enabled) }
     }
 
     fun setVideoOrientationPreference(pref: VideoOrientationPreference) {
         _userPreferences.value = _userPreferences.value.copy(videoOrientationPreference = pref)
-        viewModelScope.launch { preferencesRepository.setVideoOrientationPreference(pref) }
+        launchPreferenceWrite { preferencesRepository.setVideoOrientationPreference(pref) }
     }
 
     fun cycleVideoOrientationPreference() {
@@ -3204,22 +3238,23 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
         val entries = VideoOrientationPreference.entries
         val next = entries[(entries.indexOf(current) + 1) % entries.size]
         _userPreferences.value = _userPreferences.value.copy(videoOrientationPreference = next)
-        viewModelScope.launch {
+        launchPreferenceWrite {
             preferencesRepository.setVideoOrientationPreference(next)
         }
     }
 
     fun setAudioBalance(balance: Float) {
+        hasExplicitEqualizerMutation = true
         val clamped = balance.coerceIn(-1.0f, 1.0f)
         _userPreferences.value = _userPreferences.value.copy(audioBalance = clamped)
         equalizerController.setStereoBalance(clamped)
-        viewModelScope.launch { preferencesRepository.setAudioBalance(clamped) }
+        launchPreferenceWrite { preferencesRepository.setAudioBalance(clamped) }
     }
 
     fun setCrossfadeDurationSeconds(seconds: Int) {
         val clamped = seconds.coerceIn(0, 12)
         _userPreferences.value = _userPreferences.value.copy(crossfadeDurationSeconds = clamped)
-        viewModelScope.launch {
+        launchPreferenceWrite {
             preferencesRepository.setCrossfadeDurationSeconds(clamped)
         }
         postStatusBannerMessage(
@@ -3238,7 +3273,7 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
     fun setGaplessPlaybackEnabled(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(gaplessPlaybackEnabled = enabled)
         (activePlayer as? ExoPlayer)?.pauseAtEndOfMediaItems = !enabled
-        viewModelScope.launch {
+        launchPreferenceWrite {
             preferencesRepository.setGaplessPlaybackEnabled(enabled)
         }
         postStatusBannerMessage(
@@ -3249,22 +3284,22 @@ class PulsePlayViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun setPlayerShowWaveform(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(playerShowWaveform = enabled)
-        viewModelScope.launch { preferencesRepository.setPlayerShowWaveform(enabled) }
+        launchPreferenceWrite { preferencesRepository.setPlayerShowWaveform(enabled) }
     }
 
     fun setPlayerShowQuickActionRow(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(playerShowQuickActionRow = enabled)
-        viewModelScope.launch { preferencesRepository.setPlayerShowQuickActionRow(enabled) }
+        launchPreferenceWrite { preferencesRepository.setPlayerShowQuickActionRow(enabled) }
     }
 
     fun setPlayerShowRemainingTime(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(playerShowRemainingTime = enabled)
-        viewModelScope.launch { preferencesRepository.setPlayerShowRemainingTime(enabled) }
+        launchPreferenceWrite { preferencesRepository.setPlayerShowRemainingTime(enabled) }
     }
 
     fun setPlayerShowAbAndBookmarkStrip(enabled: Boolean) {
         _userPreferences.value = _userPreferences.value.copy(playerShowAbAndBookmarkStrip = enabled)
-        viewModelScope.launch { preferencesRepository.setPlayerShowAbAndBookmarkStrip(enabled) }
+        launchPreferenceWrite { preferencesRepository.setPlayerShowAbAndBookmarkStrip(enabled) }
     }
 
     fun setSubtitlesEnabled(enabled: Boolean) {

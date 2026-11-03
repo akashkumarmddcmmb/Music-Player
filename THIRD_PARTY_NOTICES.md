@@ -1,6 +1,6 @@
 # Third-Party Open Source Software Notices, Provenance & License Audit (PulsePlay)
 
-This document records the verified copyright owners, exact versions, official source repositories, licenses, redistribution rights, notice obligations, asset provenance, and native-binary evaluations for all third-party libraries, bundled fonts, and visual assets used in the **PulsePlay** Android application (`com.aistudio.pulseplay.mpxvqr`).
+This document records the verified copyright owners, exact versions, official source repositories, licenses, redistribution rights, notice obligations, asset provenance, and native-binary evaluations for all third-party libraries, bundled fonts, and visual assets used in the **PulsePlay** Android application (`com.akashkumarmmb.pulseplay`).
 
 PulsePlay is an original Android application codebase written in Kotlin using Jetpack Compose and AndroidX Media3. No source code, visual presentation, assets, logos, icons, artwork, text, branding, or distinctive UI from PLAYit or any other proprietary third-party media player are included.
 

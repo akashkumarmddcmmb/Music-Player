@@ -1,6 +1,6 @@
 # PulsePlay — Original Offline Audio & Video Studio Player
 
-**PulsePlay** (`com.aistudio.pulseplay.mpxvqr`) is an original, offline-first Android audio and video player, equalizer DSP controller, SRT/WebVTT subtitle manager, local media processing studio, and GitHub Releases self-updating application written in Kotlin using Jetpack Compose and AndroidX Media3.
+**PulsePlay** (`com.akashkumarmmb.pulseplay`) is an original, offline-first Android audio and video player, equalizer DSP controller, SRT/WebVTT subtitle manager, local media processing studio, and GitHub Releases self-updating application written in Kotlin using Jetpack Compose and AndroidX Media3.
 
 > **Trademark & Naming Notice:** `PulsePlay` is used as a development identifier. Prior to commercial publication, perform an independent trademark clearance search in your target distribution jurisdictions.
 

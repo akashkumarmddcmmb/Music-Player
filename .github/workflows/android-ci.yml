@@ -653,12 +653,12 @@ jobs:
           # 2. Verify Debug APK (Standard Android Debug Certificate allowed)
           # ------------------------------------------------------------------
           DEBUG_APK_NAME=$(basename "$DEBUG_APK")
-          DEBUG_PKG_ID="com.aistudio.pulseplay.mpxvqr"
+          DEBUG_PKG_ID="com.akashkumarmmb.pulseplay"
           DEBUG_SIGNER_COLON="N/A"
           DEBUG_STATUS="FAIL"
 
           if [ -f "$DEBUG_APK" ]; then
-            DEBUG_PKG_ID=$(extract_package_id "$DEBUG_APK" "com.aistudio.pulseplay.mpxvqr")
+            DEBUG_PKG_ID=$(extract_package_id "$DEBUG_APK" "com.akashkumarmmb.pulseplay")
             DEBUG_FILESIZE=$(stat -c%s "$DEBUG_APK")
             echo "============================================================"
             echo "  Verifying Debug APK Signature: $DEBUG_APK_NAME ($DEBUG_FILESIZE bytes)"
@@ -684,12 +684,12 @@ jobs:
           # 3. Verify Release APK against Official Music Player Upload Certificate
           # ------------------------------------------------------------------
           RELEASE_APK_NAME=$(basename "$RELEASE_APK")
-          RELEASE_PKG_ID="com.aistudio.pulseplay.mpxvqr"
+          RELEASE_PKG_ID="com.akashkumarmmb.pulseplay"
           RELEASE_SIGNER_COLON="N/A"
           RELEASE_APK_STATUS="FAIL"
 
           if [ -f "$RELEASE_APK" ]; then
-            RELEASE_PKG_ID=$(extract_package_id "$RELEASE_APK" "com.aistudio.pulseplay.mpxvqr")
+            RELEASE_PKG_ID=$(extract_package_id "$RELEASE_APK" "com.akashkumarmmb.pulseplay")
             RELEASE_FILESIZE=$(stat -c%s "$RELEASE_APK")
             echo "============================================================"
             echo "  Verifying Release APK Signature: $RELEASE_APK_NAME ($RELEASE_FILESIZE bytes)"
@@ -817,7 +817,7 @@ jobs:
               echo "- **Expected Release Certificate SHA-256**: \`${EXPECTED_SHA256}\`"
               echo "- **AAB Signing Verification Status**: **${RELEASE_AAB_STATUS}** (\`${RELEASE_AAB_NAME}\`)"
               echo ""
-              echo "### 🎵 PulsePlay Build Variants (\`com.aistudio.pulseplay.mpxvqr\`)"
+              echo "### 🎵 PulsePlay Build Variants (\`com.akashkumarmmb.pulseplay\`)"
               echo ""
               echo "| APK / Bundle Filename | Package ID | Build Type | Signer SHA-256 | Expected SHA-256 | Verification |"
               echo "| :--- | :--- | :--- | :--- | :--- | :---: |"
@@ -1339,7 +1339,7 @@ jobs:
               echo ""
               echo "| Bundle Filename | Package ID | Signer SHA-256 | Expected SHA-256 | Verification |"
               echo "| :--- | :--- | :--- | :--- | :---: |"
-              echo "| \`$(basename "$AAB_FILE")\` | \`com.aistudio.pulseplay.mpxvqr\` | \`${AAB_SHA256}\` | \`${EXPECTED_SHA256}\` | **${AAB_STATUS}** |"
+              echo "| \`$(basename "$AAB_FILE")\` | \`com.akashkumarmmb.pulseplay\` | \`${AAB_SHA256}\` | \`${EXPECTED_SHA256}\` | **${AAB_STATUS}** |"
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -1379,7 +1379,7 @@ jobs:
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: com.aistudio.pulseplay.mpxvqr
+          packageName: com.akashkumarmmb.pulseplay
           releaseFiles: play-bundle-artifacts/*.aab
           track: ${{ inputs.play_track }}
           status: completed

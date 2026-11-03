@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
+  namespace = "com.akashkumarmmb.pulseplay"
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.pulseplay.mpxvqr"
+    applicationId = "com.akashkumarmmb.pulseplay"
     minSdk = 24
     targetSdk = 36
     val resolvedVersionCode = (project.findProperty("APP_VERSION_CODE")?.toString()?.toIntOrNull()
@@ -82,6 +82,12 @@ android {
       isIncludeAndroidResources = true
       all {
         it.systemProperty("java.awt.headless", "true")
+        if (System.getProperty("robolectric.dependency.repo.url") == null) {
+          it.systemProperty(
+            "robolectric.dependency.repo.url",
+            "https://maven-central.storage-download.googleapis.com/maven2"
+          )
+        }
       }
     }
   }

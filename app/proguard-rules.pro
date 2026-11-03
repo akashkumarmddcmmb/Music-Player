@@ -7,10 +7,10 @@
 -keep class * extends androidx.room.RoomDatabase { *; }
 -keep @androidx.room.Entity class * { *; }
 -keep @androidx.room.Dao class * { *; }
--keep class com.example.data.local.** { *; }
+-keep class com.akashkumarmmb.pulseplay.data.local.** { *; }
 
 # Keep Media3 session service and constructors called via reflection/manifest
--keep class com.example.service.PulsePlaybackService { *; }
+-keep class com.akashkumarmmb.pulseplay.service.PulsePlaybackService { *; }
 -keepclassmembers class * implements androidx.media3.exoplayer.mediacodec.MediaCodecAdapter$Factory {
     public <init>(...);
 }
